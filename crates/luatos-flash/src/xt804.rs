@@ -946,6 +946,7 @@ fn partition_image_config() -> Xt804ImageConfig {
 }
 
 /// Config for full firmware images (secboot + app chain).
+#[allow(dead_code)]
 fn firmware_image_config() -> Xt804ImageConfig {
     Xt804ImageConfig {
         img_type: 0,

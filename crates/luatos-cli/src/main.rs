@@ -391,7 +391,9 @@ fn main() {
         },
         Commands::Log { action } => match action {
             LogCommands::View { port, baud } => cmd_log_view(&port, baud, &cli.format),
-            LogCommands::ViewBinary { port, baud, probe } => cmd_log_view_binary(&port, baud, probe, &cli.format),
+            LogCommands::ViewBinary { port, baud, probe } => {
+                cmd_log_view_binary(&port, baud, probe, &cli.format)
+            }
             LogCommands::Record {
                 port,
                 baud,
@@ -667,7 +669,9 @@ fn cmd_flash_run(
             }
         }
         _ => {
-            anyhow::bail!("Unsupported chip type: {chip}. Supported: bk72xx, air6208, air101, air1601");
+            anyhow::bail!(
+                "Unsupported chip type: {chip}. Supported: bk72xx, air6208, air101, air1601"
+            );
         }
     }
 
@@ -925,7 +929,13 @@ fn cmd_flash_test(
                         let entries = decoder.feed(&buf[..n]);
                         for entry in &entries {
                             let module = entry.module.as_deref().unwrap_or("-");
-                            let msg = format!("[{}] {}/{} {}", entry.device_time.as_deref().unwrap_or("?"), entry.level, module, entry.message);
+                            let msg = format!(
+                                "[{}] {}/{} {}",
+                                entry.device_time.as_deref().unwrap_or("?"),
+                                entry.level,
+                                module,
+                                entry.message
+                            );
                             all_lines.push(msg);
                         }
                         let found_all = keywords
@@ -1082,7 +1092,12 @@ fn cmd_log_view(port: &str, baud: u32, format: &OutputFormat) -> anyhow::Result<
     Ok(())
 }
 
-fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, format: &OutputFormat) -> anyhow::Result<()> {
+fn cmd_log_view_binary(
+    port: &str,
+    baud: u32,
+    probe: bool,
+    format: &OutputFormat,
+) -> anyhow::Result<()> {
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
     let _ = ctrlc::set_handler(move || {

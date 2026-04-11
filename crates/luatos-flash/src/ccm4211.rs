@@ -70,6 +70,7 @@ const SOC_CMD_SET_CODE_END: u32 = 12;
 const SOC_CMD_CHECK_CODE: u32 = 13;
 #[allow(dead_code)]
 const SOC_CMD_FORCE_DOWNLOAD: u32 = 14;
+#[allow(dead_code)]
 const SOC_CMD_FORCE_RESET: u32 = 15;
 
 // CRC16 Modbus lookup table (polynomial 0x8005 reversed = 0xA001, init=0)
@@ -347,7 +348,15 @@ fn isp_handshake(port: &mut Box<dyn SerialPort>, timeout: Duration) -> Result<Ve
         std::thread::sleep(Duration::from_millis(10));
 
         // Try sync — cmd 0x14, param1=0, param2=0, data_len=0x24 (per Python)
-        match isp_send_cmd(port, ISP_CMD_SYNC, 0, 0, 0x24, None, Duration::from_millis(500)) {
+        match isp_send_cmd(
+            port,
+            ISP_CMD_SYNC,
+            0,
+            0,
+            0x24,
+            None,
+            Duration::from_millis(500),
+        ) {
             Ok(data) => {
                 log::info!("ISP handshake OK: {:?}", String::from_utf8_lossy(&data));
                 return Ok(data);
@@ -367,7 +376,11 @@ fn isp_load_ramrun(
     ramrun_data: &[u8],
     on_progress: &ProgressCallback,
 ) -> Result<()> {
-    on_progress(&FlashProgress::info("Connect", 0.0, "Opening serial port (ISP)"));
+    on_progress(&FlashProgress::info(
+        "Connect",
+        0.0,
+        "Opening serial port (ISP)",
+    ));
 
     let mut port: Box<dyn SerialPort> = serialport::new(port_name, ISP_INITIAL_BAUD)
         .parity(Parity::Even)
@@ -375,10 +388,14 @@ fn isp_load_ramrun(
         .open()
         .with_context(|| format!("Cannot open {port_name}"))?;
 
-    on_progress(&FlashProgress::info("Reset", 2.0, "Handshaking with ISP bootrom"));
+    on_progress(&FlashProgress::info(
+        "Reset",
+        2.0,
+        "Handshaking with ISP bootrom",
+    ));
 
-    let _sync_data = isp_handshake(&mut port, Duration::from_secs(15))
-        .context("ISP handshake failed")?;
+    let _sync_data =
+        isp_handshake(&mut port, Duration::from_secs(15)).context("ISP handshake failed")?;
 
     on_progress(&FlashProgress::info("Baud", 5.0, "Switching to 1Mbps"));
 
@@ -428,7 +445,11 @@ fn isp_load_ramrun(
     )
     .context("ISP set RAM base address failed")?;
 
-    on_progress(&FlashProgress::info("Write", 8.0, "Loading ramrun into RAM"));
+    on_progress(&FlashProgress::info(
+        "Write",
+        8.0,
+        "Loading ramrun into RAM",
+    ));
 
     // Write ramrun in 512-byte chunks, address auto-increments by 2
     let mut base_address: u8 = 0x30;
@@ -461,7 +482,11 @@ fn isp_load_ramrun(
         ));
     }
 
-    on_progress(&FlashProgress::info("Write", 15.0, "Ramrun loaded, executing"));
+    on_progress(&FlashProgress::info(
+        "Write",
+        15.0,
+        "Ramrun loaded, executing",
+    ));
 
     // Execute ramrun: cmd 0x81
     // Jump address from ramrun binary bytes 4-5
@@ -502,7 +527,11 @@ fn soc_send_cmd(
     let frame = build_soc_frame(cmd, address, payload, *sn);
     log::trace!(
         "SOC send: cmd={}, addr=0x{:08X}, sn={}, payload_len={}, frame_len={}",
-        cmd, address, *sn, payload.len(), frame.len()
+        cmd,
+        address,
+        *sn,
+        payload.len(),
+        frame.len()
     );
     port.write_all(&frame)?;
     port.flush()?;
@@ -537,6 +566,7 @@ fn soc_send_cmd(
 }
 
 /// Download a binary to a flash address via SOC protocol.
+#[allow(clippy::too_many_arguments)]
 fn soc_download_file(
     port: &mut Box<dyn SerialPort>,
     parser: &mut SocFrameParser,
@@ -596,7 +626,10 @@ fn soc_download_file(
                     Err(e) => {
                         log::debug!(
                             "CMD 11 retry {}/{} at {} offset {}",
-                            retry + 1, 10, stage_name, done + s_len
+                            retry + 1,
+                            10,
+                            stage_name,
+                            done + s_len
                         );
                         last_err = Some(e);
                         std::thread::sleep(Duration::from_millis(10));
@@ -655,9 +688,7 @@ fn soc_download_file(
     let expected_md5_hex = format!("{:x}", expected_md5);
 
     if device_md5_hex != expected_md5_hex {
-        bail!(
-            "MD5 mismatch: device={device_md5_hex}, expected={expected_md5_hex}"
-        );
+        bail!("MD5 mismatch: device={device_md5_hex}, expected={expected_md5_hex}");
     }
 
     Ok(())
@@ -786,7 +817,11 @@ pub fn flash_ccm4211(
     // Download bootloader
     if bl_path.exists() {
         let bl_data = std::fs::read(&bl_path).context("Failed to read bootloader.bin")?;
-        on_progress(&FlashProgress::info("Bootloader", 20.0, "Downloading bootloader"));
+        on_progress(&FlashProgress::info(
+            "Bootloader",
+            20.0,
+            "Downloading bootloader",
+        ));
         soc_download_file(
             &mut port,
             &mut parser,
@@ -810,7 +845,11 @@ pub fn flash_ccm4211(
     if core_path.exists() {
         let core_data = std::fs::read(&core_path)
             .with_context(|| format!("Failed to read {}", info.rom.file))?;
-        on_progress(&FlashProgress::info("Core", 40.0, "Downloading core firmware"));
+        on_progress(&FlashProgress::info(
+            "Core",
+            40.0,
+            "Downloading core firmware",
+        ));
         soc_download_file(
             &mut port,
             &mut parser,
@@ -1142,17 +1181,17 @@ mod tests {
     fn test_build_soc_frame_cmd0a() {
         // CMD 0x0A (set addr 0x14700000, len=32):
         // A5 00 00 00 00 00 00 00 00 00 00 70 14 04 00 00 00 0A 00 00 00 02 00 00 00 00 00 70 14 EB 12 A5
-        let param = 0x1000_u32.to_le_bytes(); // wait, let me recalculate
-        // Actually from the capture, data_len=4 at bytes 12-15
-        // address=0x14700000 at bytes 8-11
-        // payload = 0x14700000 as LE bytes? No, looking at soc.py:
-        //   param = struct.pack("I", send_len)
-        //   await device.aio_soc_write_data(10, address, param)
-        // So payload = send_len as u32 LE
-        // And in capture the payload bytes are: 00 00 70 14
-        // That's 0x14700000 in LE → but that's the address again...
-        // Actually soc.py line 997: param = struct.pack("I", send_len) where send_len is the data chunk size
-        // But my capture used send_len=4 for a test
+        let _param = 0x1000_u32.to_le_bytes(); // wait, let me recalculate
+                                               // Actually from the capture, data_len=4 at bytes 12-15
+                                               // address=0x14700000 at bytes 8-11
+                                               // payload = 0x14700000 as LE bytes? No, looking at soc.py:
+                                               //   param = struct.pack("I", send_len)
+                                               //   await device.aio_soc_write_data(10, address, param)
+                                               // So payload = send_len as u32 LE
+                                               // And in capture the payload bytes are: 00 00 70 14
+                                               // That's 0x14700000 in LE → but that's the address again...
+                                               // Actually soc.py line 997: param = struct.pack("I", send_len) where send_len is the data chunk size
+                                               // But my capture used send_len=4 for a test
 
         let frame = build_soc_frame(0x0A, 0x14700000, &0x14700000_u32.to_le_bytes(), 2);
         let expected = vec![
@@ -1160,7 +1199,10 @@ mod tests {
             0x00, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x70,
             0x14, 0xEB, 0x12, 0xA5,
         ];
-        assert_eq!(frame, expected, "Frame should match captured CMD 0x0A packet");
+        assert_eq!(
+            frame, expected,
+            "Frame should match captured CMD 0x0A packet"
+        );
     }
 
     #[test]

@@ -2,6 +2,44 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-04-11
+
+### Features
+
+#### Air1601 (CCM4211) 完整刷机支持
+- **ISP + SOC 双阶段刷机协议** — 纯 Rust 实现
+  - ISP 阶段：115200→1Mbps 切换，ramrun 加载，WRITE_RAM 分片传输
+  - SOC 阶段：2Mbps，0xA5 帧协议，CRC16 校验，MD5 完整性验证
+- **全量刷机** (`flash run`) — bootloader + core 固件下载
+- **脚本区刷写** (`flash script`) — LuaDB 格式，Lua 5.3 64-bit
+- **清除文件系统** (`flash clear-fs`) — 擦除 0x14D00000 分区
+- **清除 FSKV** (`flash clear-kv`) — 擦除 0x14FF0000 分区
+- **闭环测试** (`flash test`) — 自动刷机 + SOC 二进制日志抓取 + 关键字验证
+- **CMD 11 重试机制** — 10 次重试、10ms 退避，应对 CH343 USB-Serial 丢帧
+
+#### SOC 日志探测
+- **日志探测帧** (`--probe`) — Air1601 固件内部有缓存机制，需发送 CMD_GET_BASE_INFO 探测帧触发日志输出
+- **`log view-binary --probe`** — 打开串口后自动发送探测帧
+- **`flash test` 自动探测** — Air1601/CCM4211 芯片自动发送探测 + SocLogDecoder 解码
+- **`stream_binary()` 扩展** — 支持 `init_data` 参数
+
+#### 文档
+- `docs/ccm4211-flash-protocol.md` — ISP/SOC 刷机协议完整文档
+- `docs/ccm4211-debug-notes.md` — CMD 11 超时调试经验和教训
+
+### Changes
+
+- **移除实验性 GUI** — 移除 `gui/` 目录及 workspace 成员
+- **擦除超时增加** — erase_partition_ccm4211 超时从 2s 增加到 10s
+- **修复 clippy 警告** — 消除所有 `-D warnings` 报错
+
+### Dependencies
+
+- 新增 `md5 = "0.7"` (CCM4211 固件校验)
+- 新增 `windows-sys` (仅 Windows, overlapped I/O 支持)
+
+---
+
 ## [1.1.0] - 2026-04-11
 
 ### Features
