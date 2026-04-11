@@ -74,6 +74,12 @@ pub struct SocDownload {
     pub force_br: Option<String>,
     pub cp_addr: Option<String>,
     pub ap_addr: Option<String>,
+    // XT804 (Air6208) specific fields
+    pub core_addr: Option<String>,
+    pub app_addr: Option<String>,
+    pub ota_addr: Option<String>,
+    pub run_addr: Option<String>,
+    pub user_addr: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,11 +100,12 @@ impl SocInfo {
     }
 
     /// Get the flash baud rate from download.force_br.
+    /// Air6208 uses "2M" shorthand; Air8101 uses "2000000".
     pub fn flash_baud_rate(&self) -> u32 {
         self.download
             .force_br
             .as_deref()
-            .and_then(|s| s.parse().ok())
+            .and_then(|s| parse_baud_rate(s))
             .unwrap_or(2_000_000)
     }
 
@@ -159,6 +166,18 @@ pub fn parse_addr(s: &str) -> Option<u64> {
         .or_else(|| s.strip_prefix("0X"))
         .unwrap_or(s);
     u64::from_str_radix(hex, 16).ok()
+}
+
+/// Parse baud rate string, supporting shorthand like "2M", "1M", "115200".
+pub fn parse_baud_rate(s: &str) -> Option<u32> {
+    let s = s.trim();
+    if let Some(m) = s.strip_suffix('M').or_else(|| s.strip_suffix('m')) {
+        m.parse::<u32>().ok().map(|v| v * 1_000_000)
+    } else if let Some(k) = s.strip_suffix('K').or_else(|| s.strip_suffix('k')) {
+        k.parse::<u32>().ok().map(|v| v * 1_000)
+    } else {
+        s.parse().ok()
+    }
 }
 
 #[cfg(test)]

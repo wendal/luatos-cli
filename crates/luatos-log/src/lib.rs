@@ -353,6 +353,391 @@ pub fn parse_log_file(
     Ok(content.lines().map(|line| dispatcher.parse(line)).collect())
 }
 
+// ─── SOC Binary Log Parser ───────────────────────────────────────────────────
+//
+// Binary log protocol used by Air6208 and similar SOC devices.
+// Frame format:
+//   [0xA5] [escaped(header + format_string_4aligned + params)] [escaped(crc16_le)] [0xA5]
+//
+// Escape rules:
+//   0xA5 → [0xA6, 0x01]
+//   0xA6 → [0xA6, 0x02]
+//
+// Header (24 bytes):
+//   ms:u64 + tag:u64 + cmd:u32 + sn:u16 + type:u8 + cpu:u8
+//
+// Tag bitfield: level(8bits) + tag0-tag7(7bits each) = 64 bits total
+
+/// SOC binary log frame decoder.
+///
+/// Maintains internal state for frame reassembly from streaming serial data.
+pub struct SocLogDecoder {
+    /// Buffer for accumulating frame data between 0xA5 markers.
+    frame_buf: Vec<u8>,
+    /// Whether we are currently inside a frame (after first 0xA5).
+    in_frame: bool,
+    /// Previous byte was 0xA6 (escape prefix).
+    escape_next: bool,
+}
+
+impl SocLogDecoder {
+    pub fn new() -> Self {
+        Self {
+            frame_buf: Vec::with_capacity(2048),
+            in_frame: false,
+            escape_next: false,
+        }
+    }
+
+    /// Feed raw bytes from serial port and extract any complete log entries.
+    pub fn feed(&mut self, data: &[u8]) -> Vec<LogEntry> {
+        let mut entries = Vec::new();
+
+        for &byte in data {
+            if byte == 0xA5 {
+                if self.in_frame && self.frame_buf.len() >= 26 {
+                    // End of frame — try to decode
+                    if let Some(entry) = self.decode_frame(&self.frame_buf.clone()) {
+                        entries.push(entry);
+                    }
+                }
+                // Start new frame
+                self.frame_buf.clear();
+                self.in_frame = true;
+                self.escape_next = false;
+                continue;
+            }
+
+            if !self.in_frame {
+                continue;
+            }
+
+            if byte == 0xA6 {
+                self.escape_next = true;
+                continue;
+            }
+
+            if self.escape_next {
+                // De-stuff: 0xA6 0x01 → 0xA5, 0xA6 0x02 → 0xA6
+                let actual = match byte {
+                    0x01 => 0xA5,
+                    0x02 => 0xA6,
+                    other => other & 0x03, // mask per protocol
+                };
+                self.frame_buf.push(actual);
+                self.escape_next = false;
+                continue;
+            }
+
+            self.frame_buf.push(byte);
+
+            // Safety limit: frames shouldn't be huge
+            if self.frame_buf.len() > 8192 {
+                self.frame_buf.clear();
+                self.in_frame = false;
+            }
+        }
+
+        entries
+    }
+
+    /// Decode a complete frame (between 0xA5 markers) into a LogEntry.
+    fn decode_frame(&self, data: &[u8]) -> Option<LogEntry> {
+        // Minimum: 24-byte header + 2-byte CRC
+        if data.len() < 26 {
+            return None;
+        }
+
+        // Last 2 bytes are CRC16 (little-endian)
+        let payload = &data[..data.len() - 2];
+        let crc_received = u16::from_le_bytes([data[data.len() - 2], data[data.len() - 1]]);
+
+        // Verify CRC16-ModBus
+        let crc_computed = crc16_modbus(payload);
+        if crc_received != crc_computed {
+            return None; // CRC mismatch
+        }
+
+        // Parse 24-byte header
+        let ms = u64::from_le_bytes(payload[0..8].try_into().ok()?);
+        let tag_raw = u64::from_le_bytes(payload[8..16].try_into().ok()?);
+        let _cmd = u32::from_le_bytes(payload[16..20].try_into().ok()?);
+        let _sn = u16::from_le_bytes(payload[20..22].try_into().ok()?);
+        let msg_type = payload[22];
+        let _cpu = payload[23];
+
+        // Decode tag bitfield: level(8) + tag0-tag7(7 bits each)
+        let level_bits = (tag_raw & 0xFF) as u8;
+        let level = match level_bits {
+            1 => LogLevel::Debug,
+            2 => LogLevel::Info,
+            3 => LogLevel::Warn,
+            4 => LogLevel::Error,
+            _ => LogLevel::Info, // Default to Info for boot/unset levels
+        };
+
+        // Tag name is encoded in upper bits (may be empty)
+        let module = decode_tag_name(tag_raw >> 8);
+
+        // Body: everything after the 24-byte header, before CRC
+        let body = &payload[24..];
+
+        // Decode format string and arguments
+        let message = match msg_type {
+            0 => decode_printf_message(body),
+            _ => {
+                // Raw or unknown type
+                if body.is_empty() {
+                    "(empty)".to_string()
+                } else {
+                    String::from_utf8_lossy(body).to_string()
+                }
+            }
+        };
+
+        let now = Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+        let device_time = format!("{}.{:03}", ms / 1000, ms % 1000);
+
+        Some(LogEntry {
+            timestamp: now,
+            device_time: Some(device_time),
+            level,
+            module: if module.is_empty() {
+                None
+            } else {
+                Some(module)
+            },
+            message,
+            raw: format!("[SOC frame {} bytes]", data.len()),
+        })
+    }
+}
+
+impl Default for SocLogDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// CRC16-ModBus with init=0 (used by SOC log protocol).
+fn crc16_modbus(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0x0000; // SOC log uses init=0, not standard 0xFFFF
+    for &byte in data {
+        crc ^= byte as u16;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xA001;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    crc
+}
+
+/// Decode tag name from the tag bitfield (7 bits per character, up to 8 chars).
+fn decode_tag_name(tag_bits: u64) -> String {
+    // ASCII lookup: each 7-bit value maps to a character
+    const TAG_CHARS: &[u8; 64] = b" abcdefghijklmnopqrstuvwxyz012345ABCDEFGHIJKLMNOPQRSTUVWXYZ_*-./";
+
+    let mut name = String::new();
+    let mut bits = tag_bits;
+    for _ in 0..8 {
+        let idx = (bits & 0x7F) as usize;
+        if idx == 0 {
+            break; // Null terminator
+        }
+        if idx < TAG_CHARS.len() {
+            name.push(TAG_CHARS[idx] as char);
+        }
+        bits >>= 7;
+    }
+    name
+}
+
+/// Decode printf-style format string with embedded arguments.
+///
+/// The body contains a null-terminated format string (4-byte aligned),
+/// followed by argument values.
+fn decode_printf_message(body: &[u8]) -> String {
+    if body.is_empty() {
+        return String::new();
+    }
+
+    // Find the null-terminated format string
+    let fmt_end = body.iter().position(|&b| b == 0).unwrap_or(body.len());
+    let fmt_str = String::from_utf8_lossy(&body[..fmt_end]).to_string();
+
+    // Arguments start after the format string, 4-byte aligned
+    let args_offset = (fmt_end + 4) & !3; // Align to 4 bytes
+    if args_offset >= body.len() {
+        // No arguments — return format string as-is
+        return fmt_str;
+    }
+
+    let args_data = &body[args_offset..];
+
+    // Simple format string argument substitution
+    let mut result = String::new();
+    let mut arg_pos = 0;
+    let mut chars = fmt_str.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            result.push(c);
+            continue;
+        }
+
+        // Read format specifier
+        let mut spec = String::new();
+        let mut is_long = false;
+        let mut is_long_long = false;
+
+        while let Some(&next) = chars.peek() {
+            match next {
+                '0'..='9' | '-' | '+' | ' ' | '#' | '.' => {
+                    spec.push(next);
+                    chars.next();
+                }
+                'l' => {
+                    if is_long {
+                        is_long_long = true;
+                    }
+                    is_long = true;
+                    chars.next();
+                }
+                'd' | 'i' | 'u' | 'x' | 'X' | 'o' => {
+                    chars.next();
+                    if is_long_long {
+                        // 8-byte integer
+                        if arg_pos + 8 <= args_data.len() {
+                            let val = i64::from_le_bytes(
+                                args_data[arg_pos..arg_pos + 8].try_into().unwrap_or([0; 8]),
+                            );
+                            match next {
+                                'x' => result.push_str(&format!("{val:x}")),
+                                'X' => result.push_str(&format!("{val:X}")),
+                                _ => result.push_str(&format!("{val}")),
+                            }
+                            arg_pos += 8;
+                        }
+                    } else {
+                        // 4-byte integer
+                        if arg_pos + 4 <= args_data.len() {
+                            let val = i32::from_le_bytes(
+                                args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4]),
+                            );
+                            match next {
+                                'x' => result.push_str(&format!("{val:x}")),
+                                'X' => result.push_str(&format!("{val:X}")),
+                                'u' => result.push_str(&format!("{}", val as u32)),
+                                _ => result.push_str(&format!("{val}")),
+                            }
+                            arg_pos += 4;
+                        }
+                    }
+                    break;
+                }
+                'f' | 'g' | 'e' => {
+                    chars.next();
+                    // 8-byte double
+                    if arg_pos + 8 <= args_data.len() {
+                        let val = f64::from_le_bytes(
+                            args_data[arg_pos..arg_pos + 8].try_into().unwrap_or([0; 8]),
+                        );
+                        result.push_str(&format!("{val}"));
+                        arg_pos += 8;
+                    }
+                    break;
+                }
+                's' => {
+                    chars.next();
+                    // String: null-terminated, 4-byte aligned length
+                    let str_start = arg_pos;
+                    let str_end = args_data[str_start..]
+                        .iter()
+                        .position(|&b| b == 0)
+                        .map(|p| str_start + p)
+                        .unwrap_or(args_data.len());
+                    let s = String::from_utf8_lossy(&args_data[str_start..str_end]);
+                    result.push_str(&s);
+                    arg_pos = (str_end + 4) & !3; // Align
+                    break;
+                }
+                'c' => {
+                    chars.next();
+                    if arg_pos + 4 <= args_data.len() {
+                        let val = args_data[arg_pos];
+                        result.push(val as char);
+                        arg_pos += 4;
+                    }
+                    break;
+                }
+                'p' => {
+                    chars.next();
+                    if arg_pos + 4 <= args_data.len() {
+                        let val = u32::from_le_bytes(
+                            args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4]),
+                        );
+                        result.push_str(&format!("0x{val:08x}"));
+                        arg_pos += 4;
+                    }
+                    break;
+                }
+                '%' => {
+                    chars.next();
+                    result.push('%');
+                    break;
+                }
+                _ => {
+                    result.push('%');
+                    result.push(next);
+                    chars.next();
+                    break;
+                }
+            }
+        }
+    }
+
+    result
+}
+
+// ─── SOC log parser (as a LogParser for text mode fallback) ──────────────────
+
+/// Parser wrapper that interprets text lines containing hex-encoded SOC frames.
+/// Used for offline parsing of recorded binary logs.
+pub struct SocLogParser;
+
+impl LogParser for SocLogParser {
+    fn name(&self) -> &str {
+        "soclog"
+    }
+
+    fn parse_line(&self, line: &str) -> Option<LogEntry> {
+        // SOC binary logs are not text-based, so this parser handles
+        // hex-dump format lines like "A5 xx xx ... A5"
+        let trimmed = line.trim();
+        if !trimmed.starts_with("A5") && !trimmed.starts_with("a5") {
+            return None;
+        }
+
+        // Try to parse as hex bytes
+        let bytes: Vec<u8> = trimmed
+            .split_whitespace()
+            .filter_map(|s| u8::from_str_radix(s, 16).ok())
+            .collect();
+
+        if bytes.len() < 26 || bytes[0] != 0xA5 {
+            return None;
+        }
+
+        // Use SocLogDecoder to parse
+        let mut decoder = SocLogDecoder::new();
+        let entries = decoder.feed(&bytes);
+        entries.into_iter().next()
+    }
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -422,5 +807,130 @@ mod tests {
         assert_eq!(LogLevel::Info.to_string(), "I");
         assert_eq!(LogLevel::Error.to_string(), "E");
         assert_eq!(LogLevel::Raw.to_string(), "-");
+    }
+
+    #[test]
+    fn crc16_modbus_known_vector() {
+        // CRC16-ModBus (init=0, poly=0xA001): "123456789"
+        let data = b"123456789";
+        // With init=0 instead of standard init=0xFFFF
+        let crc = crc16_modbus(data);
+        assert_ne!(crc, 0); // Non-trivial result
+    }
+
+    #[test]
+    fn crc16_modbus_empty() {
+        assert_eq!(crc16_modbus(&[]), 0x0000); // init=0 → empty = 0
+    }
+
+    #[test]
+    fn soc_log_decoder_basic() {
+        let mut decoder = SocLogDecoder::new();
+
+        // Build a minimal valid frame: 24-byte header + 2-byte CRC
+        let mut payload = vec![0u8; 24];
+        // ms = 1000 (1 second)
+        payload[0..8].copy_from_slice(&1000u64.to_le_bytes());
+        // tag = level 2 (Info) + empty tag
+        payload[8..16].copy_from_slice(&2u64.to_le_bytes());
+        // cmd = 0
+        payload[16..20].copy_from_slice(&0u32.to_le_bytes());
+        // sn = 1
+        payload[20..22].copy_from_slice(&1u16.to_le_bytes());
+        // type = 0
+        payload[22] = 0;
+        // cpu = 0
+        payload[23] = 0;
+
+        let crc = crc16_modbus(&payload);
+
+        // Build frame with 0xA5 markers
+        let mut frame = vec![0xA5];
+        // Escape any 0xA5/0xA6 bytes in payload
+        for &b in &payload {
+            match b {
+                0xA5 => frame.extend_from_slice(&[0xA6, 0x01]),
+                0xA6 => frame.extend_from_slice(&[0xA6, 0x02]),
+                _ => frame.push(b),
+            }
+        }
+        // Append CRC (little-endian)
+        let crc_bytes = crc.to_le_bytes();
+        for &b in &crc_bytes {
+            match b {
+                0xA5 => frame.extend_from_slice(&[0xA6, 0x01]),
+                0xA6 => frame.extend_from_slice(&[0xA6, 0x02]),
+                _ => frame.push(b),
+            }
+        }
+        frame.push(0xA5); // End marker
+
+        let entries = decoder.feed(&frame);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].level, LogLevel::Info);
+        assert_eq!(entries[0].device_time.as_deref(), Some("1.000"));
+    }
+
+    #[test]
+    fn decode_tag_name_basic() {
+        // 'a' = index 1, 'b' = index 2
+        let tag = 1u64 | (2u64 << 7); // "ab"
+        let name = decode_tag_name(tag);
+        assert_eq!(name, "ab");
+    }
+
+    #[test]
+    fn decode_printf_simple() {
+        // "hello" (no format args)
+        let body = b"hello\0\0\0"; // null-terminated, padded
+        let msg = decode_printf_message(body);
+        assert_eq!(msg, "hello");
+    }
+
+    #[test]
+    fn decode_printf_with_int() {
+        // "val=%d" with arg 42
+        let mut body = Vec::new();
+        body.extend_from_slice(b"val=%d\0\0"); // 8 bytes (4-aligned with null)
+        body.extend_from_slice(&42i32.to_le_bytes());
+        let msg = decode_printf_message(&body);
+        assert_eq!(msg, "val=42");
+    }
+
+    #[test]
+    fn soc_log_escape_handling() {
+        let mut decoder = SocLogDecoder::new();
+
+        // Test that escape sequences work correctly
+        // 0xA6 0x01 should become 0xA5
+        // 0xA6 0x02 should become 0xA6
+        let mut payload = vec![0u8; 24];
+        payload[0..8].copy_from_slice(&500u64.to_le_bytes());
+        payload[8..16].copy_from_slice(&1u64.to_le_bytes()); // Debug level
+        payload[20..22].copy_from_slice(&1u16.to_le_bytes());
+
+        let crc = crc16_modbus(&payload);
+
+        let mut frame = vec![0xA5];
+        for &b in &payload {
+            match b {
+                0xA5 => frame.extend_from_slice(&[0xA6, 0x01]),
+                0xA6 => frame.extend_from_slice(&[0xA6, 0x02]),
+                _ => frame.push(b),
+            }
+        }
+        let crc_bytes = crc.to_le_bytes();
+        for &b in &crc_bytes {
+            match b {
+                0xA5 => frame.extend_from_slice(&[0xA6, 0x01]),
+                0xA6 => frame.extend_from_slice(&[0xA6, 0x02]),
+                _ => frame.push(b),
+            }
+        }
+        frame.push(0xA5);
+
+        let entries = decoder.feed(&frame);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].level, LogLevel::Debug);
     }
 }

@@ -156,6 +156,48 @@ pub fn stream_log_lines(
     Ok(())
 }
 
+/// Callback invoked for each raw chunk of binary data from serial.
+pub type BinaryCallback = Box<dyn Fn(&[u8]) + Send>;
+
+/// Open a serial port and stream raw binary data until `stop` is set.
+///
+/// Used for SOC binary log protocol (0xA5 framed) and other binary protocols.
+pub fn stream_binary(
+    port_name: &str,
+    baud_rate: u32,
+    stop: Arc<AtomicBool>,
+    on_data: BinaryCallback,
+) -> anyhow::Result<()> {
+    let mut serial = serialport::new(port_name, baud_rate)
+        .timeout(Duration::from_millis(100))
+        .open()
+        .map_err(|e| anyhow::anyhow!("Cannot open {port_name}: {e}"))?;
+
+    // Release DTR/RTS so the device runs normally
+    let _ = serial.write_data_terminal_ready(false);
+    let _ = serial.write_request_to_send(false);
+
+    let mut buf = vec![0u8; 4096];
+
+    while !stop.load(Ordering::Relaxed) {
+        match serial.read(&mut buf) {
+            Ok(n) if n > 0 => {
+                on_data(&buf[..n]);
+            }
+            Ok(_) => {}
+            Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(e) => {
+                if !stop.load(Ordering::Relaxed) {
+                    log::warn!("Serial read error: {e}");
+                }
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

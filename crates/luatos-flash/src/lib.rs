@@ -2,8 +2,10 @@
 //
 // Currently supports:
 //   - BK7258 (Air8101): native UART ISP protocol
+//   - XT804 (Air6208/Air101): XMODEM-1K flash protocol
 
 pub mod bk7258;
+pub mod xt804;
 
 use serde::Serialize;
 

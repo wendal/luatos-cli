@@ -141,13 +141,22 @@ enum FlashCommands {
 
 #[derive(Subcommand)]
 enum LogCommands {
-    /// View serial log in real-time
+    /// View serial log in real-time (text mode)
     View {
         /// Serial port (e.g. COM6)
         #[arg(long)]
         port: String,
         /// Baud rate (default: 921600)
         #[arg(long, default_value = "921600")]
+        baud: u32,
+    },
+    /// View serial log in binary SOC mode (Air6208 etc.)
+    ViewBinary {
+        /// Serial port (e.g. COM7)
+        #[arg(long)]
+        port: String,
+        /// Baud rate (default: 2000000)
+        #[arg(long, default_value = "2000000")]
         baud: u32,
     },
     /// Record serial log to file
@@ -210,6 +219,7 @@ fn main() {
         },
         Commands::Log { action } => match action {
             LogCommands::View { port, baud } => cmd_log_view(&port, baud, &cli.format),
+            LogCommands::ViewBinary { port, baud } => cmd_log_view_binary(&port, baud, &cli.format),
             LogCommands::Record {
                 port,
                 baud,
@@ -369,42 +379,57 @@ fn cmd_flash_run(
         cancel_clone.store(true, std::sync::atomic::Ordering::Relaxed);
     })?;
 
-    let format_clone = format.clone();
-    let on_progress: luatos_flash::ProgressCallback = Box::new(move |p| match format_clone {
-        OutputFormat::Text => {
-            if p.percent >= 0.0 {
-                eprintln!("[{:>6.1}%] {} — {}", p.percent, p.stage, p.message);
-            } else {
-                eprintln!("          {}", p.message);
-            }
-        }
-        OutputFormat::Json => {
-            println!("{}", serde_json::to_string(p).unwrap_or_default());
-        }
-    });
+    let on_progress = make_progress_callback(format);
 
-    let lines = luatos_flash::bk7258::flash_bk7258(soc, script, port, baud, cancel, on_progress)?;
+    // Detect chip type from SOC info.json
+    let info = luatos_soc::read_soc_info(soc)?;
+    let chip = info.chip.chip_type.as_str();
 
-    match format {
-        OutputFormat::Text => {
-            if !lines.is_empty() {
-                println!("\n--- Boot Log ({} lines) ---", lines.len());
-                for line in &lines {
-                    println!("{line}");
+    match chip {
+        "bk72xx" | "air8101" | "air8000" => {
+            let lines = luatos_flash::bk7258::flash_bk7258(
+                soc, script, port, baud, cancel, on_progress,
+            )?;
+            match format {
+                OutputFormat::Text => {
+                    if !lines.is_empty() {
+                        println!("\n--- Boot Log ({} lines) ---", lines.len());
+                        for line in &lines {
+                            println!("{line}");
+                        }
+                    }
+                }
+                OutputFormat::Json => {
+                    let json = serde_json::json!({
+                        "status": "ok",
+                        "command": "flash.run",
+                        "data": { "boot_log": lines },
+                    });
+                    println!("{}", serde_json::to_string_pretty(&json)?);
                 }
             }
         }
-        OutputFormat::Json => {
-            let json = serde_json::json!({
-                "status": "ok",
-                "command": "flash.run",
-                "data": {
-                    "boot_log": lines,
-                },
-            });
-            println!("{}", serde_json::to_string_pretty(&json)?);
+        "air6208" | "air101" | "air103" | "air601" => {
+            luatos_flash::xt804::flash_xt804(soc, port, on_progress, cancel)?;
+            match format {
+                OutputFormat::Text => {
+                    println!("XT804 flash completed successfully.");
+                }
+                OutputFormat::Json => {
+                    let json = serde_json::json!({
+                        "status": "ok",
+                        "command": "flash.run",
+                        "data": { "chip": chip },
+                    });
+                    println!("{}", serde_json::to_string_pretty(&json)?);
+                }
+            }
+        }
+        _ => {
+            anyhow::bail!("Unsupported chip type: {chip}. Supported: bk72xx, air6208, air101");
         }
     }
+
     Ok(())
 }
 
@@ -441,22 +466,46 @@ fn cmd_flash_partition(
 
     let on_progress = make_progress_callback(format);
 
-    match op {
-        "script" => {
-            let folder = script_folder.expect("script folder required");
-            luatos_flash::bk7258::flash_script_only(soc, folder, port, cancel, on_progress)?;
+    // Detect chip type
+    let info = luatos_soc::read_soc_info(soc)?;
+    let chip = info.chip.chip_type.as_str();
+
+    match chip {
+        "bk72xx" | "air8101" | "air8000" => match op {
+            "script" => {
+                let folder = script_folder.expect("script folder required");
+                luatos_flash::bk7258::flash_script_only(soc, folder, port, cancel, on_progress)?;
+            }
+            "clear-fs" => {
+                luatos_flash::bk7258::clear_filesystem(soc, port, cancel, on_progress)?;
+            }
+            "flash-fs" => {
+                let folder = script_folder.expect("script folder required");
+                luatos_flash::bk7258::flash_filesystem(soc, folder, port, cancel, on_progress)?;
+            }
+            "clear-kv" => {
+                luatos_flash::bk7258::clear_fskv(soc, port, cancel, on_progress)?;
+            }
+            _ => unreachable!(),
+        },
+        "air6208" | "air101" | "air103" | "air601" => match op {
+            "script" => {
+                let folder = script_folder.expect("script folder required");
+                let files = collect_script_files(folder)?;
+                luatos_flash::xt804::flash_script_only(
+                    soc, port, &files, on_progress, cancel,
+                )?;
+            }
+            _ => {
+                anyhow::bail!(
+                    "Operation '{op}' is not supported for XT804 devices ({})",
+                    chip
+                );
+            }
+        },
+        _ => {
+            anyhow::bail!("Unsupported chip type: {chip}");
         }
-        "clear-fs" => {
-            luatos_flash::bk7258::clear_filesystem(soc, port, cancel, on_progress)?;
-        }
-        "flash-fs" => {
-            let folder = script_folder.expect("script folder required");
-            luatos_flash::bk7258::flash_filesystem(soc, folder, port, cancel, on_progress)?;
-        }
-        "clear-kv" => {
-            luatos_flash::bk7258::clear_fskv(soc, port, cancel, on_progress)?;
-        }
-        _ => unreachable!(),
     }
 
     match format {
@@ -472,6 +521,22 @@ fn cmd_flash_partition(
         }
     }
     Ok(())
+}
+
+/// Collect script files from a folder (*.lua, *.luac, *.json, etc.)
+fn collect_script_files(folder: &str) -> anyhow::Result<Vec<String>> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(folder)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() {
+            files.push(path.to_string_lossy().to_string());
+        }
+    }
+    if files.is_empty() {
+        anyhow::bail!("No script files found in {folder}");
+    }
+    Ok(files)
 }
 
 // ─── Log commands ─────────────────────────────────────────────────────────────
@@ -500,6 +565,54 @@ fn cmd_log_view(port: &str, baud: u32, format: &OutputFormat) -> anyhow::Result<
                 }
                 OutputFormat::Json => {
                     println!("{}", serde_json::to_string(&entry).unwrap_or_default());
+                }
+            }
+        }),
+    )?;
+
+    eprintln!("\nLog viewing stopped.");
+    Ok(())
+}
+
+fn cmd_log_view_binary(port: &str, baud: u32, format: &OutputFormat) -> anyhow::Result<()> {
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_clone = stop.clone();
+    let _ = ctrlc::set_handler(move || {
+        stop_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+
+    eprintln!("Viewing SOC binary log on {port} @ {baud} bps (Ctrl+C to stop)");
+
+    let decoder = std::sync::Mutex::new(luatos_log::SocLogDecoder::new());
+    let format_clone = format.clone();
+
+    luatos_serial::stream_binary(
+        port,
+        baud,
+        stop,
+        Box::new(move |data| {
+            if let Ok(mut dec) = decoder.lock() {
+                let entries = dec.feed(data);
+                for entry in &entries {
+                    match format_clone {
+                        OutputFormat::Text => {
+                            let module = entry.module.as_deref().unwrap_or("-");
+                            let time = entry
+                                .device_time
+                                .as_deref()
+                                .unwrap_or("?");
+                            println!(
+                                "[{}] {}/{} {}",
+                                time, entry.level, module, entry.message
+                            );
+                        }
+                        OutputFormat::Json => {
+                            println!(
+                                "{}",
+                                serde_json::to_string(&entry).unwrap_or_default()
+                            );
+                        }
+                    }
                 }
             }
         }),
