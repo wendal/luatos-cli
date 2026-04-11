@@ -11,7 +11,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Once;
+use std::sync::{Mutex, Once, OnceLock};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -23,6 +23,12 @@ const MKLFS_BYTES: &[u8] = include_bytes!(env!("MKLFS_HELPER_EMBED"));
 const CACHE_SUBDIR: &str = "luatos-cli/lua-helpers";
 static CLEANUP_ONCE: Once = Once::new();
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+// Per-kind mutexes prevent ETXTBSY (text file busy) on Linux when multiple
+// threads try to extract and execute the same helper simultaneously.
+static LUAC32_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static LUAC64_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static MKLFS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// Identifies which embedded helper to use.
 #[derive(Clone, Copy)]
@@ -84,6 +90,17 @@ pub fn ensure_mklfs_helper() -> Result<PathBuf, String> {
 }
 
 fn ensure_helper(kind: HelperKind) -> Result<PathBuf, String> {
+    // Serialize extraction per helper kind to avoid ETXTBSY on Linux when
+    // parallel threads try to write/execute the same binary simultaneously.
+    let lock = match kind {
+        HelperKind::Luac32 => LUAC32_LOCK.get_or_init(|| Mutex::new(())),
+        HelperKind::Luac64 => LUAC64_LOCK.get_or_init(|| Mutex::new(())),
+        HelperKind::Mklfs => MKLFS_LOCK.get_or_init(|| Mutex::new(())),
+    };
+    let _guard = lock
+        .lock()
+        .map_err(|e| format!("helper lock poisoned: {e}"))?;
+
     let cache_dir = helper_cache_dir()?;
     ensure_private_cache_dir(&cache_dir).map_err(|e| {
         format!(
