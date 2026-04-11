@@ -80,6 +80,10 @@ pub struct SocDownload {
     pub ota_addr: Option<String>,
     pub run_addr: Option<String>,
     pub user_addr: Option<String>,
+    // CCM4211 (Air1601) specific fields
+    pub fs_addr: Option<String>,
+    pub fskv_addr: Option<String>,
+    pub nvm_addr: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,15 +157,35 @@ impl SocInfo {
     }
 
     /// Get the Lua bit width from the SOC, with chip-based defaults.
-    /// BK72xx/Air8101 default to 32, XT804/Air6208 default to 64.
+    /// BK72xx/Air8101 default to 32, XT804/Air6208/CCM4211 default to 64.
     pub fn script_bitw(&self) -> u32 {
         if let Some(bitw) = self.script.bitw {
             return bitw;
         }
         match self.chip.chip_type.as_str() {
-            "air6208" | "air101" | "air103" | "air601" => 64,
+            "air6208" | "air101" | "air103" | "air601" | "air1601" | "ccm4211" => 64,
             _ => 32,
         }
+    }
+
+    /// Get the bootloader address (CCM4211/Air1601).
+    pub fn bl_addr(&self) -> Option<u32> {
+        parse_addr(self.download.bl_addr.as_deref()?).map(|v| v as u32)
+    }
+
+    /// Get the application/core address.
+    pub fn app_addr(&self) -> Option<u32> {
+        parse_addr(self.download.app_addr.as_deref()?).map(|v| v as u32)
+    }
+
+    /// Get the filesystem partition address (CCM4211/Air1601).
+    pub fn fs_addr(&self) -> Option<u32> {
+        parse_addr(self.download.fs_addr.as_deref()?).map(|v| v as u32)
+    }
+
+    /// Get the NVM/FSKV partition address (CCM4211/Air1601).
+    pub fn nvm_addr(&self) -> Option<u32> {
+        parse_addr(self.download.nvm_addr.as_deref()?).map(|v| v as u32)
     }
 
     /// Whether Lua compilation is enabled (defaults to true).

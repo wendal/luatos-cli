@@ -7,7 +7,7 @@
 //   luatos-cli flash run --soc <path> --port COM6
 //   luatos-cli flash test --soc <path> --port COM6
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
@@ -69,8 +69,6 @@ enum Commands {
     },
     /// Show version information
     Version,
-    /// Show help information
-    Help,
 }
 
 #[derive(Subcommand)]
@@ -445,10 +443,6 @@ fn main() {
             }
             Ok(())
         }
-        Commands::Help => {
-            let _ = Cli::command().print_help();
-            Ok(())
-        }
     };
 
     if let Err(e) = result {
@@ -653,8 +647,24 @@ fn cmd_flash_run(
                 }
             }
         }
+        "air1601" | "ccm4211" => {
+            luatos_flash::ccm4211::flash_ccm4211(soc, port, &on_progress, cancel)?;
+            match format {
+                OutputFormat::Text => {
+                    println!("CCM4211 flash completed successfully.");
+                }
+                OutputFormat::Json => {
+                    let json = serde_json::json!({
+                        "status": "ok",
+                        "command": "flash.run",
+                        "data": { "chip": chip },
+                    });
+                    println!("{}", serde_json::to_string_pretty(&json)?);
+                }
+            }
+        }
         _ => {
-            anyhow::bail!("Unsupported chip type: {chip}. Supported: bk72xx, air6208, air101");
+            anyhow::bail!("Unsupported chip type: {chip}. Supported: bk72xx, air6208, air101, air1601");
         }
     }
 
@@ -740,6 +750,35 @@ fn cmd_flash_partition(
             }
             "clear-kv" => {
                 luatos_flash::xt804::clear_kv(soc, port, on_progress, cancel)?;
+            }
+            _ => unreachable!(),
+        },
+        "air1601" | "ccm4211" => match op {
+            "script" => {
+                let folders = script_folders.expect("script folder required");
+                let folder_paths: Vec<std::path::PathBuf> =
+                    folders.iter().map(std::path::PathBuf::from).collect();
+                let path_refs: Vec<&std::path::Path> =
+                    folder_paths.iter().map(|p| p.as_path()).collect();
+                let script_data = luatos_luadb::build::build_script_image(
+                    &path_refs,
+                    info.script_use_luac(),
+                    info.script_bitw(),
+                    info.use_bkcrc(),
+                )?;
+                luatos_flash::ccm4211::flash_script_ccm4211(
+                    soc,
+                    port,
+                    &script_data,
+                    &on_progress,
+                    cancel,
+                )?;
+            }
+            "clear-fs" => {
+                luatos_flash::ccm4211::clear_filesystem(soc, port, &on_progress, cancel)?;
+            }
+            "clear-kv" => {
+                luatos_flash::ccm4211::clear_fskv(soc, port, &on_progress, cancel)?;
             }
             _ => unreachable!(),
         },
@@ -830,6 +869,11 @@ fn cmd_flash_test(
             let on_progress2 = make_progress_callback(format);
             luatos_flash::xt804::flash_xt804(soc, port, on_progress2, cancel.clone())?;
             Vec::new() // XT804 does not return boot lines from flash
+        }
+        "air1601" | "ccm4211" => {
+            let on_progress2 = make_progress_callback(format);
+            luatos_flash::ccm4211::flash_ccm4211(soc, port, &on_progress2, cancel.clone())?;
+            Vec::new()
         }
         _ => {
             anyhow::bail!("Unsupported chip type for flash test: {chip}");
