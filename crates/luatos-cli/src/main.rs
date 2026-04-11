@@ -1429,7 +1429,8 @@ struct Mirror {
 #[derive(serde::Deserialize, Debug)]
 struct ResourceCategory {
     name: String,
-    desc: String,
+    #[serde(default)]
+    desc: Option<String>,
     #[serde(default)]
     #[allow(dead_code)]
     url: Option<String>,
@@ -1440,7 +1441,8 @@ struct ResourceCategory {
 #[derive(serde::Deserialize, Debug)]
 struct ResourceChild {
     name: String,
-    desc: String,
+    #[serde(default)]
+    desc: Option<String>,
     #[serde(default)]
     versions: Vec<ResourceVersion>,
 }
@@ -1448,9 +1450,10 @@ struct ResourceChild {
 #[derive(serde::Deserialize, Debug)]
 struct ResourceVersion {
     name: String,
-    desc: String,
     #[serde(default)]
-    files: Vec<String>,
+    desc: Option<String>,
+    #[serde(default)]
+    files: Vec<serde_json::Value>,
 }
 
 #[allow(dead_code)]
@@ -1462,32 +1465,19 @@ struct FileEntry {
     path: String,
 }
 
-fn parse_file_entry(raw: &str) -> Option<FileEntry> {
-    // Format: "{desc} {filename} {sha256} {size} {path}"
-    // Split from the end: path, size, sha256, filename are single tokens; desc may contain spaces.
-    let parts: Vec<&str> = raw.rsplitn(4, ' ').collect();
-    if parts.len() < 4 {
+/// Parse a file entry from the JSON value.
+/// Format: array `["desc", "filename", "sha256", size_number, "path"]`
+fn parse_file_entry(val: &serde_json::Value) -> Option<FileEntry> {
+    let arr = val.as_array()?;
+    if arr.len() < 5 {
         return None;
     }
-    let path = parts[0].to_string();
-    let size: u64 = parts[1].parse().ok()?;
-    let sha256 = parts[2].to_string();
-    // The remainder contains "desc filename"
-    let rest = parts[3];
-    // filename is the last whitespace-separated token of the rest
-    let rest_parts: Vec<&str> = rest.rsplitn(2, ' ').collect();
-    if rest_parts.len() < 2 {
-        return None;
-    }
-    let filename = rest_parts[0].to_string();
-    let desc = rest_parts[1].to_string();
-
     Some(FileEntry {
-        desc,
-        filename,
-        sha256,
-        size,
-        path,
+        desc: arr[0].as_str()?.to_string(),
+        filename: arr[1].as_str()?.to_string(),
+        sha256: arr[2].as_str()?.to_string(),
+        size: arr[3].as_u64()?,
+        path: arr[4].as_str()?.to_string(),
     })
 }
 
@@ -1534,7 +1524,7 @@ fn cmd_resource_list(module: Option<&str>, format: &OutputFormat) -> anyhow::Res
                 OutputFormat::Text => {
                     println!("{:<20} DESCRIPTION", "MODULE");
                     for cat in &manifest.resouces {
-                        println!("{:<20} {}", cat.name, cat.desc);
+                        println!("{:<20} {}", cat.name, cat.desc.as_deref().unwrap_or(""));
                     }
                 }
                 OutputFormat::Json => {
@@ -1566,11 +1556,15 @@ fn cmd_resource_list(module: Option<&str>, format: &OutputFormat) -> anyhow::Res
 
             match format {
                 OutputFormat::Text => {
-                    println!("{} — {}", cat.name, cat.desc);
+                    println!("{} — {}", cat.name, cat.desc.as_deref().unwrap_or(""));
                     for child in &cat.childrens {
-                        println!("\n  {} — {}", child.name, child.desc);
+                        println!(
+                            "\n  {} — {}",
+                            child.name,
+                            child.desc.as_deref().unwrap_or("")
+                        );
                         for ver in &child.versions {
-                            println!("    {} — {}", ver.name, ver.desc);
+                            println!("    {} — {}", ver.name, ver.desc.as_deref().unwrap_or(""));
                             for raw in &ver.files {
                                 if let Some(entry) = parse_file_entry(raw) {
                                     println!(
