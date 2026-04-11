@@ -2,6 +2,48 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2026-04-11
+
+### Features
+
+#### 内嵌 Lua 编译器
+- **内嵌 Lua 5.3.6 编译器** — 不再依赖外部 luac 可执行文件
+  - 编译期通过 cc crate 构建 32/64 位 luac helper
+  - 运行时通过 `include_bytes!()` 嵌入并缓存到用户本地目录
+  - 新增 `compile_lua_bytes()` API：源码字节输入，字节码输出
+  - 刷机命令自动从 SOC info.json 读取 bitw/use-luac/use-debug 配置
+
+#### XT804 完整刷机支持
+- **XT804 刷机操作全面完善**
+  - 文件系统区刷写 (`flash flash-fs`) — 基于 LittleFS
+  - 清除文件系统区 (`flash clear-fs`)
+  - 清除 FSKV 键值区 (`flash clear-kv`)
+  - XT804 镜像头构建 (`build_xt804_image`) 含 CRC32 校验
+- **内嵌 mklfs** — LittleFS 镜像构建工具作为 C helper 嵌入
+  - 新增 `build_littlefs_image()` API
+
+#### 资源管理
+- 新增 `resource list` / `resource download` 子命令 — CDN 资源下载
+- 新增 `version` / `help` 子命令
+
+#### CI/CD
+- macOS (x86_64 + aarch64) CI 及发布工作流支持
+- Unix 平台 luac 查找改用 `which` 替代 Windows-only `where`
+
+### Bug Fixes
+
+- **XT804 脚本/分区刷写修正** — 修正镜像头地址、CRC32 计算、payload 对齐 (1024 字节 / 0x00 填充)
+- **Windows luac helper 二进制模式** — 修复 stdin/stdout 文本模式导致字节码损坏
+- **Linux 并行提取竞态修复** — 添加 per-helper Mutex 防止 ETXTBSY 错误
+- **resource JSON 反序列化** — 支持数组格式文件条目、可选 desc 字段
+
+### Tests
+
+- 测试数从 52 增加到 59
+- 新增 32/64 位编译、strip 模式、语法错误等测试用例
+
+---
+
 ## [1.0.0] - 2026-04-11
 
 ### 🎉 Initial Release
