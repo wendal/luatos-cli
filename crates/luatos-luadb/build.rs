@@ -105,14 +105,56 @@ fn build_lua_helper(lua_src: &str, out_dir: &Path, bitw: u32, target_os: &str) {
     );
 }
 
+fn build_mklfs_helper(lfs_src: &str, out_dir: &Path, target_os: &str) {
+    let mut build = cc::Build::new();
+    build.include(lfs_src).warnings(false);
+    // Disable LFS tracing/debug in release builds
+    build.define("LFS_NO_DEBUG", None);
+    build.define("LFS_NO_WARN", None);
+    build.define("LFS_NO_ERROR", None);
+
+    let compiler = build.get_compiler();
+    let helper_src = PathBuf::from("csrc/mklfs_helper.c");
+    let lfs_c = format!("{}/lfs.c", lfs_src);
+    let lfs_util_c = format!("{}/lfs_util.c", lfs_src);
+    let output = out_dir.join(format!("mklfs_helper{}", env::consts::EXE_SUFFIX));
+
+    let mut cmd = compiler.to_command();
+    cmd.arg(&helper_src);
+    cmd.arg(&lfs_c);
+    cmd.arg(&lfs_util_c);
+    cmd.arg("-I").arg(lfs_src);
+    cmd.arg("-DLFS_NO_DEBUG");
+    cmd.arg("-DLFS_NO_WARN");
+    cmd.arg("-DLFS_NO_ERROR");
+    if target_os == "linux" {
+        cmd.arg("-lm");
+    }
+    cmd.arg("-o").arg(&output);
+
+    let status = cmd.status().expect("Failed to spawn mklfs helper compiler");
+    if !status.success() {
+        panic!("Failed to build mklfs helper");
+    }
+
+    println!(
+        "cargo:rustc-env=MKLFS_HELPER_EMBED={}",
+        output.display()
+    );
+}
+
 fn main() {
     let lua_src = "lua-5.3.6/src";
+    let lfs_src = "lfs";
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
 
     build_lua_helper(lua_src, &out_dir, 32, &target_os);
     build_lua_helper(lua_src, &out_dir, 64, &target_os);
+    build_mklfs_helper(lfs_src, &out_dir, &target_os);
 
     println!("cargo:rerun-if-changed=lua-5.3.6/src");
     println!("cargo:rerun-if-changed=csrc/luac_helper.c");
+    println!("cargo:rerun-if-changed=csrc/mklfs_helper.c");
+    println!("cargo:rerun-if-changed=lfs");
 }

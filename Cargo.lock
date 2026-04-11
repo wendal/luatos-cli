@@ -945,6 +945,7 @@ dependencies = [
  "serde_json",
  "serialport",
  "tempfile",
+ "walkdir",
  "zip",
 ]
 

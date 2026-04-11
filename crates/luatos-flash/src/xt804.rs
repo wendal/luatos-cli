@@ -629,7 +629,8 @@ pub fn flash_via_subprocess(
 
 /// Flash only the script partition of an XT804 device.
 ///
-/// This writes a pre-built script.img (LuaDB format) to the script address.
+/// Builds a LuaDB image from the given script files, wraps it in an XT804
+/// image header pointing at the script address, and flashes via XMODEM.
 pub fn flash_script_only(
     soc_path: &str,
     port: &str,
@@ -639,7 +640,7 @@ pub fn flash_script_only(
 ) -> Result<()> {
     // Parse SOC for addresses and compilation settings
     let info = luatos_soc::read_soc_info(soc_path)?;
-    let _script_addr = info.script_addr();
+    let script_addr = info.script_addr();
     let flash_br = info.flash_baud_rate();
     let use_luac = info.script_use_luac();
     let bitw = info.script_bitw();
@@ -681,32 +682,253 @@ pub fn flash_script_only(
             data: final_data,
         });
     }
-    let final_data = luatos_luadb::pack_luadb(&entries);
+    let luadb_data = luatos_luadb::pack_luadb(&entries);
 
     on_progress(&FlashProgress::info(
         "Build",
         10.0,
-        &format!("Script image: {} bytes", final_data.len()),
+        &format!("Script image: {} bytes → addr 0x{:X}", luadb_data.len(), script_addr),
     ));
+
+    // Wrap in XT804 image header
+    let final_data = build_xt804_image(&luadb_data, script_addr);
 
     // Connect to bootloader
     let mut serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
 
-    // For script-only flash, we need to erase first then transfer
-    on_progress(&FlashProgress::info(
-        "Erase",
-        30.0,
-        "Erasing script area...",
-    ));
+    // Erase + transfer
+    on_progress(&FlashProgress::info("Erase", 30.0, "Erasing flash..."));
     erase_flash(serial.as_mut(), &cancel)?;
 
-    // Transfer
     on_progress(&FlashProgress::info("Write", 40.0, "Writing script..."));
     xmodem_transfer(serial.as_mut(), &final_data, &cancel, &on_progress)?;
 
     // Reset
     reset_device(serial.as_mut())?;
     on_progress(&FlashProgress::done_ok("Script flash completed"));
+    Ok(())
+}
+
+/// Flash the LittleFS filesystem partition of an XT804 device.
+///
+/// Builds a LittleFS image from files in `fs_dirs`, wraps in an XT804 image
+/// header, and flashes to the filesystem partition address from the SOC info.
+pub fn flash_filesystem(
+    soc_path: &str,
+    port: &str,
+    fs_dirs: &[String],
+    on_progress: ProgressCallback,
+    cancel: Arc<AtomicBool>,
+) -> Result<()> {
+    let info = luatos_soc::read_soc_info(soc_path)?;
+    let (fs_addr, fs_size) = info
+        .filesystem_partition()
+        .context("SOC info has no filesystem partition defined")?;
+    let flash_br = info.flash_baud_rate();
+
+    on_progress(&FlashProgress::info(
+        "Build",
+        0.0,
+        &format!("Building LittleFS image ({} KB)", fs_size / 1024),
+    ));
+
+    // Prepare a temp dir with all files from all fs_dirs
+    let tmpdir = tempfile::tempdir().context("failed to create temp directory")?;
+    for dir_str in fs_dirs {
+        let src = std::path::Path::new(dir_str);
+        if !src.is_dir() {
+            bail!("Not a directory: {}", dir_str);
+        }
+        copy_dir_contents(src, tmpdir.path())
+            .with_context(|| format!("failed to copy files from {}", dir_str))?;
+    }
+
+    let fs_image =
+        luatos_luadb::build::build_littlefs_image(tmpdir.path(), fs_size, 4096)
+            .context("failed to build LittleFS image")?;
+
+    on_progress(&FlashProgress::info(
+        "Build",
+        10.0,
+        &format!("LFS image: {} bytes → addr 0x{:X}", fs_image.len(), fs_addr),
+    ));
+
+    // Wrap in XT804 image header
+    let final_data = build_xt804_image(&fs_image, fs_addr);
+
+    // Connect to bootloader
+    let mut serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
+
+    // Erase + transfer
+    on_progress(&FlashProgress::info("Erase", 30.0, "Erasing flash..."));
+    erase_flash(serial.as_mut(), &cancel)?;
+
+    on_progress(&FlashProgress::info("Write", 40.0, "Writing filesystem..."));
+    xmodem_transfer(serial.as_mut(), &final_data, &cancel, &on_progress)?;
+
+    reset_device(serial.as_mut())?;
+    on_progress(&FlashProgress::done_ok("Filesystem flash completed"));
+    Ok(())
+}
+
+/// Clear (erase) the filesystem partition of an XT804 device.
+///
+/// Writes an all-0xFF image to the filesystem partition address.
+pub fn clear_filesystem(
+    soc_path: &str,
+    port: &str,
+    on_progress: ProgressCallback,
+    cancel: Arc<AtomicBool>,
+) -> Result<()> {
+    let info = luatos_soc::read_soc_info(soc_path)?;
+    let (fs_addr, fs_size) = info
+        .filesystem_partition()
+        .context("SOC info has no filesystem partition defined")?;
+    let flash_br = info.flash_baud_rate();
+
+    on_progress(&FlashProgress::info(
+        "Build",
+        0.0,
+        &format!("Preparing blank FS image ({} KB)", fs_size / 1024),
+    ));
+
+    let blank = vec![0xFF_u8; fs_size];
+    let final_data = build_xt804_image(&blank, fs_addr);
+
+    let mut serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
+
+    on_progress(&FlashProgress::info("Erase", 30.0, "Erasing flash..."));
+    erase_flash(serial.as_mut(), &cancel)?;
+
+    on_progress(&FlashProgress::info("Write", 40.0, "Clearing filesystem..."));
+    xmodem_transfer(serial.as_mut(), &final_data, &cancel, &on_progress)?;
+
+    reset_device(serial.as_mut())?;
+    on_progress(&FlashProgress::done_ok("Filesystem cleared"));
+    Ok(())
+}
+
+/// Clear (erase) the FSKV (key-value store) partition of an XT804 device.
+pub fn clear_kv(
+    soc_path: &str,
+    port: &str,
+    on_progress: ProgressCallback,
+    cancel: Arc<AtomicBool>,
+) -> Result<()> {
+    let info = luatos_soc::read_soc_info(soc_path)?;
+    let (kv_addr, kv_size) = info
+        .kv_partition()
+        .context("SOC info has no KV partition defined")?;
+    let flash_br = info.flash_baud_rate();
+
+    on_progress(&FlashProgress::info(
+        "Build",
+        0.0,
+        &format!("Preparing blank KV image ({} KB)", kv_size / 1024),
+    ));
+
+    let blank = vec![0xFF_u8; kv_size];
+    let final_data = build_xt804_image(&blank, kv_addr);
+
+    let mut serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
+
+    on_progress(&FlashProgress::info("Erase", 30.0, "Erasing flash..."));
+    erase_flash(serial.as_mut(), &cancel)?;
+
+    on_progress(&FlashProgress::info("Write", 40.0, "Clearing KV store..."));
+    xmodem_transfer(serial.as_mut(), &final_data, &cancel, &on_progress)?;
+
+    reset_device(serial.as_mut())?;
+    on_progress(&FlashProgress::done_ok("KV store cleared"));
+    Ok(())
+}
+
+// ─── XT804 image header ──────────────────────────────────────────────────────
+
+/// CRC32 used by the XT804 bootloader (same polynomial as wm_tool.c).
+fn xt804_crc32(data: &[u8]) -> u32 {
+    // wm_tool.c uses standard CRC32 (same as Ethernet/zlib)
+    let mut crc: u32 = 0xFFFFFFFF;
+    for &byte in data {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xEDB88320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    crc
+}
+
+/// Build an XT804 firmware image with proper header.
+///
+/// The header tells the bootloader where to write the payload in flash.
+/// Layout (64 bytes, LE):
+///   0x00: magic_no         (u32) = 0xA0FFFF9F
+///   0x04: img_type         (u16) = 0 (1M layout)
+///   0x06: zip_type         (u16) = 0 (uncompressed)
+///   0x08: run_img_addr     (u32) = target flash address
+///   0x0C: run_img_len      (u32) = payload length
+///   0x10: img_header_addr  (u32) = 0x8002000
+///   0x14: upgrade_img_addr (u32) = 0x8090000
+///   0x18: run_org_checksum (u32) = CRC32 of payload
+///   0x1C: upd_no           (u32) = 0
+///   0x20: ver[16]          (bytes) = version string
+///   0x30: reserved0        (u32) = 0
+///   0x34: reserved1        (u32) = 0
+///   0x38: next_boot        (u32) = 0
+///   0x3C: hd_checksum      (u32) = CRC32 of header[0..60]
+fn build_xt804_image(payload: &[u8], run_addr: u32) -> Vec<u8> {
+    let mut header = [0u8; 64];
+
+    // magic
+    header[0..4].copy_from_slice(&IMAGE_MAGIC.to_le_bytes());
+    // img_type = 0 (1M), zip_type = 0 (uncompressed)
+    // run_img_addr
+    header[8..12].copy_from_slice(&run_addr.to_le_bytes());
+    // run_img_len
+    let payload_len = payload.len() as u32;
+    header[12..16].copy_from_slice(&payload_len.to_le_bytes());
+    // img_header_addr = 0x8002000
+    header[16..20].copy_from_slice(&0x8002000_u32.to_le_bytes());
+    // upgrade_img_addr = 0x8090000
+    header[20..24].copy_from_slice(&0x8090000_u32.to_le_bytes());
+    // run_org_checksum = CRC32 of payload
+    let payload_crc = xt804_crc32(payload);
+    header[24..28].copy_from_slice(&payload_crc.to_le_bytes());
+    // version string (optional)
+    let ver = b"luatos-cli";
+    header[32..32 + ver.len()].copy_from_slice(ver);
+    // hd_checksum = CRC32 of header[0..60]
+    let hd_crc = xt804_crc32(&header[0..60]);
+    header[60..64].copy_from_slice(&hd_crc.to_le_bytes());
+
+    let mut image = Vec::with_capacity(64 + payload.len());
+    image.extend_from_slice(&header);
+    image.extend_from_slice(payload);
+    image
+}
+
+/// Copy all files/dirs from src to dst (non-recursive merge).
+fn copy_dir_contents(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+    for entry in walkdir::WalkDir::new(src).min_depth(1) {
+        let entry = entry?;
+        let rel = entry
+            .path()
+            .strip_prefix(src)
+            .context("strip_prefix failed")?;
+        let target = dst.join(rel);
+        if entry.file_type().is_dir() {
+            std::fs::create_dir_all(&target)?;
+        } else {
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
     Ok(())
 }
 

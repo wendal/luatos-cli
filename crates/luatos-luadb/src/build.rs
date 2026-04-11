@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use anyhow::{bail, Context, Result};
 use walkdir::WalkDir;
 
-use crate::embedded_helpers::ensure_embedded_helper;
+use crate::embedded_helpers::{ensure_embedded_helper, ensure_mklfs_helper};
 use crate::{add_bk_crc, pack_luadb, LuadbEntry};
 
 /// Compile Lua source bytes to bytecode using the embedded Lua 5.3 compiler.
@@ -212,6 +212,52 @@ pub fn build_script_image(
     Ok(result)
 }
 
+/// Build a LittleFS image from a directory using the embedded mklfs helper.
+///
+/// * `source_dir` — directory of files to pack into the LFS image.
+/// * `fs_size` — total filesystem size in bytes.
+/// * `block_size` — erase block size (default 4096).
+///
+/// Returns the raw LFS image bytes (exactly `fs_size` bytes).
+pub fn build_littlefs_image(
+    source_dir: &Path,
+    fs_size: usize,
+    block_size: usize,
+) -> Result<Vec<u8>> {
+    let helper = ensure_mklfs_helper()
+        .map_err(|e| anyhow::anyhow!("failed to prepare mklfs helper: {e}"))?;
+
+    let output = Command::new(&helper)
+        .arg(source_dir.to_str().context("non-UTF8 path")?)
+        .arg(fs_size.to_string())
+        .arg(block_size.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .with_context(|| format!("failed to run mklfs helper from {}", helper.display()))?;
+
+    if output.status.success() {
+        if output.stdout.len() != fs_size {
+            bail!(
+                "mklfs produced {} bytes, expected {}",
+                output.stdout.len(),
+                fs_size
+            );
+        }
+        Ok(output.stdout)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!(
+            "mklfs failed: {}",
+            if stderr.is_empty() {
+                "unknown error".to_string()
+            } else {
+                stderr
+            }
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,5 +382,26 @@ mod tests {
         let dir = make_test_dir();
         let image = build_script_image(&[dir.path()], true, 32, false).unwrap();
         assert_eq!(&image[0..6], &[0x01, 0x04, 0x5A, 0xA5, 0x5A, 0xA5]);
+    }
+
+    #[test]
+    fn build_littlefs_image_basic() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("test.txt"), b"hello littlefs").unwrap();
+        fs::write(dir.path().join("data.bin"), vec![0xAA; 100]).unwrap();
+
+        let fs_size = 64 * 1024; // 64 KB
+        let image = super::build_littlefs_image(dir.path(), fs_size, 4096).unwrap();
+        assert_eq!(image.len(), fs_size);
+        // LittleFS superblock is in the first block; it shouldn't be all 0xFF
+        assert_ne!(&image[0..16], &[0xFF; 16]);
+    }
+
+    #[test]
+    fn build_littlefs_image_empty_dir() {
+        let dir = TempDir::new().unwrap();
+        let fs_size = 32 * 1024;
+        let image = super::build_littlefs_image(dir.path(), fs_size, 4096).unwrap();
+        assert_eq!(image.len(), fs_size);
     }
 }

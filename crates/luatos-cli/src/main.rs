@@ -724,12 +724,24 @@ fn cmd_flash_partition(
                 let files = collect_script_files(folders)?;
                 luatos_flash::xt804::flash_script_only(soc, port, &files, on_progress, cancel)?;
             }
-            _ => {
-                anyhow::bail!(
-                    "Operation '{op}' is not supported for XT804 devices ({})",
-                    chip
-                );
+            "clear-fs" => {
+                luatos_flash::xt804::clear_filesystem(soc, port, on_progress, cancel)?;
             }
+            "flash-fs" => {
+                let folders = script_folders.expect("fs folder required");
+                let dir_strings: Vec<String> = folders.to_vec();
+                luatos_flash::xt804::flash_filesystem(
+                    soc,
+                    port,
+                    &dir_strings,
+                    on_progress,
+                    cancel,
+                )?;
+            }
+            "clear-kv" => {
+                luatos_flash::xt804::clear_kv(soc, port, on_progress, cancel)?;
+            }
+            _ => unreachable!(),
         },
         _ => {
             anyhow::bail!("Unsupported chip type: {chip}");

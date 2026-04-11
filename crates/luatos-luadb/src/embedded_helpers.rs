@@ -1,9 +1,9 @@
-//! Embedded Lua 5.3 compiler helpers — 32-bit and 64-bit variants.
+//! Embedded Lua 5.3 compiler and mklfs helpers.
 //!
-//! At build time, `build.rs` compiles two helper executables from the bundled
-//! Lua 5.3.6 C source and embeds them via `include_bytes!()`.  At runtime the
+//! At build time, `build.rs` compiles helper executables from the bundled
+//! C source and embeds them via `include_bytes!()`.  At runtime the
 //! appropriate helper is extracted to a per-user cache directory and invoked as
-//! a subprocess to compile Lua source → bytecode.
+//! a subprocess.
 
 use sha2::{Digest, Sha256};
 use std::env;
@@ -19,26 +19,71 @@ use std::os::unix::fs::PermissionsExt;
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const HELPER_32_BYTES: &[u8] = include_bytes!(env!("LUA53_HELPER_EMBED_32"));
 const HELPER_64_BYTES: &[u8] = include_bytes!(env!("LUA53_HELPER_EMBED_64"));
+const MKLFS_BYTES: &[u8] = include_bytes!(env!("MKLFS_HELPER_EMBED"));
 const CACHE_SUBDIR: &str = "luatos-cli/lua-helpers";
 static CLEANUP_ONCE: Once = Once::new();
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Identifies which embedded helper to use.
+#[derive(Clone, Copy)]
+enum HelperKind {
+    Luac32,
+    Luac64,
+    Mklfs,
+}
+
 #[derive(Clone, Copy)]
 struct EmbeddedHelper {
-    bitw: u32,
+    kind: HelperKind,
     payload: &'static [u8],
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct HelperMetadata {
     app_version: String,
-    helper_bitness: u32,
+    helper_name: String,
     sha256: String,
+    // legacy field kept for backward compat with existing cache
+    #[serde(default)]
+    helper_bitness: u32,
+}
+
+impl EmbeddedHelper {
+    fn name(&self) -> &'static str {
+        match self.kind {
+            HelperKind::Luac32 => "luac32",
+            HelperKind::Luac64 => "luac64",
+            HelperKind::Mklfs => "mklfs",
+        }
+    }
+
+    fn file_prefix(&self) -> &'static str {
+        match self.kind {
+            HelperKind::Luac32 => "luac32_helper",
+            HelperKind::Luac64 => "luac64_helper",
+            HelperKind::Mklfs => "mklfs_helper",
+        }
+    }
 }
 
 /// Ensure the embedded Lua helper for the given bit-width is available on disk.
 /// Returns the path to the cached executable.
 pub fn ensure_embedded_helper(bitw: u32) -> Result<PathBuf, String> {
+    let kind = match bitw {
+        32 => HelperKind::Luac32,
+        64 => HelperKind::Luac64,
+        _ => return Err(format!("unsupported Lua bitness: {}", bitw)),
+    };
+    ensure_helper(kind)
+}
+
+/// Ensure the embedded mklfs helper is available on disk.
+/// Returns the path to the cached executable.
+pub fn ensure_mklfs_helper() -> Result<PathBuf, String> {
+    ensure_helper(HelperKind::Mklfs)
+}
+
+fn ensure_helper(kind: HelperKind) -> Result<PathBuf, String> {
     let cache_dir = helper_cache_dir()?;
     ensure_private_cache_dir(&cache_dir).map_err(|e| {
         format!(
@@ -49,8 +94,7 @@ pub fn ensure_embedded_helper(bitw: u32) -> Result<PathBuf, String> {
     })?;
     run_cleanup_once(&cache_dir);
 
-    let helper = helper_for(bitw)?;
-
+    let helper = helper_for_kind(kind);
     let target = helper_target_path(&cache_dir, helper);
     let metadata_path = metadata_path_for(&target);
     let expected_sha = helper_sha256(helper);
@@ -79,17 +123,20 @@ pub fn init_helper_cache() -> Result<(), String> {
     Ok(())
 }
 
-fn helper_for(bitw: u32) -> Result<EmbeddedHelper, String> {
-    match bitw {
-        32 => Ok(EmbeddedHelper {
-            bitw,
+fn helper_for_kind(kind: HelperKind) -> EmbeddedHelper {
+    match kind {
+        HelperKind::Luac32 => EmbeddedHelper {
+            kind,
             payload: HELPER_32_BYTES,
-        }),
-        64 => Ok(EmbeddedHelper {
-            bitw,
+        },
+        HelperKind::Luac64 => EmbeddedHelper {
+            kind,
             payload: HELPER_64_BYTES,
-        }),
-        _ => Err(format!("unsupported Lua bitness: {}", bitw)),
+        },
+        HelperKind::Mklfs => EmbeddedHelper {
+            kind,
+            payload: MKLFS_BYTES,
+        },
     }
 }
 
@@ -130,8 +177,8 @@ fn ensure_private_cache_dir(path: &Path) -> io::Result<()> {
 
 fn helper_target_path(cache_dir: &Path, helper: EmbeddedHelper) -> PathBuf {
     cache_dir.join(format!(
-        "luac{}_helper-{}-{}{}",
-        helper.bitw,
+        "{}-{}-{}{}",
+        helper.file_prefix(),
         APP_VERSION,
         helper_short_hash(helper),
         env::consts::EXE_SUFFIX
@@ -154,9 +201,9 @@ fn helper_sha256(helper: EmbeddedHelper) -> String {
 }
 
 fn current_helper_paths(cache_dir: &Path) -> Vec<PathBuf> {
-    [32_u32, 64_u32]
+    [HelperKind::Luac32, HelperKind::Luac64, HelperKind::Mklfs]
         .iter()
-        .filter_map(|bitw| helper_for(*bitw).ok())
+        .map(|kind| helper_for_kind(*kind))
         .flat_map(|helper| {
             let target = helper_target_path(cache_dir, helper);
             [target.clone(), metadata_path_for(&target)]
@@ -190,7 +237,10 @@ fn cleanup_stale_helpers(cache_dir: &Path, keep: &[PathBuf]) -> io::Result<()> {
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if !name.starts_with("luac32_helper-") && !name.starts_with("luac64_helper-") {
+        if !name.starts_with("luac32_helper-")
+            && !name.starts_with("luac64_helper-")
+            && !name.starts_with("mklfs_helper-")
+        {
             continue;
         }
         if keep.iter().any(|keep_path| keep_path == &path) {
@@ -219,17 +269,18 @@ fn helper_file_is_current(
     }
 
     let metadata = read_metadata(metadata_path)?;
-    if metadata.app_version != APP_VERSION
-        || metadata.helper_bitness != helper.bitw
-        || metadata.sha256 != expected_sha
-    {
+    if metadata.app_version != APP_VERSION || metadata.sha256 != expected_sha {
+        return Ok(false);
+    }
+    // Check name if present; fall back to bitness for old metadata files
+    if !metadata.helper_name.is_empty() && metadata.helper_name != helper.name() {
         return Ok(false);
     }
 
     let bytes = fs::read(helper_path).map_err(|e| {
         format!(
-            "failed to read cached Lua {}-bit helper at {}: {}",
-            helper.bitw,
+            "failed to read cached {} helper at {}: {}",
+            helper.name(),
             helper_path.display(),
             e
         )
@@ -263,8 +314,8 @@ fn write_helper_files(
     expected_sha: &str,
 ) -> Result<(), String> {
     let temp_helper = cache_dir.join(format!(
-        ".luac{}_helper-{}-{}.tmp{}",
-        helper.bitw,
+        ".{}-{}-{}.tmp{}",
+        helper.file_prefix(),
         std::process::id(),
         TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed),
         env::consts::EXE_SUFFIX
@@ -273,16 +324,16 @@ fn write_helper_files(
 
     fs::write(&temp_helper, helper.payload).map_err(|e| {
         format!(
-            "failed to write Lua {}-bit helper to {}: {}",
-            helper.bitw,
+            "failed to write {} helper to {}: {}",
+            helper.name(),
             temp_helper.display(),
             e
         )
     })?;
     set_helper_permissions(&temp_helper).map_err(|e| {
         format!(
-            "failed to set permissions on Lua {}-bit helper at {}: {}",
-            helper.bitw,
+            "failed to set permissions on {} helper at {}: {}",
+            helper.name(),
             temp_helper.display(),
             e
         )
@@ -290,8 +341,9 @@ fn write_helper_files(
 
     let metadata = HelperMetadata {
         app_version: APP_VERSION.to_string(),
-        helper_bitness: helper.bitw,
+        helper_name: helper.name().to_string(),
         sha256: expected_sha.to_string(),
+        helper_bitness: 0,
     };
     let metadata_bytes = serde_json::to_vec_pretty(&metadata)
         .map_err(|e| format!("failed to serialize helper metadata: {}", e))?;
@@ -305,8 +357,8 @@ fn write_helper_files(
 
     persist_if_missing(&temp_helper, helper_path).map_err(|e| {
         format!(
-            "failed to persist Lua {}-bit helper to {}: {}",
-            helper.bitw,
+            "failed to persist {} helper to {}: {}",
+            helper.name(),
             helper_path.display(),
             e
         )
