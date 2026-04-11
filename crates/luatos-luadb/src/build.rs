@@ -302,8 +302,8 @@ mod tests {
         let bytecode = super::compile_lua_bytes(source, "@test.lua", false, 32).unwrap();
         // Lua 5.3 bytecode starts with 0x1B 0x4C 0x75 0x61 (ESC Lua)
         assert_eq!(&bytecode[0..4], b"\x1bLua");
-        // Byte 17 = sizeof(lua_Integer), 32-bit = 4
-        assert_eq!(bytecode[17], 4);
+        // Byte 15 = sizeof(lua_Integer), 32-bit = 4
+        assert_eq!(bytecode[15], 4);
     }
 
     #[test]
@@ -311,8 +311,8 @@ mod tests {
         let source = b"print('hello')";
         let bytecode = super::compile_lua_bytes(source, "@test.lua", false, 64).unwrap();
         assert_eq!(&bytecode[0..4], b"\x1bLua");
-        // Byte 17 = sizeof(lua_Integer), 64-bit = 8
-        assert_eq!(bytecode[17], 8);
+        // Byte 15 = sizeof(lua_Integer), 64-bit = 8
+        assert_eq!(bytecode[15], 8);
     }
 
     #[test]

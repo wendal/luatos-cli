@@ -5,6 +5,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <io.h>
+#include <fcntl.h>
+#endif
+
 static int write_stdout(lua_State *L, const void *p, size_t sz, void *ud) {
     (void)L;
     FILE *out = (FILE *)ud;
@@ -47,6 +52,11 @@ static unsigned char *read_stdin(size_t *out_len) {
 }
 
 int main(int argc, char **argv) {
+#ifdef _WIN32
+    _setmode(_fileno(stdin), _O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);
+#endif
+
     if (argc != 3) {
         fprintf(stderr, "usage: %s <chunk_name> <strip>\n", argv[0]);
         return 2;
