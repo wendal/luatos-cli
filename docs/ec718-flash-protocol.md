@@ -229,7 +229,83 @@ DIAG_REBOOT_DOWNLOAD_MS = 0x42  // 重启到下载模式
 - 协议: SOC二进制日志 (0xA5帧头, 与Air1601/CCM4211相同)
 - 波特率: 2000000
 - 需要发送探测命令才开始输出 (同ccm4211 log probe)
-- 日志端口: USB模式下为 x.2 端口
+- 日志端口: USB模式下为 x.2 端口 (VID=0x19D1, 最低COM口号)
+
+### 日志协议详情
+
+EC718使用与Air1601/CCM4211相同的SOC二进制日志协议:
+
+#### 帧格式
+```
+[0xA5 起始] [转义(头部+载荷)] [转义(CRC16_LE)] [0xA5 结束]
+```
+
+#### 转义规则
+| 原始字节 | 转义后 |
+|---------|--------|
+| `0xA5` | `0xA6, 0x01` |
+| `0xA6` | `0xA6, 0x02` |
+| 其他 | 不变 |
+
+#### 24字节帧头
+| 偏移 | 长度 | 字段 | 说明 |
+|------|------|------|------|
+| 0 | 8 | ms | 设备毫秒时间戳 (u64 LE) |
+| 8 | 8 | tag | 日志级别(8位) + 标签名(7位×8字符) |
+| 16 | 4 | cmd | 命令ID (u32 LE) |
+| 20 | 2 | sn | 序列号 (u16 LE) |
+| 22 | 1 | msg_type | 消息类型 (0=printf格式) |
+| 23 | 1 | cpu | CPU ID |
+
+#### 日志级别
+| 值 | 级别 |
+|----|------|
+| 1 | Debug |
+| 2 | Info |
+| 3 | Warn |
+| 4 | Error |
+
+#### CRC16校验
+- 算法: CRC16-ModBus
+- 多项式: 0xA001 (反转 0x8005)
+- 初始值: 0x0000
+- 计算范围: 头部 + 载荷 (不含CRC本身)
+- 输出: 小端序 2字节
+
+#### 探测命令 (Probe)
+固件缓冲日志输出, 需发送探测帧触发日志刷新:
+```
+build_soc_frame(cmd=1, address=0, payload=[], sn=1)
+```
+即发送 SOC_CMD_GET_BASE_INFO (cmd=1) 帧, 与CCM4211完全相同.
+
+#### 标签名解码
+tag字段的高56位编码最多8个字符, 每个字符7位, 查表:
+```
+" abcdefghijklmnopqrstuvwxyz012345ABCDEFGHIJKLMNOPQRSTUVWXYZ_*-./"
+```
+
+### 刷机后日志端口变化
+
+EC718刷机后模组复位, USB重新枚举:
+1. 刷机使用下载端口: VID=0x17D1 (boot模式)
+2. 复位后变为运行模式: VID=0x19D1 (3个端口)
+3. 日志端口为最低COM号端口 (x.2接口)
+4. 需要等待USB重新枚举 (约5-15秒)
+5. 发送探测命令后才开始接收日志
+
+### CLI 使用
+
+```bash
+# 自动检测EC718日志端口
+luatos-cli log view-binary --port auto --probe
+
+# 指定端口
+luatos-cli log view-binary --port COM3 --baud 2000000 --probe
+
+# 刷机+日志测试 (自动处理端口变化)
+luatos-cli flash test --soc firmware.soc --port COM3 --keyword "LuatOS@"
+```
 
 ## FlashToolCLI.exe 回退方案
 

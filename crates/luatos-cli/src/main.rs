@@ -201,15 +201,15 @@ enum LogCommands {
         #[arg(long, default_value = "921600")]
         baud: u32,
     },
-    /// View serial log in binary SOC mode (Air6208, Air1601 etc.)
+    /// View serial log in binary SOC mode (Air1601, Air8000/EC718, etc.)
     ViewBinary {
-        /// Serial port (e.g. COM7)
+        /// Serial port (e.g. COM7, or "auto" for EC718 auto-detect)
         #[arg(long)]
         port: String,
         /// Baud rate (default: 2000000)
         #[arg(long, default_value = "2000000")]
         baud: u32,
-        /// Send probe command to trigger log output (required for Air1601/CCM4211)
+        /// Send probe command to trigger log output (required for Air1601/CCM4211/EC718)
         #[arg(long)]
         probe: bool,
     },
@@ -956,24 +956,57 @@ fn cmd_flash_test(
     // Step 2: Capture boot log (append to any lines from flash)
     let mut all_lines = boot_lines_from_flash;
 
+    // Determine if this chip uses binary SOC log protocol
+    let is_ec718 = matches!(chip.as_str(), "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg");
+    let use_binary_log = matches!(chip.as_str(), "air1601" | "ccm4211") || is_ec718;
+
+    // For EC718: after flash+reset, the boot port disappears and the module
+    // re-enumerates as running mode (VID=0x19D1). We need to wait for the
+    // new log port to appear and use that instead of the original port.
+    let log_port: String = if is_ec718 {
+        if format == &OutputFormat::Text {
+            eprintln!("Waiting for EC718 module to reboot and re-enumerate USB...");
+        }
+        // Wait up to 15s for the log port to appear
+        match luatos_flash::ec718::wait_for_log_port(15) {
+            Some(p) => {
+                if format == &OutputFormat::Text {
+                    eprintln!("Found EC718 log port: {p}");
+                }
+                // Give USB a moment to stabilize
+                std::thread::sleep(Duration::from_millis(500));
+                p
+            }
+            None => {
+                if format == &OutputFormat::Text {
+                    eprintln!("EC718 log port not found, trying original port {port}");
+                }
+                port.to_string()
+            }
+        }
+    } else {
+        port.to_string()
+    };
+
     if format == &OutputFormat::Text {
-        eprintln!("Capturing boot log for {timeout_secs}s on {port} @ {log_br}...");
+        eprintln!("Capturing boot log for {timeout_secs}s on {log_port} @ {log_br}...");
     }
 
-    // Determine if this chip uses binary SOC log protocol
-    let use_binary_log = matches!(chip.as_str(), "air1601" | "ccm4211" | "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg");
-
     // Open serial port and capture lines for the timeout period
-    let serial = serialport::new(port, log_br)
+    let serial = serialport::new(&log_port, log_br)
         .timeout(Duration::from_millis(500))
         .open();
 
     if let Ok(mut serial) = serial {
         use std::io::{Read, Write};
 
-        // For Air1601/CCM4211: send probe to trigger log output
+        // Send probe to trigger log output on binary-log chips
         if use_binary_log {
-            let probe = luatos_flash::ccm4211::build_log_probe();
+            let probe = if is_ec718 {
+                luatos_flash::ec718::build_log_probe()
+            } else {
+                luatos_flash::ccm4211::build_log_probe()
+            };
             let _ = serial.write_all(&probe);
             let _ = serial.flush();
         }
@@ -1166,6 +1199,25 @@ fn cmd_log_view_binary(
         stop_clone.store(true, std::sync::atomic::Ordering::Relaxed);
     });
 
+    // Auto-detect EC718 log port if "auto" specified
+    let actual_port = if port == "auto" {
+        eprintln!("Auto-detecting EC718 log port (VID=0x19D1)...");
+        match luatos_flash::ec718::find_ec718_cmd_port() {
+            Some(p) => {
+                eprintln!("Found EC718 log port: {p}");
+                p
+            }
+            None => {
+                anyhow::bail!(
+                    "No EC718 log port found. Ensure the module is running (not in boot mode).\n\
+                     Try specifying the port manually with --port COMx"
+                );
+            }
+        }
+    } else {
+        port.to_string()
+    };
+
     let init_data = if probe {
         eprintln!("Sending SOC probe to trigger log output ...");
         Some(luatos_flash::ccm4211::build_log_probe())
@@ -1173,13 +1225,13 @@ fn cmd_log_view_binary(
         None
     };
 
-    eprintln!("Viewing SOC binary log on {port} @ {baud} bps (Ctrl+C to stop)");
+    eprintln!("Viewing SOC binary log on {actual_port} @ {baud} bps (Ctrl+C to stop)");
 
     let decoder = std::sync::Mutex::new(luatos_log::SocLogDecoder::new());
     let format_clone = format.clone();
 
     luatos_serial::stream_binary(
-        port,
+        &actual_port,
         baud,
         stop,
         Box::new(move |data| {

@@ -1230,6 +1230,21 @@ pub fn wait_for_boot_port(timeout_secs: u32) -> Option<String> {
     None
 }
 
+/// Wait for the EC718 log port (running mode) to appear after reboot.
+///
+/// After flashing, the module resets and re-enumerates USB as VID=0x19D1.
+/// The log port is typically the first (lowest COM number) of the enumerated ports.
+pub fn wait_for_log_port(timeout_secs: u32) -> Option<String> {
+    let max_iterations = timeout_secs * 10;
+    for _ in 0..max_iterations {
+        if let Some(port) = find_ec718_cmd_port() {
+            return Some(port);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    None
+}
+
 /// Automatically detect module state and enter boot mode if needed.
 ///
 /// Flow:
