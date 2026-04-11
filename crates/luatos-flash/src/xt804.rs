@@ -637,10 +637,13 @@ pub fn flash_script_only(
     on_progress: ProgressCallback,
     cancel: Arc<AtomicBool>,
 ) -> Result<()> {
-    // Parse SOC for addresses
+    // Parse SOC for addresses and compilation settings
     let info = luatos_soc::read_soc_info(soc_path)?;
     let _script_addr = info.script_addr();
     let flash_br = info.flash_baud_rate();
+    let use_luac = info.script_use_luac();
+    let bitw = info.script_bitw();
+    let strip = info.script_strip_debug();
 
     on_progress(&FlashProgress::info(
         "Build",
@@ -648,7 +651,7 @@ pub fn flash_script_only(
         &format!("Building LuaDB for {} files", script_files.len()),
     ));
 
-    // Build LuaDB entries from file paths
+    // Build LuaDB entries from file paths, compiling .lua if use_luac
     let mut entries = Vec::new();
     for path_str in script_files {
         let path = std::path::Path::new(path_str);
@@ -659,7 +662,24 @@ pub fn flash_script_only(
             .to_string();
         let data =
             std::fs::read(path).with_context(|| format!("Cannot read script file: {path_str}"))?;
-        entries.push(luatos_luadb::LuadbEntry { filename, data });
+
+        let (final_name, final_data) =
+            if use_luac && filename.ends_with(".lua") && !filename.ends_with(".luac") {
+                let chunk_name = format!("@{}", filename);
+                let bytecode =
+                    luatos_luadb::build::compile_lua_bytes(&data, &chunk_name, strip, bitw)
+                        .with_context(|| format!("Failed to compile {path_str}"))?;
+                let luac_name = format!("{}c", filename);
+                log::info!("compiled {} (bitw={}, strip={})", filename, bitw, strip);
+                (luac_name, bytecode)
+            } else {
+                (filename, data)
+            };
+
+        entries.push(luatos_luadb::LuadbEntry {
+            filename: final_name,
+            data: final_data,
+        });
     }
     let final_data = luatos_luadb::pack_luadb(&entries);
 

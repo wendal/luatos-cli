@@ -1,96 +1,83 @@
 //! Lua compilation and filesystem synthesis for LuaDB images.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 use walkdir::WalkDir;
 
+use crate::embedded_helpers::ensure_embedded_helper;
 use crate::{add_bk_crc, pack_luadb, LuadbEntry};
 
-/// Search directories (relative to cwd) for luac executables.
-const SEARCH_DIRS: &[&str] = &["refs/origin_tools/tools", "../refs/origin_tools/tools"];
-
-/// Find the appropriate luac executable for the given bit width.
+/// Compile Lua source bytes to bytecode using the embedded Lua 5.3 compiler.
 ///
-/// For `bitw == 64`, tries `luac_64bit.exe` first, then `luac.exe`.
-/// For `bitw == 32` (or any other value), tries `luac.exe`.
-/// Searches relative directories first, then the system PATH.
-pub fn find_luac(bitw: u32) -> Result<PathBuf> {
-    let (exe_candidates, bare_candidates): (Vec<&str>, Vec<&str>) = if bitw == 64 {
-        if cfg!(windows) {
-            (vec!["luac_64bit.exe", "luac.exe"], vec![])
-        } else {
-            (vec![], vec!["luac_64bit", "luac"])
-        }
-    } else {
-        if cfg!(windows) {
-            (vec!["luac.exe"], vec![])
-        } else {
-            (vec![], vec!["luac"])
-        }
-    };
+/// `chunk_name` is the name shown in error messages (typically `@filename.lua`).
+/// When `strip` is true, debug info is removed for smaller output.
+pub fn compile_lua_bytes(
+    source: &[u8],
+    chunk_name: &str,
+    strip: bool,
+    bitw: u32,
+) -> Result<Vec<u8>> {
+    let helper = ensure_embedded_helper(bitw)
+        .map_err(|e| anyhow::anyhow!("failed to prepare Lua {bitw}-bit compiler: {e}"))?;
 
-    let all_candidates: Vec<&str> = exe_candidates
-        .iter()
-        .chain(bare_candidates.iter())
-        .copied()
-        .collect();
-    let cwd = std::env::current_dir().context("failed to get current directory")?;
+    let mut child = Command::new(&helper)
+        .arg(chunk_name)
+        .arg(if strip { "1" } else { "0" })
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| {
+            format!(
+                "failed to spawn Lua {}-bit compiler from {}",
+                bitw,
+                helper.display()
+            )
+        })?;
 
-    for name in &all_candidates {
-        // Search in well-known relative directories
-        for dir in SEARCH_DIRS {
-            let p = cwd.join(dir).join(name);
-            if p.is_file() {
-                return Ok(p);
-            }
-        }
-
-        // Search relative to cwd directly
-        let p = cwd.join(name);
-        if p.is_file() {
-            return Ok(p);
-        }
-
-        // Search system PATH
-        let which_cmd = if cfg!(windows) { "where" } else { "which" };
-        if let Ok(output) = Command::new(which_cmd).arg(name).output() {
-            if output.status.success() {
-                let s = String::from_utf8_lossy(&output.stdout);
-                if let Some(line) = s.lines().next() {
-                    let p = PathBuf::from(line.trim());
-                    if p.is_file() {
-                        return Ok(p);
-                    }
-                }
-            }
-        }
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin
+            .write_all(source)
+            .context("failed to write source to Lua compiler")?;
     }
 
-    bail!(
-        "luac executable not found for bitw={bitw}; searched {:?} and system PATH",
-        SEARCH_DIRS
-    );
+    let output = child
+        .wait_with_output()
+        .context("failed to wait for Lua compiler")?;
+
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            bail!("Lua {}-bit compiler failed", bitw);
+        } else {
+            bail!("{}", stderr);
+        }
+    }
 }
 
-/// Compile a single `.lua` file to `.luac` using the luac subprocess.
+/// Compile a single `.lua` file to `.luac` using the embedded compiler.
 pub fn compile_lua(src: &Path, dst: &Path, bitw: u32) -> Result<()> {
-    let luac = find_luac(bitw)?;
+    let source = fs::read(src).with_context(|| format!("failed to read {}", src.display()))?;
+    let chunk_name = format!(
+        "@{}",
+        src.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| src.display().to_string())
+    );
     log::info!("compiling {} -> {}", src.display(), dst.display());
 
-    let output = Command::new(&luac)
-        .arg("-o")
-        .arg(dst)
-        .arg(src)
-        .output()
-        .with_context(|| format!("failed to execute {}", luac.display()))?;
+    let bytecode = compile_lua_bytes(&source, &chunk_name, false, bitw)?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("luac compilation failed for {}:\n{}", src.display(), stderr);
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent)?;
     }
+    fs::write(dst, &bytecode).with_context(|| format!("failed to write {}", dst.display()))?;
     Ok(())
 }
 
@@ -306,6 +293,48 @@ mod tests {
         fs::write(dir2.path().join("util.lua"), b"return 42").unwrap();
 
         let image = build_script_image(&[dir1.path(), dir2.path()], false, 32, false).unwrap();
+        assert_eq!(&image[0..6], &[0x01, 0x04, 0x5A, 0xA5, 0x5A, 0xA5]);
+    }
+
+    #[test]
+    fn compile_lua_bytes_32bit() {
+        let source = b"print('hello')";
+        let bytecode = super::compile_lua_bytes(source, "@test.lua", false, 32).unwrap();
+        // Lua 5.3 bytecode starts with 0x1B 0x4C 0x75 0x61 (ESC Lua)
+        assert_eq!(&bytecode[0..4], b"\x1bLua");
+        // Byte 17 = sizeof(lua_Integer), 32-bit = 4
+        assert_eq!(bytecode[17], 4);
+    }
+
+    #[test]
+    fn compile_lua_bytes_64bit() {
+        let source = b"print('hello')";
+        let bytecode = super::compile_lua_bytes(source, "@test.lua", false, 64).unwrap();
+        assert_eq!(&bytecode[0..4], b"\x1bLua");
+        // Byte 17 = sizeof(lua_Integer), 64-bit = 8
+        assert_eq!(bytecode[17], 8);
+    }
+
+    #[test]
+    fn compile_lua_bytes_strip() {
+        let source = b"local x = 1; print(x)";
+        let full = super::compile_lua_bytes(source, "@test.lua", false, 32).unwrap();
+        let stripped = super::compile_lua_bytes(source, "@test.lua", true, 32).unwrap();
+        // Stripped should be smaller (no debug info)
+        assert!(stripped.len() < full.len());
+    }
+
+    #[test]
+    fn compile_lua_bytes_syntax_error() {
+        let source = b"if then end end";
+        let result = super::compile_lua_bytes(source, "@bad.lua", false, 32);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_image_with_luac() {
+        let dir = make_test_dir();
+        let image = build_script_image(&[dir.path()], true, 32, false).unwrap();
         assert_eq!(&image[0..6], &[0x01, 0x04, 0x5A, 0xA5, 0x5A, 0xA5]);
     }
 }

@@ -151,6 +151,28 @@ impl SocInfo {
         let size = fs.size? as usize * 1024;
         Some((offset, size))
     }
+
+    /// Get the Lua bit width from the SOC, with chip-based defaults.
+    /// BK72xx/Air8101 default to 32, XT804/Air6208 default to 64.
+    pub fn script_bitw(&self) -> u32 {
+        if let Some(bitw) = self.script.bitw {
+            return bitw;
+        }
+        match self.chip.chip_type.as_str() {
+            "air6208" | "air101" | "air103" | "air601" => 64,
+            _ => 32,
+        }
+    }
+
+    /// Whether Lua compilation is enabled (defaults to true).
+    pub fn script_use_luac(&self) -> bool {
+        self.script.use_luac.unwrap_or(true)
+    }
+
+    /// Whether to strip debug info (inverse of use-debug, defaults to false).
+    pub fn script_strip_debug(&self) -> bool {
+        self.script.use_debug.map(|d| !d).unwrap_or(false)
+    }
 }
 
 /// Parse a flash address from info.json ("0x…" hex or bare hex digits).

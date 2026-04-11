@@ -928,6 +928,10 @@ pub fn flash_bk7258(
 /// Build a LuaDB script.bin from Lua files in `folder`.
 fn build_script_bin(folders: &[&Path], info: &SocInfo) -> Result<Vec<u8>> {
     let use_bkcrc = info.use_bkcrc();
+    let use_luac = info.script_use_luac();
+    let bitw = info.script_bitw();
+    let strip = info.script_strip_debug();
+
     let mut entries: Vec<luatos_luadb::LuadbEntry> = Vec::new();
 
     for folder in folders {
@@ -942,9 +946,24 @@ fn build_script_bin(folders: &[&Path], info: &SocInfo) -> Result<Vec<u8>> {
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
             let data =
                 std::fs::read(&path).with_context(|| format!("Cannot read {}", path.display()))?;
+
+            // Compile .lua files if use_luac is enabled
+            let (final_name, final_data) =
+                if use_luac && name.ends_with(".lua") && !name.ends_with(".luac") {
+                    let chunk_name = format!("@{}", name);
+                    let bytecode =
+                        luatos_luadb::build::compile_lua_bytes(&data, &chunk_name, strip, bitw)
+                            .with_context(|| format!("Failed to compile {}", path.display()))?;
+                    let luac_name = format!("{}c", name); // .lua → .luac
+                    log::info!("compiled {} (bitw={}, strip={})", name, bitw, strip);
+                    (luac_name, bytecode)
+                } else {
+                    (name, data)
+                };
+
             entries.push(luatos_luadb::LuadbEntry {
-                filename: name,
-                data,
+                filename: final_name,
+                data: final_data,
             });
         }
     }
@@ -958,7 +977,13 @@ fn build_script_bin(folders: &[&Path], info: &SocInfo) -> Result<Vec<u8>> {
         data = luatos_luadb::add_bk_crc(&data);
     }
 
-    log::info!("script.bin: {} bytes (bkcrc={})", data.len(), use_bkcrc);
+    log::info!(
+        "script.bin: {} bytes (bkcrc={}, luac={}, bitw={})",
+        data.len(),
+        use_bkcrc,
+        use_luac,
+        bitw
+    );
     Ok(data)
 }
 

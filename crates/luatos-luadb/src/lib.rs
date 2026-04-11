@@ -92,6 +92,7 @@ fn bk_crc16(block: &[u8; 32]) -> u16 {
 }
 
 pub mod build;
+pub mod embedded_helpers;
 
 #[cfg(test)]
 mod tests {

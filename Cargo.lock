@@ -964,7 +964,11 @@ name = "luatos-luadb"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "cc",
  "log",
+ "serde",
+ "serde_json",
+ "sha2",
  "tempfile",
  "walkdir",
 ]
