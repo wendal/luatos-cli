@@ -128,31 +128,40 @@ pub fn compile_lua_dir(src_dir: &Path, out_dir: &Path, bitw: u32) -> Result<Vec<
     Ok(outputs)
 }
 
-/// Walk a directory and create [`LuadbEntry`] items for every file.
+/// Walk multiple directories and create [`LuadbEntry`] items for every file.
 ///
 /// Only the filename (not the full path) is used as the entry name.
+/// If the same filename appears in multiple directories, the last one wins.
 /// Entries are sorted so that `main.lua` / `main.luac` comes first.
-pub fn collect_script_entries(dir: &Path) -> Result<Vec<LuadbEntry>> {
-    let mut entries = Vec::new();
+pub fn collect_script_entries(dirs: &[&Path]) -> Result<Vec<LuadbEntry>> {
+    // Use a map to handle deduplication: later dirs override earlier ones.
+    let mut map = std::collections::HashMap::<String, Vec<u8>>::new();
 
-    for entry in WalkDir::new(dir).into_iter() {
-        let entry = entry?;
-        if !entry.file_type().is_file() {
-            continue;
+    for dir in dirs {
+        for entry in WalkDir::new(dir).into_iter() {
+            let entry = entry?;
+            if !entry.file_type().is_file() {
+                continue;
+            }
+
+            let filename = entry
+                .path()
+                .file_name()
+                .context("entry has no filename")?
+                .to_string_lossy()
+                .into_owned();
+
+            let data = fs::read(entry.path())
+                .with_context(|| format!("failed to read {}", entry.path().display()))?;
+
+            map.insert(filename, data);
         }
-
-        let filename = entry
-            .path()
-            .file_name()
-            .context("entry has no filename")?
-            .to_string_lossy()
-            .into_owned();
-
-        let data = fs::read(entry.path())
-            .with_context(|| format!("failed to read {}", entry.path().display()))?;
-
-        entries.push(LuadbEntry { filename, data });
     }
+
+    let mut entries: Vec<LuadbEntry> = map
+        .into_iter()
+        .map(|(filename, data)| LuadbEntry { filename, data })
+        .collect();
 
     // Sort: main.lua / main.luac first, then alphabetical.
     entries.sort_by(|a, b| {
@@ -170,24 +179,29 @@ fn is_main(name: &str) -> bool {
 
 /// High-level: compile (optional) → collect entries → pack LuaDB → add BK CRC (optional).
 ///
-/// If `use_luac` is true, `.lua` files are compiled to `.luac` in a temporary
-/// directory before packing. Returns the final binary image.
+/// Accepts multiple script source directories. If `use_luac` is true, `.lua`
+/// files from all directories are compiled to `.luac` in a single temporary
+/// directory before packing. Later directories override earlier ones when
+/// filenames collide. Returns the final binary image.
 pub fn build_script_image(
-    script_dir: &Path,
+    script_dirs: &[&Path],
     use_luac: bool,
     bitw: u32,
     use_bkcrc: bool,
 ) -> Result<Vec<u8>> {
-    let collect_dir = if use_luac {
+    let (collect_dirs, _tmp_guard): (Vec<PathBuf>, Option<PathBuf>) = if use_luac {
         let tmp = tempfile::tempdir().context("failed to create temp directory")?;
-        compile_lua_dir(script_dir, tmp.path(), bitw)?;
-        // Persist the temp dir so it outlives this block; we clean it up below.
-        tmp.keep()
+        for dir in script_dirs {
+            compile_lua_dir(dir, tmp.path(), bitw)?;
+        }
+        let kept: PathBuf = tmp.keep();
+        (vec![kept.clone()], Some(kept))
     } else {
-        script_dir.to_path_buf()
+        (script_dirs.iter().map(|d| d.to_path_buf()).collect(), None)
     };
 
-    let entries = collect_script_entries(&collect_dir)?;
+    let dir_refs: Vec<&Path> = collect_dirs.iter().map(|p| p.as_path()).collect();
+    let entries = collect_script_entries(&dir_refs)?;
     log::info!("packing {} entries into LuaDB image", entries.len());
 
     let image = pack_luadb(&entries);
@@ -199,8 +213,8 @@ pub fn build_script_image(
     };
 
     // Clean up temp dir if we created one
-    if use_luac && collect_dir != script_dir {
-        let _ = fs::remove_dir_all(&collect_dir);
+    if let Some(tmp_path) = _tmp_guard {
+        let _ = fs::remove_dir_all(&tmp_path);
     }
 
     Ok(result)
@@ -223,7 +237,7 @@ mod tests {
     #[test]
     fn collect_entries_main_first() {
         let dir = make_test_dir();
-        let entries = collect_script_entries(dir.path()).unwrap();
+        let entries = collect_script_entries(&[dir.path()]).unwrap();
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].filename, "main.lua");
     }
@@ -231,7 +245,7 @@ mod tests {
     #[test]
     fn collect_entries_reads_data() {
         let dir = make_test_dir();
-        let entries = collect_script_entries(dir.path()).unwrap();
+        let entries = collect_script_entries(&[dir.path()]).unwrap();
         let main = entries.iter().find(|e| e.filename == "main.lua").unwrap();
         assert_eq!(main.data, b"print('hello')");
     }
@@ -239,7 +253,7 @@ mod tests {
     #[test]
     fn build_image_no_luac() {
         let dir = make_test_dir();
-        let image = build_script_image(dir.path(), false, 32, false).unwrap();
+        let image = build_script_image(&[dir.path()], false, 32, false).unwrap();
         // Should start with LuaDB magic
         assert_eq!(&image[0..6], &[0x01, 0x04, 0x5A, 0xA5, 0x5A, 0xA5]);
     }
@@ -247,7 +261,7 @@ mod tests {
     #[test]
     fn build_image_with_bkcrc() {
         let dir = make_test_dir();
-        let image = build_script_image(dir.path(), false, 32, true).unwrap();
+        let image = build_script_image(&[dir.path()], false, 32, true).unwrap();
         // BK CRC adds 2 bytes per 32-byte block
         assert_eq!(image.len() % 34, 0);
     }
@@ -257,7 +271,36 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("app.luac"), b"\x1bLua").unwrap();
         fs::write(dir.path().join("main.luac"), b"\x1bLua").unwrap();
-        let entries = collect_script_entries(dir.path()).unwrap();
+        let entries = collect_script_entries(&[dir.path()]).unwrap();
         assert_eq!(entries[0].filename, "main.luac");
+    }
+
+    #[test]
+    fn multi_dir_collect() {
+        let dir1 = TempDir::new().unwrap();
+        let dir2 = TempDir::new().unwrap();
+        fs::write(dir1.path().join("main.lua"), b"print('v1')").unwrap();
+        fs::write(dir1.path().join("lib.lua"), b"return {}").unwrap();
+        fs::write(dir2.path().join("extra.lua"), b"--extra").unwrap();
+        // Override lib.lua from dir2
+        fs::write(dir2.path().join("lib.lua"), b"return {v=2}").unwrap();
+
+        let entries = collect_script_entries(&[dir1.path(), dir2.path()]).unwrap();
+        assert_eq!(entries.len(), 3); // main.lua, lib.lua (overridden), extra.lua
+        assert_eq!(entries[0].filename, "main.lua");
+        // lib.lua should have dir2's content
+        let lib = entries.iter().find(|e| e.filename == "lib.lua").unwrap();
+        assert_eq!(lib.data, b"return {v=2}");
+    }
+
+    #[test]
+    fn multi_dir_build_image() {
+        let dir1 = TempDir::new().unwrap();
+        let dir2 = TempDir::new().unwrap();
+        fs::write(dir1.path().join("main.lua"), b"print('hello')").unwrap();
+        fs::write(dir2.path().join("util.lua"), b"return 42").unwrap();
+
+        let image = build_script_image(&[dir1.path(), dir2.path()], false, 32, false).unwrap();
+        assert_eq!(&image[0..6], &[0x01, 0x04, 0x5A, 0xA5, 0x5A, 0xA5]);
     }
 }

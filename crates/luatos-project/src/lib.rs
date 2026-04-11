@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// Name of the project configuration file.
 pub const CONFIG_FILE_NAME: &str = "luatos-project.toml";
@@ -61,11 +61,39 @@ pub struct ProjectMeta {
     pub description: Option<String>,
 }
 
+/// Deserialize a field that accepts either a single string or an array of strings.
+/// Supports backward compatibility: `script_dirs = "lua/"` or `script_dirs = ["lua/", "lib/"]`.
+fn deserialize_string_or_vec<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrVec {
+        Single(String),
+        Multiple(Vec<String>),
+    }
+    match StringOrVec::deserialize(deserializer)? {
+        StringOrVec::Single(s) => Ok(vec![s]),
+        StringOrVec::Multiple(v) => Ok(v),
+    }
+}
+
+fn default_script_dirs() -> Vec<String> {
+    vec![DEFAULT_SCRIPT_DIR.to_string()]
+}
+
 /// Build configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BuildConfig {
-    /// Directory containing Lua source scripts.
-    pub script_dir: String,
+    /// Script source directories. Accepts a single string or array in TOML.
+    /// Backward compatible with `script_dir = "lua/"`.
+    #[serde(
+        alias = "script_dir",
+        deserialize_with = "deserialize_string_or_vec",
+        default = "default_script_dirs"
+    )]
+    pub script_dirs: Vec<String>,
     /// Directory where build artifacts are written.
     pub output_dir: String,
     /// Whether to compile scripts with `luac` before packaging.
@@ -99,7 +127,7 @@ impl Project {
                 description: None,
             },
             build: BuildConfig {
-                script_dir: DEFAULT_SCRIPT_DIR.to_string(),
+                script_dirs: vec![DEFAULT_SCRIPT_DIR.to_string()],
                 output_dir: DEFAULT_OUTPUT_DIR.to_string(),
                 use_luac: true,
                 bitw: default_bitw(chip),
@@ -253,10 +281,52 @@ mod tests {
     fn new_project_defaults() {
         let p = Project::new("test_proj", "air6208");
         assert_eq!(p.project.version, "0.1.0");
-        assert_eq!(p.build.script_dir, "lua/");
+        assert_eq!(p.build.script_dirs, vec!["lua/"]);
         assert_eq!(p.build.output_dir, "build/");
         assert!(p.build.use_luac);
         assert_eq!(p.build.bitw, 64);
         assert!(p.flash.port.is_none());
+    }
+
+    /// Loading a config with old `script_dir` field works (backward compat).
+    #[test]
+    fn backward_compat_single_script_dir() {
+        let toml_str = r#"
+[project]
+name = "legacy"
+chip = "bk72xx"
+version = "0.1.0"
+
+[build]
+script_dir = "src/"
+output_dir = "build/"
+use_luac = true
+bitw = 32
+
+[flash]
+"#;
+        let project: Project = toml::from_str(toml_str).unwrap();
+        assert_eq!(project.build.script_dirs, vec!["src/"]);
+    }
+
+    /// Loading a config with new `script_dirs` array works.
+    #[test]
+    fn multi_script_dirs() {
+        let toml_str = r#"
+[project]
+name = "multi"
+chip = "bk72xx"
+version = "0.1.0"
+
+[build]
+script_dirs = ["lua/", "lib/", "assets/"]
+output_dir = "build/"
+use_luac = true
+bitw = 32
+
+[flash]
+"#;
+        let project: Project = toml::from_str(toml_str).unwrap();
+        assert_eq!(project.build.script_dirs, vec!["lua/", "lib/", "assets/"]);
     }
 }

@@ -20,7 +20,7 @@ struct Cli {
     command: Commands,
 }
 
-#[derive(Clone, clap::ValueEnum)]
+#[derive(Clone, PartialEq, clap::ValueEnum)]
 enum OutputFormat {
     Text,
     Json,
@@ -110,9 +110,9 @@ enum FlashCommands {
         /// Override baud rate
         #[arg(long)]
         baud: Option<u32>,
-        /// Script folder (optional)
+        /// Script folder (optional, can specify multiple)
         #[arg(long)]
-        script: Option<String>,
+        script: Vec<String>,
     },
     /// Flash script partition only (most common during development)
     Script {
@@ -122,9 +122,9 @@ enum FlashCommands {
         /// Serial port (e.g. COM6)
         #[arg(long)]
         port: String,
-        /// Script folder containing .lua files
+        /// Script folders containing .lua files (can specify multiple)
         #[arg(long)]
-        script: String,
+        script: Vec<String>,
     },
     /// Clear filesystem partition (erase to 0xFF)
     ClearFs {
@@ -143,9 +143,9 @@ enum FlashCommands {
         /// Serial port (e.g. COM6)
         #[arg(long)]
         port: String,
-        /// Script folder containing files to pack
+        /// Script folders containing files to pack (can specify multiple)
         #[arg(long)]
-        script: String,
+        script: Vec<String>,
     },
     /// Clear FSKV (key-value store) partition
     ClearKv {
@@ -155,6 +155,27 @@ enum FlashCommands {
         /// Serial port (e.g. COM6)
         #[arg(long)]
         port: String,
+    },
+    /// Closed-loop flash test: flash → capture boot log → verify keywords → PASS/FAIL
+    Test {
+        /// Path to .soc file
+        #[arg(long)]
+        soc: String,
+        /// Serial port (e.g. COM6)
+        #[arg(long)]
+        port: String,
+        /// Override baud rate
+        #[arg(long)]
+        baud: Option<u32>,
+        /// Script folders (optional, can specify multiple)
+        #[arg(long)]
+        script: Vec<String>,
+        /// Timeout in seconds for boot log capture (default: 15)
+        #[arg(long, default_value = "15")]
+        timeout: u64,
+        /// Keywords to search for in boot log (default: "LuatOS@")
+        #[arg(long, default_value = "LuatOS@")]
+        keyword: Vec<String>,
     },
 }
 
@@ -235,9 +256,9 @@ enum ProjectCommands {
 enum BuildCommands {
     /// Compile Lua scripts to bytecode
     Luac {
-        /// Source directory containing .lua files
+        /// Source directories containing .lua files (can specify multiple)
         #[arg(long, default_value = "lua/")]
-        src: String,
+        src: Vec<String>,
         /// Output directory for .luac files
         #[arg(long, default_value = "build/")]
         output: String,
@@ -247,9 +268,9 @@ enum BuildCommands {
     },
     /// Build LuaDB script filesystem image
     Filesystem {
-        /// Source directory containing .lua / .luac files
+        /// Source directories containing .lua / .luac files (can specify multiple)
         #[arg(long, default_value = "lua/")]
-        src: String,
+        src: Vec<String>,
         /// Output file path for the image
         #[arg(long, default_value = "build/script.bin")]
         output: String,
@@ -288,7 +309,10 @@ fn main() {
                 port,
                 baud,
                 script,
-            } => cmd_flash_run(&soc, &port, baud, script.as_deref(), &cli.format),
+            } => {
+                let script_opt = if script.is_empty() { None } else { Some(script.as_slice()) };
+                cmd_flash_run(&soc, &port, baud, script_opt, &cli.format)
+            }
             FlashCommands::Script { soc, port, script } => {
                 cmd_flash_partition("script", &soc, &port, Some(&script), &cli.format)
             }
@@ -300,6 +324,17 @@ fn main() {
             }
             FlashCommands::ClearKv { soc, port } => {
                 cmd_flash_partition("clear-kv", &soc, &port, None, &cli.format)
+            }
+            FlashCommands::Test {
+                soc,
+                port,
+                baud,
+                script,
+                timeout,
+                keyword,
+            } => {
+                let script_opt = if script.is_empty() { None } else { Some(script.as_slice()) };
+                cmd_flash_test(&soc, &port, baud, script_opt, timeout, &keyword, &cli.format)
             }
         },
         Commands::Log { action } => match action {
@@ -474,7 +509,7 @@ fn cmd_flash_run(
     soc: &str,
     port: &str,
     baud: Option<u32>,
-    script: Option<&str>,
+    script_folders: Option<&[String]>,
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -494,8 +529,15 @@ fn cmd_flash_run(
 
     match chip {
         "bk72xx" | "air8101" | "air8000" => {
+            let folders_refs: Option<Vec<&str>> = script_folders
+                .map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
             let lines = luatos_flash::bk7258::flash_bk7258(
-                soc, script, port, baud, cancel, on_progress,
+                soc,
+                folders_refs.as_deref(),
+                port,
+                baud,
+                cancel,
+                on_progress,
             )?;
             match format {
                 OutputFormat::Text => {
@@ -560,7 +602,7 @@ fn cmd_flash_partition(
     op: &str,
     soc: &str,
     port: &str,
-    script_folder: Option<&str>,
+    script_folders: Option<&[String]>,
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -580,15 +622,17 @@ fn cmd_flash_partition(
     match chip {
         "bk72xx" | "air8101" | "air8000" => match op {
             "script" => {
-                let folder = script_folder.expect("script folder required");
-                luatos_flash::bk7258::flash_script_only(soc, folder, port, cancel, on_progress)?;
+                let folders = script_folders.expect("script folder required");
+                let refs: Vec<&str> = folders.iter().map(|s| s.as_str()).collect();
+                luatos_flash::bk7258::flash_script_only(soc, &refs, port, cancel, on_progress)?;
             }
             "clear-fs" => {
                 luatos_flash::bk7258::clear_filesystem(soc, port, cancel, on_progress)?;
             }
             "flash-fs" => {
-                let folder = script_folder.expect("script folder required");
-                luatos_flash::bk7258::flash_filesystem(soc, folder, port, cancel, on_progress)?;
+                let folders = script_folders.expect("script folder required");
+                let refs: Vec<&str> = folders.iter().map(|s| s.as_str()).collect();
+                luatos_flash::bk7258::flash_filesystem(soc, &refs, port, cancel, on_progress)?;
             }
             "clear-kv" => {
                 luatos_flash::bk7258::clear_fskv(soc, port, cancel, on_progress)?;
@@ -597,8 +641,8 @@ fn cmd_flash_partition(
         },
         "air6208" | "air101" | "air103" | "air601" => match op {
             "script" => {
-                let folder = script_folder.expect("script folder required");
-                let files = collect_script_files(folder)?;
+                let folders = script_folders.expect("script folder required");
+                let files = collect_script_files(folders)?;
                 luatos_flash::xt804::flash_script_only(
                     soc, port, &files, on_progress, cancel,
                 )?;
@@ -630,20 +674,194 @@ fn cmd_flash_partition(
     Ok(())
 }
 
-/// Collect script files from a folder (*.lua, *.luac, *.json, etc.)
-fn collect_script_files(folder: &str) -> anyhow::Result<Vec<String>> {
+/// Collect script files from multiple folders (*.lua, *.luac, *.json, etc.)
+fn collect_script_files(folders: &[String]) -> anyhow::Result<Vec<String>> {
     let mut files = Vec::new();
-    for entry in std::fs::read_dir(folder)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() {
-            files.push(path.to_string_lossy().to_string());
+    for folder in folders {
+        for entry in std::fs::read_dir(folder)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                files.push(path.to_string_lossy().to_string());
+            }
         }
     }
     if files.is_empty() {
-        anyhow::bail!("No script files found in {folder}");
+        anyhow::bail!("No script files found in {:?}", folders);
     }
     Ok(files)
+}
+
+// ─── Flash test command ───────────────────────────────────────────────────────
+
+/// Closed-loop flash test: flash firmware → capture boot log → check keywords → PASS/FAIL.
+fn cmd_flash_test(
+    soc: &str,
+    port: &str,
+    baud: Option<u32>,
+    script_folders: Option<&[String]>,
+    timeout_secs: u64,
+    keywords: &[String],
+    format: &OutputFormat,
+) -> anyhow::Result<()> {
+    use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+    use std::time::{Duration, Instant};
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_clone = cancel.clone();
+    let _ = ctrlc::set_handler(move || {
+        eprintln!("\nCancelling flash test...");
+        cancel_clone.store(true, Ordering::Relaxed);
+    });
+
+    let on_progress = make_progress_callback(format);
+
+    // Step 1: Flash the firmware
+    let info = luatos_soc::read_soc_info(soc)?;
+    let chip = info.chip.chip_type.clone();
+    let log_br = info.log_baud_rate();
+
+    let boot_lines_from_flash: Vec<String> = match chip.as_str() {
+        "bk72xx" | "air8101" | "air8000" => {
+            let folders_refs: Option<Vec<&str>> = script_folders
+                .map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
+            luatos_flash::bk7258::flash_bk7258(
+                soc,
+                folders_refs.as_deref(),
+                port,
+                baud,
+                cancel.clone(),
+                on_progress,
+            )?
+        }
+        "air6208" | "air101" | "air103" | "air601" => {
+            let on_progress2 = make_progress_callback(format);
+            luatos_flash::xt804::flash_xt804(soc, port, on_progress2, cancel.clone())?;
+            Vec::new() // XT804 does not return boot lines from flash
+        }
+        _ => {
+            anyhow::bail!("Unsupported chip type for flash test: {chip}");
+        }
+    };
+
+    if cancel.load(Ordering::Relaxed) {
+        anyhow::bail!("Flash test cancelled by user");
+    }
+
+    // Step 2: Capture boot log (append to any lines from flash)
+    let mut all_lines = boot_lines_from_flash;
+
+    if format == &OutputFormat::Text {
+        eprintln!("Capturing boot log for {timeout_secs}s on {port} @ {log_br}...");
+    }
+
+    // Open serial port and capture lines for the timeout period
+    let serial = serialport::new(port, log_br)
+        .timeout(Duration::from_millis(500))
+        .open();
+
+    if let Ok(mut serial) = serial {
+        use std::io::Read;
+        let start = Instant::now();
+        let timeout = Duration::from_secs(timeout_secs);
+        let mut buf = vec![0u8; 4096];
+        let mut line_buf = String::new();
+
+        while start.elapsed() < timeout && !cancel.load(Ordering::Relaxed) {
+            match serial.read(&mut buf) {
+                Ok(n) if n > 0 => {
+                    let text = String::from_utf8_lossy(&buf[..n]);
+                    for ch in text.chars() {
+                        if ch == '\n' {
+                            let line = line_buf.trim_end_matches('\r').to_string();
+                            if !line.is_empty() {
+                                all_lines.push(line);
+                            }
+                            line_buf.clear();
+                        } else {
+                            line_buf.push(ch);
+                        }
+                    }
+
+                    // Early exit if we already found all keywords
+                    let found_all = keywords.iter().all(|kw| {
+                        all_lines.iter().any(|line| line.contains(kw.as_str()))
+                    });
+                    if found_all {
+                        break;
+                    }
+                }
+                Ok(_) => {}
+                Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(e) => {
+                    log::warn!("Serial read error: {e}");
+                    break;
+                }
+            }
+        }
+        // Flush remaining line buffer
+        if !line_buf.is_empty() {
+            all_lines.push(line_buf.trim_end_matches('\r').to_string());
+        }
+    } else if all_lines.is_empty() {
+        // Could not open serial and no lines from flash
+        log::warn!("Could not open serial port for boot log capture");
+    }
+
+    // Step 3: Evaluate keywords
+    let mut keyword_results: Vec<(String, bool)> = Vec::new();
+    for kw in keywords {
+        let found = all_lines.iter().any(|line| line.contains(kw.as_str()));
+        keyword_results.push((kw.clone(), found));
+    }
+
+    let all_passed = keyword_results.iter().all(|(_, found)| *found);
+    let result_str = if all_passed { "PASS" } else { "FAIL" };
+
+    // Step 4: Output
+    match format {
+        OutputFormat::Text => {
+            println!("\n===== Flash Test Result: {} =====", result_str);
+            println!("  Chip:     {}", chip);
+            println!("  SOC:      {}", soc);
+            println!("  Port:     {}", port);
+            println!("  Log lines: {}", all_lines.len());
+            for (kw, found) in &keyword_results {
+                let icon = if *found { "✓" } else { "✗" };
+                println!("  [{icon}] Keyword \"{kw}\": {}", if *found { "FOUND" } else { "NOT FOUND" });
+            }
+            if !all_lines.is_empty() {
+                println!("\n--- Boot Log ({} lines) ---", all_lines.len());
+                for line in &all_lines {
+                    println!("{line}");
+                }
+            }
+        }
+        OutputFormat::Json => {
+            let json = serde_json::json!({
+                "status": if all_passed { "ok" } else { "fail" },
+                "command": "flash.test",
+                "data": {
+                    "result": result_str,
+                    "chip": chip,
+                    "soc": soc,
+                    "port": port,
+                    "keywords": keyword_results.iter().map(|(kw, found)| {
+                        serde_json::json!({ "keyword": kw, "found": found })
+                    }).collect::<Vec<_>>(),
+                    "boot_log": all_lines,
+                    "log_line_count": all_lines.len(),
+                },
+            });
+            println!("{}", serde_json::to_string_pretty(&json)?);
+        }
+    }
+
+    if !all_passed {
+        std::process::exit(1);
+    }
+
+    Ok(())
 }
 
 // ─── Log commands ─────────────────────────────────────────────────────────────
@@ -901,7 +1119,7 @@ fn cmd_project_info(dir: &str, format: &OutputFormat) -> anyhow::Result<()> {
             if let Some(ref desc) = project.project.description {
                 println!("  Desc:     {desc}");
             }
-            println!("  Scripts:  {}", project.build.script_dir);
+            println!("  Scripts:  {}", project.build.script_dirs.join(", "));
             println!("  Output:   {}", project.build.output_dir);
             println!("  Use luac: {}", project.build.use_luac);
             println!("  Bitwidth: {}", project.build.bitw);
@@ -996,7 +1214,7 @@ fn get_config_value(project: &luatos_project::Project, key: &str) -> anyhow::Res
             .description
             .clone()
             .unwrap_or_default(),
-        "build.script_dir" => project.build.script_dir.clone(),
+        "build.script_dir" | "build.script_dirs" => project.build.script_dirs.join(", "),
         "build.output_dir" => project.build.output_dir.clone(),
         "build.use_luac" => project.build.use_luac.to_string(),
         "build.bitw" => project.build.bitw.to_string(),
@@ -1021,7 +1239,9 @@ fn set_config_value(
         "project.chip" => project.project.chip = value.to_string(),
         "project.version" => project.project.version = value.to_string(),
         "project.description" => project.project.description = Some(value.to_string()),
-        "build.script_dir" => project.build.script_dir = value.to_string(),
+        "build.script_dir" | "build.script_dirs" => {
+            project.build.script_dirs = value.split(',').map(|s| s.trim().to_string()).collect();
+        }
         "build.output_dir" => project.build.output_dir = value.to_string(),
         "build.use_luac" => project.build.use_luac = value.parse()?,
         "build.bitw" => project.build.bitw = value.parse()?,
@@ -1036,22 +1256,25 @@ fn set_config_value(
 // ─── Build commands ───────────────────────────────────────────────────────────
 
 fn cmd_build_luac(
-    src: &str,
+    src_dirs: &[String],
     output: &str,
     bitw: u32,
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
-    let src_path = std::path::Path::new(src);
     let out_path = std::path::Path::new(output);
+    let mut total_files = Vec::new();
 
-    anyhow::ensure!(src_path.is_dir(), "Source directory not found: {src}");
-
-    let files = luatos_luadb::build::compile_lua_dir(src_path, out_path, bitw)?;
+    for src in src_dirs {
+        let src_path = std::path::Path::new(src);
+        anyhow::ensure!(src_path.is_dir(), "Source directory not found: {src}");
+        let files = luatos_luadb::build::compile_lua_dir(src_path, out_path, bitw)?;
+        total_files.extend(files);
+    }
 
     match format {
         OutputFormat::Text => {
-            println!("Compiled {} files (bitw={bitw})", files.len());
-            for f in &files {
+            println!("Compiled {} files (bitw={bitw})", total_files.len());
+            for f in &total_files {
                 println!("  {}", f.display());
             }
         }
@@ -1060,8 +1283,8 @@ fn cmd_build_luac(
                 "status": "ok",
                 "command": "build.luac",
                 "data": {
-                    "count": files.len(),
-                    "files": files.iter().map(|f| f.display().to_string()).collect::<Vec<_>>(),
+                    "count": total_files.len(),
+                    "files": total_files.iter().map(|f| f.display().to_string()).collect::<Vec<_>>(),
                 },
             });
             println!("{}", serde_json::to_string_pretty(&json)?);
@@ -1071,17 +1294,21 @@ fn cmd_build_luac(
 }
 
 fn cmd_build_filesystem(
-    src: &str,
+    src_dirs: &[String],
     output: &str,
     use_luac: bool,
     bitw: u32,
     bkcrc: bool,
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
-    let src_path = std::path::Path::new(src);
-    anyhow::ensure!(src_path.is_dir(), "Source directory not found: {src}");
+    let paths: Vec<std::path::PathBuf> = src_dirs.iter().map(std::path::PathBuf::from).collect();
+    let path_refs: Vec<&std::path::Path> = paths.iter().map(|p| p.as_path()).collect();
 
-    let image = luatos_luadb::build::build_script_image(src_path, use_luac, bitw, bkcrc)?;
+    for p in &path_refs {
+        anyhow::ensure!(p.is_dir(), "Source directory not found: {}", p.display());
+    }
+
+    let image = luatos_luadb::build::build_script_image(&path_refs, use_luac, bitw, bkcrc)?;
 
     let out_path = std::path::Path::new(output);
     if let Some(parent) = out_path.parent() {

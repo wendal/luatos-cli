@@ -3,12 +3,12 @@
 // ZIP format is used for bk72xx / air8101 / air8000.
 // 7z format is used for air6208 / air101 / air103.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
 
-use crate::unpack::{detect_soc_format, find_7z_exe, SocFormat};
+use crate::unpack::{detect_soc_format, extract_7z, SocFormat};
 use crate::SocInfo;
 
 /// Create a ZIP-format .soc archive from all files in `dir`.
@@ -61,29 +61,35 @@ fn add_dir_to_zip<W: Write + std::io::Seek>(
     Ok(())
 }
 
-/// Create a 7z-format .soc archive from all files in `dir` using bundled 7za.exe.
+/// Create a 7z-format .soc archive from all files in `dir` (pure Rust).
 pub fn pack_soc_7z(dir: &Path, out_path: &str) -> Result<()> {
-    let abs_out = std::path::absolute(out_path)
-        .or_else(|_| -> Result<std::path::PathBuf> {
-            let p = std::env::current_dir()?.join(out_path);
-            Ok(p)
-        })
-        .with_context(|| format!("Cannot resolve output path: {out_path}"))?;
+    use walkdir::WalkDir;
 
-    let exe = find_7z_exe();
-    let output = std::process::Command::new(&exe)
-        .arg("a")
-        .arg("-t7z")
-        .arg(abs_out.to_string_lossy().as_ref())
-        .arg("*")
-        .current_dir(dir)
-        .output()
-        .with_context(|| format!("Failed to run 7z: {exe}"))?;
+    let mut encoder = sevenz_rust2::ArchiveWriter::create(out_path)
+        .with_context(|| format!("Cannot create 7z: {out_path}"))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("7z packing failed: {stderr}");
+    for entry in WalkDir::new(dir).into_iter() {
+        let entry = entry?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let rel = path
+            .strip_prefix(dir)
+            .context("Strip prefix")?
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        let src_file = fs::File::open(path)
+            .with_context(|| format!("Read file: {}", path.display()))?;
+
+        let archive_entry = sevenz_rust2::ArchiveEntry::from_path(path, rel);
+        encoder
+            .push_archive_entry(archive_entry, Some(src_file))
+            .with_context(|| format!("Add 7z entry: {}", path.display()))?;
     }
+
+    encoder.finish().context("Finalize 7z archive")?;
     Ok(())
 }
 
@@ -165,22 +171,8 @@ fn update_script_zip(soc_path: &str, script_data: &[u8], out_path: &str) -> Resu
 fn update_script_7z(soc_path: &str, script_data: &[u8], out_path: &str) -> Result<()> {
     let tempdir = tempfile::tempdir().context("Create temp dir")?;
 
-    // Extract
-    let abs_soc = fs::canonicalize(soc_path)
-        .with_context(|| format!("Cannot resolve: {soc_path}"))?;
-    let exe = find_7z_exe();
-    let output = std::process::Command::new(&exe)
-        .arg("x")
-        .arg(abs_soc.to_string_lossy().as_ref())
-        .arg(format!("-o{}", tempdir.path().display()))
-        .arg("-y")
-        .output()
-        .with_context(|| format!("Failed to run 7z: {exe}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("7z extraction failed: {stderr}");
-    }
+    // Extract using pure Rust
+    extract_7z(soc_path, tempdir.path())?;
 
     // Read info.json to find script filename
     let info: SocInfo = serde_json::from_reader(

@@ -676,7 +676,7 @@ fn flash_via_subprocess(
 /// Returns captured boot log lines.
 pub fn flash_bk7258(
     soc_path: &str,
-    script_folder: Option<&str>,
+    script_folders: Option<&[&str]>,
     port: &str,
     baud_rate: Option<u32>,
     cancel: Arc<AtomicBool>,
@@ -710,7 +710,7 @@ pub fn flash_bk7258(
     // 3. Subprocess path (preferred): use bundled air602_flash.exe
     let exe_path = tempdir.path().join("air602_flash.exe");
     if exe_path.exists() {
-        if script_folder.is_some() {
+        if script_folders.is_some() {
             on_progress(&FlashProgress::info(
                 "Preparing",
                 2.0,
@@ -745,15 +745,17 @@ pub fn flash_bk7258(
     ));
 
     // Optionally build script.bin
-    let script_payload: Option<(Vec<u8>, u32)> = if let Some(folder) = script_folder {
-        let fp = Path::new(folder);
-        if fp.is_dir() {
+    let script_payload: Option<(Vec<u8>, u32)> = if let Some(folders) = script_folders {
+        let paths: Vec<&Path> = folders.iter().map(|f| Path::new(*f)).collect();
+        let any_valid = paths.iter().any(|p| p.is_dir());
+        if any_valid {
             on_progress(&FlashProgress::info(
                 "Building",
                 3.0,
                 "Building script.bin from Lua files…",
             ));
-            match build_script_bin(fp, &info) {
+            let valid_paths: Vec<&Path> = paths.into_iter().filter(|p| p.is_dir()).collect();
+            match build_script_bin(&valid_paths, &info) {
                 Ok(data) => {
                     let sa = parse_addr(
                         info.download
@@ -935,28 +937,31 @@ pub fn flash_bk7258(
 // ─── Script synthesis ─────────────────────────────────────────────────────────
 
 /// Build a LuaDB script.bin from Lua files in `folder`.
-fn build_script_bin(folder: &Path, info: &SocInfo) -> Result<Vec<u8>> {
+fn build_script_bin(folders: &[&Path], info: &SocInfo) -> Result<Vec<u8>> {
     let use_bkcrc = info.use_bkcrc();
     let mut entries: Vec<luatos_luadb::LuadbEntry> = Vec::new();
 
-    for entry in std::fs::read_dir(folder).context("Cannot read script folder")? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("lua") {
-            continue;
+    for folder in folders {
+        for entry in std::fs::read_dir(folder)
+            .with_context(|| format!("Cannot read script folder: {}", folder.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let data =
+                std::fs::read(&path).with_context(|| format!("Cannot read {}", path.display()))?;
+            entries.push(luatos_luadb::LuadbEntry {
+                filename: name,
+                data,
+            });
         }
-        let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        let data =
-            std::fs::read(&path).with_context(|| format!("Cannot read {}", path.display()))?;
-        // Use raw .lua source (luac compilation deferred to build-luac phase)
-        entries.push(luatos_luadb::LuadbEntry {
-            filename: name,
-            data,
-        });
     }
 
     if entries.is_empty() {
-        bail!("No .lua files found in {}", folder.display());
+        bail!("No files found in script folders");
     }
 
     let mut data = luatos_luadb::pack_luadb(&entries);
@@ -1072,7 +1077,7 @@ fn connect_bootloader(
 ///   get_bus → set_baud → unprotect → build LuaDB → erase+write at script_addr
 pub fn flash_script_only(
     soc_path: &str,
-    script_folder: &str,
+    script_folders: &[&str],
     port: &str,
     cancel: Arc<AtomicBool>,
     on_progress: ProgressCallback,
@@ -1104,7 +1109,10 @@ pub fn flash_script_only(
         5.0,
         "Packing script LuaDB…",
     ));
-    let script_data = build_script_bin(Path::new(script_folder), &info)?;
+    let script_data = {
+        let paths: Vec<&Path> = script_folders.iter().map(|f| Path::new(*f)).collect();
+        build_script_bin(&paths, &info)?
+    };
     let script_size = info.script_size();
     if script_data.len() > script_size {
         bail!(
@@ -1202,10 +1210,10 @@ pub fn clear_filesystem(
     Ok(())
 }
 
-/// Build LuaDB from script folder and flash to filesystem partition.
+/// Build LuaDB from script folders and flash to filesystem partition.
 pub fn flash_filesystem(
     soc_path: &str,
-    script_folder: &str,
+    script_folders: &[&str],
     port: &str,
     cancel: Arc<AtomicBool>,
     on_progress: ProgressCallback,
@@ -1231,7 +1239,10 @@ pub fn flash_filesystem(
         3.0,
         "Packing filesystem LuaDB…",
     ));
-    let fs_data = build_script_bin(Path::new(script_folder), &info)?;
+    let fs_data = {
+        let paths: Vec<&Path> = script_folders.iter().map(|f| Path::new(*f)).collect();
+        build_script_bin(&paths, &info)?
+    };
     if fs_data.len() > fs_size {
         bail!(
             "Filesystem data ({} bytes) exceeds partition ({} bytes)",

@@ -25,5 +25,6 @@ tracing-subscriber.workspace = true
 env_logger.workspace = true
 log.workspace = true
 ctrlc = "3"
+serialport.workspace = true
 toml.workspace = true
 chrono.workspace = true

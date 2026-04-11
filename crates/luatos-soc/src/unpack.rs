@@ -76,7 +76,6 @@ fn read_soc_info_zip(soc_path: &str) -> Result<SocInfo> {
 }
 
 fn read_soc_info_7z(soc_path: &str) -> Result<SocInfo> {
-    // Extract to temp dir, read info.json, clean up
     let tempdir = tempfile::tempdir().context("Create temp dir")?;
     extract_7z(soc_path, tempdir.path())?;
     let info: SocInfo = serde_json::from_reader(
@@ -130,55 +129,13 @@ fn finalize_unpacked(out_dir: &Path) -> Result<UnpackedSoc> {
     })
 }
 
-/// Extract a 7z archive using the bundled 7za.exe or system `7z` command.
-fn extract_7z(soc_path: &str, out_dir: &Path) -> Result<()> {
-    let abs_soc = std::fs::canonicalize(soc_path)
-        .with_context(|| format!("Cannot resolve path: {soc_path}"))?;
-
-    // Try bundled 7za.exe first, then system PATH
-    let exe = find_7z_exe();
-    let output = std::process::Command::new(&exe)
-        .arg("x")
-        .arg(abs_soc.to_string_lossy().as_ref())
-        .arg(format!("-o{}", out_dir.display()))
-        .arg("-y")
-        .output()
-        .with_context(|| format!("Failed to run 7z extractor: {exe}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("7z extraction failed: {stderr}");
-    }
+/// Extract a 7z archive using the sevenz-rust2 crate (pure Rust, no subprocess).
+pub(crate) fn extract_7z(soc_path: &str, out_dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(out_dir)
+        .with_context(|| format!("Cannot create output dir: {}", out_dir.display()))?;
+    sevenz_rust2::decompress_file(soc_path, out_dir)
+        .with_context(|| format!("7z extraction failed: {soc_path}"))?;
     Ok(())
-}
-
-/// Find the 7z executable path. Checks bundled location first, then PATH.
-pub(crate) fn find_7z_exe() -> String {
-    // Check for bundled 7za.exe relative to the executable
-    let bundled_paths = [
-        "refs/origin_tools/7za.exe",
-        "../refs/origin_tools/7za.exe",
-    ];
-    for p in &bundled_paths {
-        if Path::new(p).exists() {
-            return p.to_string();
-        }
-    }
-
-    // Try cwd-relative
-    if let Ok(cwd) = std::env::current_dir() {
-        let p = cwd.join("refs").join("origin_tools").join("7za.exe");
-        if p.exists() {
-            return p.to_string_lossy().to_string();
-        }
-    }
-
-    // Fall back to system PATH
-    if cfg!(windows) {
-        "7za.exe".to_string()
-    } else {
-        "7z".to_string()
-    }
 }
 
 /// List files inside a .soc archive (ZIP or 7z).
@@ -200,24 +157,16 @@ fn list_soc_files_zip(soc_path: &str) -> Result<Vec<String>> {
 }
 
 fn list_soc_files_7z(soc_path: &str) -> Result<Vec<String>> {
-    let exe = find_7z_exe();
-    let output = std::process::Command::new(&exe)
-        .arg("l")
-        .arg("-slt")
-        .arg(soc_path)
-        .output()
-        .with_context(|| format!("Failed to run 7z: {exe}"))?;
-
-    if !output.status.success() {
-        bail!("7z list failed");
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let names: Vec<String> = stdout
-        .lines()
-        .filter_map(|line| line.strip_prefix("Path = "))
-        .filter(|p| !p.contains(".soc")) // Skip the archive path itself
-        .map(|s| s.to_string())
+    let mut file = std::fs::File::open(soc_path)
+        .with_context(|| format!("Cannot open: {soc_path}"))?;
+    let password = sevenz_rust2::Password::empty();
+    let archive = sevenz_rust2::Archive::read(&mut file, &password)
+        .context("Failed to read 7z archive")?;
+    let names: Vec<String> = archive
+        .files
+        .iter()
+        .filter(|f| !f.is_directory())
+        .map(|f| f.name().to_string())
         .collect();
     Ok(names)
 }
@@ -265,5 +214,17 @@ mod tests {
         let files = list_soc_files(soc).expect("list_soc_files");
         assert!(!files.is_empty());
         assert!(files.iter().any(|f| f == "info.json"));
+    }
+
+    #[test]
+    fn list_air6208_files() {
+        let soc = r"d:\github\luatos-cli\refs\soc_files\LuatOS-SoC_V2001_Air6208_101.soc";
+        if !Path::new(soc).exists() {
+            return;
+        }
+        let files = list_soc_files(soc).expect("list_soc_files");
+        assert!(!files.is_empty());
+        assert!(files.iter().any(|f| f == "info.json"));
+        println!("Air6208 files: {:?}", files);
     }
 }

@@ -30,3 +30,4 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 tempfile = "3"
 toml = "0.8"
 walkdir = "2"
+sevenz-rust2 = { version = "0.20", features = ["compress"] }
