@@ -226,82 +226,102 @@ DIAG_REBOOT_DOWNLOAD_MS = 0x42  // 重启到下载模式
 
 ## 日志输出
 
-- 协议: SOC二进制日志 (0xA5帧头, 与Air1601/CCM4211相同)
+- 协议: 0x7E HDLC帧 (与Air1601/CCM4211的0xA5帧不同!)
 - 波特率: 2000000
-- 需要发送探测命令才开始输出 (同ccm4211 log probe)
-- 日志端口: USB模式下为 x.2 端口 (VID=0x19D1, 最低COM口号)
+- 需要发送探测命令才开始输出 (探测帧格式与ccm4211相同, 0xA5帧)
+- 日志端口: USB模式下为 x.4 端口 (VID=0x19D1, 第二个COM号)
+- DTR/RTS: 打开端口后需设为 HIGH
+
+### USB端口分配
+
+| USB接口 | COM号顺序 | 功能 |
+|---------|----------|------|
+| x.2 | 最低 (如COM3) | AT/命令口 |
+| x.4 | 中间 (如COM4) | SOC二进制日志口 |
+| x.6 | 最高 (如COM5) | 用户串口 |
 
 ### 日志协议详情
 
-EC718使用与Air1601/CCM4211相同的SOC二进制日志协议:
+EC718使用 **0x7E HDLC帧格式**, 与Air1601/CCM4211的0xA5帧完全不同.
 
 #### 帧格式
 ```
-[0xA5 起始] [转义(头部+载荷)] [转义(CRC16_LE)] [0xA5 结束]
+[0x7E 起始] [HDLC转义载荷] [0x7E 结束]
 ```
 
-#### 转义规则
+连续帧之间共享定界符: `... payload1 0x7E payload2 0x7E payload3 ...`
+
+#### HDLC转义规则
 | 原始字节 | 转义后 |
 |---------|--------|
-| `0xA5` | `0xA6, 0x01` |
-| `0xA6` | `0xA6, 0x02` |
+| `0x7E` | `0x7D, 0x5E` |
+| `0x7D` | `0x7D, 0x5D` |
 | 其他 | 不变 |
 
-#### 24字节帧头
+反转义: `escaped_byte ^ 0x20`
+
+#### 12字节帧头
 | 偏移 | 长度 | 字段 | 说明 |
 |------|------|------|------|
-| 0 | 8 | ms | 设备毫秒时间戳 (u64 LE) |
-| 8 | 8 | tag | 日志级别(8位) + 标签名(7位×8字符) |
-| 16 | 4 | cmd | 命令ID (u32 LE) |
-| 20 | 2 | sn | 序列号 (u16 LE) |
-| 22 | 1 | msg_type | 消息类型 (0=printf格式) |
-| 23 | 1 | cpu | CPU ID |
+| 0 | 4 | ms | 设备毫秒时间戳 (u32 LE) |
+| 4 | 4 | reserved | 保留, 始终为0 |
+| 8 | 4 | tag | 源模块标识符 (u32 LE) |
 
-#### 日志级别
-| 值 | 级别 |
-|----|------|
-| 1 | Debug |
-| 2 | Info |
-| 3 | Warn |
-| 4 | Error |
+#### printf消息体 (字节12起)
 
-#### CRC16校验
-- 算法: CRC16-ModBus
-- 多项式: 0xA001 (反转 0x8005)
-- 初始值: 0x0000
-- 计算范围: 头部 + 载荷 (不含CRC本身)
-- 输出: 小端序 2字节
+- NUL结尾的格式字符串
+- 参数从 `(nul_pos + 4) & ~3` 偏移开始 (4字节对齐)
+- 日志级别/模块名嵌入在格式字符串文本中: `"I/http ..."`, `"D/net ..."`
+
+#### 参数编码 (与0xA5协议有差异!)
+
+| 格式符 | 编码 |
+|--------|------|
+| `%d`, `%u`, `%x` | i32/u32 LE (4字节) |
+| `%lld` | i64 LE (8字节) |
+| `%s` | `[u32 长度] [字符串字节]`, 4字节对齐 |
+| `%.*s` | `[u32 精度] [字符串字节]`, 4字节对齐 |
+| `%p` | u32 LE (4字节) |
+| `%f` | f64 LE (8字节) |
+
+**注意**: `%s` 使用长度前缀, 非NUL结尾, 这与0xA5协议不同.
 
 #### 探测命令 (Probe)
-固件缓冲日志输出, 需发送探测帧触发日志刷新:
+
+固件缓冲日志输出, 需发送探测帧触发日志开始. 探测帧使用0xA5格式:
 ```
 build_soc_frame(cmd=1, address=0, payload=[], sn=1)
 ```
 即发送 SOC_CMD_GET_BASE_INFO (cmd=1) 帧, 与CCM4211完全相同.
+设备收到后以0x7E帧格式输出日志.
 
-#### 标签名解码
-tag字段的高56位编码最多8个字符, 每个字符7位, 查表:
+#### DTR/RTS 控制
+
+打开日志端口后, 需要设置:
 ```
-" abcdefghijklmnopqrstuvwxyz012345ABCDEFGHIJKLMNOPQRSTUVWXYZ_*-./"
+DTR = HIGH (True)
+RTS = HIGH (True)
 ```
+参考 luatools_py3 的 usb_device.py, 所有日志端口打开后均设置 DTR/RTS HIGH.
 
 ### 刷机后日志端口变化
 
 EC718刷机后模组复位, USB重新枚举:
 1. 刷机使用下载端口: VID=0x17D1 (boot模式)
 2. 复位后变为运行模式: VID=0x19D1 (3个端口)
-3. 日志端口为最低COM号端口 (x.2接口)
+3. 日志端口为 **第二个COM号** (x.4接口, 非最低COM号!)
 4. 需要等待USB重新枚举 (约5-15秒)
-5. 发送探测命令后才开始接收日志
+5. 设置 DTR=HIGH, RTS=HIGH
+6. 发送探测命令后才开始接收日志
 
 ### CLI 使用
 
 ```bash
-# 自动检测EC718日志端口
+# 自动检测EC718日志端口 (自动找到第二个COM口)
 luatos-cli log view-binary --port auto --probe
 
-# 指定端口
-luatos-cli log view-binary --port COM3 --baud 2000000 --probe
+# 指定端口 (COM4 = 日志口, 非COM3)
+luatos-cli log view-binary --port COM4 --baud 2000000 --probe
 
 # 刷机+日志测试 (自动处理端口变化)
 luatos-cli flash test --soc firmware.soc --port COM3 --keyword "LuatOS@"

@@ -1205,6 +1205,32 @@ pub fn find_ec718_cmd_port() -> Option<String> {
     Some(candidates[0].clone())
 }
 
+/// Find the EC718 log port (VID=0x19D1, second USB interface = x.4).
+///
+/// The EC718 USB composite device exposes 3 COM ports:
+///   x.2 (lowest COM#)  = AT/command port
+///   x.4 (middle COM#)  = SOC binary log port (0x7E framed)
+///   x.6 (highest COM#) = User COM port
+pub fn find_ec718_log_port() -> Option<String> {
+    let ports = serialport::available_ports().ok()?;
+    let mut candidates: Vec<String> = Vec::new();
+
+    for port in &ports {
+        if let serialport::SerialPortType::UsbPort(usb_info) = &port.port_type {
+            if usb_info.vid == LOG_VID && usb_info.pid == LOG_PID {
+                candidates.push(port.port_name.clone());
+            }
+        }
+    }
+
+    if candidates.len() < 2 {
+        return candidates.into_iter().next(); // fallback to first if only one
+    }
+
+    candidates.sort();
+    Some(candidates[1].clone()) // second port = log port (x.4)
+}
+
 /// Find a serial port by USB VID/PID.
 pub fn find_port_by_vid_pid(vid: u16, pid: u16) -> Option<String> {
     let ports = serialport::available_ports().ok()?;
@@ -1237,7 +1263,7 @@ pub fn wait_for_boot_port(timeout_secs: u32) -> Option<String> {
 pub fn wait_for_log_port(timeout_secs: u32) -> Option<String> {
     let max_iterations = timeout_secs * 10;
     for _ in 0..max_iterations {
-        if let Some(port) = find_ec718_cmd_port() {
+        if let Some(port) = find_ec718_log_port() {
             return Some(port);
         }
         std::thread::sleep(Duration::from_millis(100));

@@ -1016,35 +1016,72 @@ fn cmd_flash_test(
         let mut buf = vec![0u8; 4096];
 
         if use_binary_log {
-            // Binary SOC log: decode 0xA5 frames via SocLogDecoder
-            let mut decoder = luatos_log::SocLogDecoder::new();
-            while start.elapsed() < timeout && !cancel.load(Ordering::Relaxed) {
-                match serial.read(&mut buf) {
-                    Ok(n) if n > 0 => {
-                        let entries = decoder.feed(&buf[..n]);
-                        for entry in &entries {
-                            let module = entry.module.as_deref().unwrap_or("-");
-                            let msg = format!(
-                                "[{}] {}/{} {}",
-                                entry.device_time.as_deref().unwrap_or("?"),
-                                entry.level,
-                                module,
-                                entry.message
-                            );
-                            all_lines.push(msg);
+            if is_ec718 {
+                // EC718: 0x7E framed binary log via Ec718LogDecoder
+                let _ = serial.write_data_terminal_ready(true);
+                let _ = serial.write_request_to_send(true);
+                let mut decoder = luatos_log::Ec718LogDecoder::new();
+                while start.elapsed() < timeout && !cancel.load(Ordering::Relaxed) {
+                    match serial.read(&mut buf) {
+                        Ok(n) if n > 0 => {
+                            let entries = decoder.feed(&buf[..n]);
+                            for entry in &entries {
+                                let module = entry.module.as_deref().unwrap_or("-");
+                                let msg = format!(
+                                    "[{}] {}/{} {}",
+                                    entry.device_time.as_deref().unwrap_or("?"),
+                                    entry.level,
+                                    module,
+                                    entry.message
+                                );
+                                all_lines.push(msg);
+                            }
+                            let found_all = keywords
+                                .iter()
+                                .all(|kw| all_lines.iter().any(|line| line.contains(kw.as_str())));
+                            if found_all {
+                                break;
+                            }
                         }
-                        let found_all = keywords
-                            .iter()
-                            .all(|kw| all_lines.iter().any(|line| line.contains(kw.as_str())));
-                        if found_all {
+                        Ok(_) => {}
+                        Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+                        Err(e) => {
+                            log::warn!("Serial read error: {e}");
                             break;
                         }
                     }
-                    Ok(_) => {}
-                    Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
-                    Err(e) => {
-                        log::warn!("Serial read error: {e}");
-                        break;
+                }
+            } else {
+                // Standard SOC: 0xA5 framed binary log via SocLogDecoder
+                let mut decoder = luatos_log::SocLogDecoder::new();
+                while start.elapsed() < timeout && !cancel.load(Ordering::Relaxed) {
+                    match serial.read(&mut buf) {
+                        Ok(n) if n > 0 => {
+                            let entries = decoder.feed(&buf[..n]);
+                            for entry in &entries {
+                                let module = entry.module.as_deref().unwrap_or("-");
+                                let msg = format!(
+                                    "[{}] {}/{} {}",
+                                    entry.device_time.as_deref().unwrap_or("?"),
+                                    entry.level,
+                                    module,
+                                    entry.message
+                                );
+                                all_lines.push(msg);
+                            }
+                            let found_all = keywords
+                                .iter()
+                                .all(|kw| all_lines.iter().any(|line| line.contains(kw.as_str())));
+                            if found_all {
+                                break;
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+                        Err(e) => {
+                            log::warn!("Serial read error: {e}");
+                            break;
+                        }
                     }
                 }
             }
@@ -1199,63 +1236,103 @@ fn cmd_log_view_binary(
         stop_clone.store(true, std::sync::atomic::Ordering::Relaxed);
     });
 
-    // Auto-detect EC718 log port if "auto" specified
+    // Detect whether an EC718 module is connected (VID=0x19D1)
+    let is_ec718 = luatos_flash::ec718::find_ec718_cmd_port().is_some();
+
+    // Auto-detect log port if "auto" specified
     let actual_port = if port == "auto" {
-        eprintln!("Auto-detecting EC718 log port (VID=0x19D1)...");
-        match luatos_flash::ec718::find_ec718_cmd_port() {
-            Some(p) => {
-                eprintln!("Found EC718 log port: {p}");
-                p
+        if is_ec718 {
+            eprintln!("Auto-detecting EC718 log port (VID=0x19D1)...");
+            match luatos_flash::ec718::find_ec718_log_port() {
+                Some(p) => {
+                    eprintln!("Found EC718 log port: {p}");
+                    p
+                }
+                None => {
+                    anyhow::bail!(
+                        "No EC718 log port found. Ensure the module is running (not in boot mode).\n\
+                         Try specifying the port manually with --port COMx"
+                    );
+                }
             }
-            None => {
-                anyhow::bail!(
-                    "No EC718 log port found. Ensure the module is running (not in boot mode).\n\
-                     Try specifying the port manually with --port COMx"
-                );
-            }
+        } else {
+            anyhow::bail!(
+                "No supported log device found. Try specifying the port manually with --port COMx"
+            );
         }
     } else {
         port.to_string()
     };
 
+    // Build probe data — same 0xA5 probe works for both chip types
     let init_data = if probe {
-        eprintln!("Sending SOC probe to trigger log output ...");
-        Some(luatos_flash::ccm4211::build_log_probe())
+        eprintln!("Sending probe to trigger log output ...");
+        Some(luatos_flash::ec718::build_log_probe())
     } else {
         None
     };
 
-    eprintln!("Viewing SOC binary log on {actual_port} @ {baud} bps (Ctrl+C to stop)");
+    eprintln!(
+        "Viewing {} binary log on {actual_port} @ {baud} bps (Ctrl+C to stop)",
+        if is_ec718 { "EC718" } else { "SOC" }
+    );
 
-    let decoder = std::sync::Mutex::new(luatos_log::SocLogDecoder::new());
     let format_clone = format.clone();
 
-    luatos_serial::stream_binary(
-        &actual_port,
-        baud,
-        stop,
-        Box::new(move |data| {
-            if let Ok(mut dec) = decoder.lock() {
-                let entries = dec.feed(data);
-                for entry in &entries {
-                    match format_clone {
-                        OutputFormat::Text => {
-                            let module = entry.module.as_deref().unwrap_or("-");
-                            let time = entry.device_time.as_deref().unwrap_or("?");
-                            println!("[{}] {}/{} {}", time, entry.level, module, entry.message);
-                        }
-                        OutputFormat::Json => {
-                            println!("{}", serde_json::to_string(&entry).unwrap_or_default());
-                        }
+    if is_ec718 {
+        // EC718: 0x7E HDLC framing, DTR/RTS HIGH
+        let decoder = std::sync::Mutex::new(luatos_log::Ec718LogDecoder::new());
+        luatos_serial::stream_binary(
+            &actual_port,
+            baud,
+            stop,
+            Box::new(move |data| {
+                if let Ok(mut dec) = decoder.lock() {
+                    let entries = dec.feed(data);
+                    for entry in &entries {
+                        print_log_entry(entry, &format_clone);
                     }
                 }
-            }
-        }),
-        init_data.as_deref(),
-    )?;
+            }),
+            init_data.as_deref(),
+            true, // DTR/RTS HIGH for EC718
+        )?;
+    } else {
+        // Standard SOC: 0xA5 framing
+        let decoder = std::sync::Mutex::new(luatos_log::SocLogDecoder::new());
+        luatos_serial::stream_binary(
+            &actual_port,
+            baud,
+            stop,
+            Box::new(move |data| {
+                if let Ok(mut dec) = decoder.lock() {
+                    let entries = dec.feed(data);
+                    for entry in &entries {
+                        print_log_entry(entry, &format_clone);
+                    }
+                }
+            }),
+            init_data.as_deref(),
+            false,
+        )?;
+    }
 
     eprintln!("\nLog viewing stopped.");
     Ok(())
+}
+
+/// Format and print a single log entry to stdout.
+fn print_log_entry(entry: &luatos_log::LogEntry, format: &OutputFormat) {
+    match format {
+        OutputFormat::Text => {
+            let module = entry.module.as_deref().unwrap_or("-");
+            let time = entry.device_time.as_deref().unwrap_or("?");
+            println!("[{}] {}/{} {}", time, entry.level, module, entry.message);
+        }
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string(&entry).unwrap_or_default());
+        }
+    }
 }
 
 fn cmd_log_record(

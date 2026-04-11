@@ -164,21 +164,29 @@ pub type BinaryCallback = Box<dyn Fn(&[u8]) + Send>;
 /// Used for SOC binary log protocol (0xA5 framed) and other binary protocols.
 /// When `init_data` is provided, it is written to the port before reading
 /// begins (e.g. a probe command to trigger log output on Air1601).
+/// When `dtr_rts_high` is true, DTR and RTS are set HIGH after opening
+/// (required for EC718 log port).
 pub fn stream_binary(
     port_name: &str,
     baud_rate: u32,
     stop: Arc<AtomicBool>,
     on_data: BinaryCallback,
     init_data: Option<&[u8]>,
+    dtr_rts_high: bool,
 ) -> anyhow::Result<()> {
     let mut serial = serialport::new(port_name, baud_rate)
         .timeout(Duration::from_millis(100))
         .open()
         .map_err(|e| anyhow::anyhow!("Cannot open {port_name}: {e}"))?;
 
-    // Release DTR/RTS so the device runs normally
-    let _ = serial.write_data_terminal_ready(false);
-    let _ = serial.write_request_to_send(false);
+    if dtr_rts_high {
+        let _ = serial.write_data_terminal_ready(true);
+        let _ = serial.write_request_to_send(true);
+    } else {
+        // Release DTR/RTS so the device runs normally
+        let _ = serial.write_data_terminal_ready(false);
+        let _ = serial.write_request_to_send(false);
+    }
 
     // Send initial probe / handshake data if provided
     if let Some(data) = init_data {

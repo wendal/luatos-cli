@@ -703,6 +703,302 @@ fn decode_printf_message(body: &[u8]) -> String {
     result
 }
 
+// ─── EC718 binary log decoder (0x7E HDLC framing) ───────────────────────────
+
+/// EC718 binary log frame decoder (Air8000 / Air780E series).
+///
+/// Uses 0x7E frame delimiters with HDLC byte-stuffing (0x7D escape).
+///
+/// Frame: `[0x7E] [HDLC-escaped payload] [0x7E]`
+///
+/// Header (12 bytes):
+///   timestamp_ms : u32 LE  (milliseconds since boot)
+///   reserved     : u32 LE  (always 0)
+///   tag          : u32 LE  (source module identifier)
+///
+/// Body: printf format string (NUL-terminated) + 4-byte aligned arguments.
+/// Argument encoding differs from SocLogDecoder:
+///   %s   → [u32 length] [string bytes] (padded to 4-byte boundary)
+///   %.*s → [u32 precision] [string bytes] (padded to 4-byte boundary)
+///   %d/%u/%x/%p → u32 LE
+pub struct Ec718LogDecoder {
+    frame_buf: Vec<u8>,
+    in_frame: bool,
+    escape_next: bool,
+}
+
+impl Ec718LogDecoder {
+    pub fn new() -> Self {
+        Self {
+            frame_buf: Vec::with_capacity(2048),
+            in_frame: false,
+            escape_next: false,
+        }
+    }
+
+    /// Feed raw bytes and extract decoded log entries.
+    pub fn feed(&mut self, data: &[u8]) -> Vec<LogEntry> {
+        let mut entries = Vec::new();
+
+        for &byte in data {
+            if byte == 0x7E {
+                if self.in_frame && self.frame_buf.len() >= 12 {
+                    if let Some(entry) = self.decode_frame(&self.frame_buf.clone()) {
+                        entries.push(entry);
+                    }
+                }
+                self.frame_buf.clear();
+                self.in_frame = true;
+                self.escape_next = false;
+                continue;
+            }
+
+            if !self.in_frame {
+                continue;
+            }
+
+            // HDLC byte-stuffing: 0x7D XX → XX ^ 0x20
+            if byte == 0x7D {
+                self.escape_next = true;
+                continue;
+            }
+
+            if self.escape_next {
+                self.frame_buf.push(byte ^ 0x20);
+                self.escape_next = false;
+                continue;
+            }
+
+            self.frame_buf.push(byte);
+
+            if self.frame_buf.len() > 8192 {
+                self.frame_buf.clear();
+                self.in_frame = false;
+            }
+        }
+
+        entries
+    }
+
+    /// Decode a complete 0x7E frame payload into a LogEntry.
+    fn decode_frame(&self, data: &[u8]) -> Option<LogEntry> {
+        if data.len() < 13 {
+            return None; // 12-byte header + at least 1 byte body
+        }
+
+        let ms = u32::from_le_bytes(data[0..4].try_into().ok()?) as u64;
+        // bytes 4..8 reserved (always 0)
+        let _tag = u32::from_le_bytes(data[8..12].try_into().ok()?);
+
+        let body = &data[12..];
+        let message = decode_ec718_printf(body);
+
+        // Extract level/module from the decoded message text.
+        // EC718 embeds level prefix in the format string: "I/http ...", "D/net ...", etc.
+        let (level, module, msg_body) = parse_level_prefix(&message);
+
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+        let device_time = format!("{}.{:03}", ms / 1000, ms % 1000);
+
+        Some(LogEntry {
+            timestamp: now,
+            device_time: Some(device_time),
+            level,
+            module,
+            message: msg_body,
+            raw: format!("[EC718 frame {} bytes]", data.len()),
+        })
+    }
+}
+
+impl Default for Ec718LogDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Decode printf format string with length-prefixed string arguments (EC718 variant).
+fn decode_ec718_printf(body: &[u8]) -> String {
+    if body.is_empty() {
+        return String::new();
+    }
+
+    let fmt_end = body.iter().position(|&b| b == 0).unwrap_or(body.len());
+    let fmt_str = String::from_utf8_lossy(&body[..fmt_end]).to_string();
+
+    let args_offset = (fmt_end + 4) & !3;
+    if args_offset >= body.len() {
+        return fmt_str;
+    }
+
+    let args_data = &body[args_offset..];
+    let mut result = String::new();
+    let mut arg_pos = 0;
+    let mut chars = fmt_str.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            result.push(c);
+            continue;
+        }
+
+        let mut is_long = false;
+        let mut is_long_long = false;
+        let mut has_star = false;
+
+        loop {
+            match chars.peek() {
+                Some(&next @ ('0'..='9' | '-' | '+' | ' ' | '#' | '.')) => {
+                    chars.next();
+                    // consume width/precision digits; we don't use them for decoding
+                    let _ = next;
+                }
+                Some(&'*') => {
+                    has_star = true;
+                    chars.next();
+                }
+                Some(&'l') => {
+                    if is_long {
+                        is_long_long = true;
+                    }
+                    is_long = true;
+                    chars.next();
+                }
+                Some(&'d') | Some(&'i') | Some(&'u') | Some(&'x') | Some(&'X') | Some(&'o') => {
+                    let spec = chars.next().unwrap();
+                    if is_long_long {
+                        if arg_pos + 8 <= args_data.len() {
+                            let val = i64::from_le_bytes(
+                                args_data[arg_pos..arg_pos + 8].try_into().unwrap_or([0; 8]),
+                            );
+                            match spec {
+                                'x' => result.push_str(&format!("{val:x}")),
+                                'X' => result.push_str(&format!("{val:X}")),
+                                'u' => result.push_str(&format!("{}", val as u64)),
+                                _ => result.push_str(&format!("{val}")),
+                            }
+                            arg_pos += 8;
+                        }
+                    } else {
+                        if arg_pos + 4 <= args_data.len() {
+                            let val = i32::from_le_bytes(
+                                args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4]),
+                            );
+                            match spec {
+                                'x' => result.push_str(&format!("{val:x}")),
+                                'X' => result.push_str(&format!("{val:X}")),
+                                'u' => result.push_str(&format!("{}", val as u32)),
+                                _ => result.push_str(&format!("{val}")),
+                            }
+                            arg_pos += 4;
+                        }
+                    }
+                    break;
+                }
+                Some(&'f') | Some(&'g') | Some(&'e') => {
+                    chars.next();
+                    if arg_pos + 8 <= args_data.len() {
+                        let val = f64::from_le_bytes(
+                            args_data[arg_pos..arg_pos + 8].try_into().unwrap_or([0; 8]),
+                        );
+                        result.push_str(&format!("{val}"));
+                        arg_pos += 8;
+                    }
+                    break;
+                }
+                Some(&'s') => {
+                    chars.next();
+                    if has_star {
+                        // %.*s: precision from arg (u32) then string bytes
+                        if arg_pos + 4 <= args_data.len() {
+                            let precision = u32::from_le_bytes(
+                                args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4]),
+                            ) as usize;
+                            arg_pos += 4;
+                            let end = (arg_pos + precision).min(args_data.len());
+                            let s = String::from_utf8_lossy(&args_data[arg_pos..end]);
+                            result.push_str(&s);
+                            arg_pos = (end + 3) & !3; // align to 4
+                        }
+                    } else {
+                        // %s: [u32 length] [string bytes], 4-byte aligned
+                        if arg_pos + 4 <= args_data.len() {
+                            let slen = u32::from_le_bytes(
+                                args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4]),
+                            ) as usize;
+                            arg_pos += 4;
+                            let end = (arg_pos + slen).min(args_data.len());
+                            let s = String::from_utf8_lossy(&args_data[arg_pos..end]);
+                            result.push_str(&s);
+                            arg_pos = (end + 3) & !3; // align to 4
+                        }
+                    }
+                    break;
+                }
+                Some(&'c') => {
+                    chars.next();
+                    if arg_pos + 4 <= args_data.len() {
+                        let val = args_data[arg_pos];
+                        result.push(val as char);
+                        arg_pos += 4;
+                    }
+                    break;
+                }
+                Some(&'p') => {
+                    chars.next();
+                    if arg_pos + 4 <= args_data.len() {
+                        let val = u32::from_le_bytes(
+                            args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4]),
+                        );
+                        result.push_str(&format!("0x{val:08x}"));
+                        arg_pos += 4;
+                    }
+                    break;
+                }
+                Some(&'%') => {
+                    chars.next();
+                    result.push('%');
+                    break;
+                }
+                Some(&other) => {
+                    chars.next();
+                    result.push('%');
+                    result.push(other);
+                    break;
+                }
+                None => {
+                    result.push('%');
+                    break;
+                }
+            }
+        }
+    }
+
+    result
+}
+
+/// Extract log level and module from EC718 message prefix like "I/http ...", "D/net ...".
+fn parse_level_prefix(msg: &str) -> (LogLevel, Option<String>, String) {
+    // Pattern: "X/module rest..." where X is D/I/W/E/T
+    if msg.len() >= 3 {
+        let bytes = msg.as_bytes();
+        if bytes[1] == b'/' {
+            let level = LogLevel::from_char(bytes[0] as char);
+            if !matches!(level, LogLevel::Unknown(_) | LogLevel::Raw) {
+                let rest = &msg[2..];
+                if let Some(space_pos) = rest.find(' ') {
+                    let module = rest[..space_pos].to_string();
+                    let body = rest[space_pos + 1..].to_string();
+                    return (level, Some(module), body);
+                } else {
+                    return (level, Some(rest.to_string()), String::new());
+                }
+            }
+        }
+    }
+    (LogLevel::Info, None, msg.to_string())
+}
+
 // ─── SOC log parser (as a LogParser for text mode fallback) ──────────────────
 
 /// Parser wrapper that interprets text lines containing hex-encoded SOC frames.
@@ -933,5 +1229,186 @@ mod tests {
         let entries = decoder.feed(&frame);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].level, LogLevel::Debug);
+    }
+
+    // ─── Ec718LogDecoder tests ─────────────────────────────
+
+    #[test]
+    fn ec718_decoder_basic() {
+        let mut decoder = Ec718LogDecoder::new();
+
+        // Build a 0x7E frame: 12-byte header + "hello\0" body
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&5000u32.to_le_bytes()); // ms = 5000
+        payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        payload.extend_from_slice(&0x12345678u32.to_le_bytes()); // tag
+        payload.extend_from_slice(b"hello\0\0\0"); // format string, padded
+
+        let mut frame = vec![0x7E];
+        frame.extend_from_slice(&payload);
+        frame.push(0x7E);
+
+        let entries = decoder.feed(&frame);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].device_time.as_deref(), Some("5.000"));
+        assert_eq!(entries[0].message, "hello");
+    }
+
+    #[test]
+    fn ec718_decoder_with_level_prefix() {
+        let mut decoder = Ec718LogDecoder::new();
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1234u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(b"D/net connection ok\0");
+
+        let mut frame = vec![0x7E];
+        frame.extend_from_slice(&payload);
+        frame.push(0x7E);
+
+        let entries = decoder.feed(&frame);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].level, LogLevel::Debug);
+        assert_eq!(entries[0].module.as_deref(), Some("net"));
+        assert_eq!(entries[0].message, "connection ok");
+    }
+
+    #[test]
+    fn ec718_decoder_printf_with_int() {
+        let mut decoder = Ec718LogDecoder::new();
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&100u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        // "val=%d\0" + padding + arg 42
+        payload.extend_from_slice(b"val=%d\0\0"); // 8 bytes
+        payload.extend_from_slice(&42i32.to_le_bytes());
+
+        let mut frame = vec![0x7E];
+        frame.extend_from_slice(&payload);
+        frame.push(0x7E);
+
+        let entries = decoder.feed(&frame);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].message, "val=42");
+    }
+
+    #[test]
+    fn ec718_decoder_printf_with_length_prefixed_string() {
+        let mut decoder = Ec718LogDecoder::new();
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&200u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        // "name=%s\0" (8 bytes, already aligned)
+        payload.extend_from_slice(b"name=%s\0");
+        // %s arg: length-prefixed: u32(5) + "world" + padding
+        payload.extend_from_slice(&5u32.to_le_bytes());
+        payload.extend_from_slice(b"world\0\0\0"); // padded to 8
+
+        let mut frame = vec![0x7E];
+        frame.extend_from_slice(&payload);
+        frame.push(0x7E);
+
+        let entries = decoder.feed(&frame);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].message, "name=world");
+    }
+
+    #[test]
+    fn ec718_decoder_printf_with_star_s() {
+        let mut decoder = Ec718LogDecoder::new();
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&300u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        // "%.*s\0" (5 bytes) → aligned args at offset 8
+        payload.extend_from_slice(b"%.*s\0\0\0\0");
+        // precision=4, then "test"
+        payload.extend_from_slice(&4u32.to_le_bytes());
+        payload.extend_from_slice(b"test");
+
+        let mut frame = vec![0x7E];
+        frame.extend_from_slice(&payload);
+        frame.push(0x7E);
+
+        let entries = decoder.feed(&frame);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].message, "test");
+    }
+
+    #[test]
+    fn ec718_decoder_hdlc_escape() {
+        let mut decoder = Ec718LogDecoder::new();
+
+        // Build payload where a byte value is 0x7E (needs escaping as 0x7D 0x5E)
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0x7Eu32.to_le_bytes()); // ms = 126 (contains 0x7E byte)
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(b"ok\0");
+
+        // HDLC-escape the payload
+        let mut frame = vec![0x7E];
+        for &b in &payload {
+            if b == 0x7E {
+                frame.push(0x7D);
+                frame.push(b ^ 0x20); // 0x5E
+            } else if b == 0x7D {
+                frame.push(0x7D);
+                frame.push(b ^ 0x20); // 0x5D
+            } else {
+                frame.push(b);
+            }
+        }
+        frame.push(0x7E);
+
+        let entries = decoder.feed(&frame);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].device_time.as_deref(), Some("0.126"));
+    }
+
+    #[test]
+    fn ec718_decoder_multiple_frames() {
+        let mut decoder = Ec718LogDecoder::new();
+
+        let mut data = Vec::new();
+        for i in 0..3u32 {
+            data.push(0x7E);
+            data.extend_from_slice(&(i * 1000).to_le_bytes());
+            data.extend_from_slice(&0u32.to_le_bytes());
+            data.extend_from_slice(&0u32.to_le_bytes());
+            let msg = format!("msg{}\0", i);
+            data.extend_from_slice(msg.as_bytes());
+        }
+        data.push(0x7E); // final delimiter
+
+        let entries = decoder.feed(&data);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].message, "msg0");
+        assert_eq!(entries[1].message, "msg1");
+        assert_eq!(entries[2].message, "msg2");
+    }
+
+    #[test]
+    fn parse_level_prefix_cases() {
+        let (level, module, msg) = parse_level_prefix("I/http close connection");
+        assert_eq!(level, LogLevel::Info);
+        assert_eq!(module.as_deref(), Some("http"));
+        assert_eq!(msg, "close connection");
+
+        let (level, module, msg) = parse_level_prefix("D/net timeout");
+        assert_eq!(level, LogLevel::Debug);
+        assert_eq!(module.as_deref(), Some("net"));
+        assert_eq!(msg, "timeout");
+
+        let (level, _, msg) = parse_level_prefix("no prefix here");
+        assert_eq!(level, LogLevel::Info); // default
+        assert_eq!(msg, "no prefix here");
     }
 }
