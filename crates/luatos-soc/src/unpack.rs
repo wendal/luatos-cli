@@ -39,11 +39,7 @@ pub fn detect_soc_format(soc_path: &str) -> Result<SocFormat> {
         .context("File too small to detect format")?;
     if magic[0] == 0x50 && magic[1] == 0x4B {
         Ok(SocFormat::Zip)
-    } else if magic[0] == 0x37
-        && magic[1] == 0x7A
-        && magic[2] == 0xBC
-        && magic[3] == 0xAF
-    {
+    } else if magic[0] == 0x37 && magic[1] == 0x7A && magic[2] == 0xBC && magic[3] == 0xAF {
         Ok(SocFormat::SevenZ)
     } else {
         bail!(
@@ -157,11 +153,11 @@ fn list_soc_files_zip(soc_path: &str) -> Result<Vec<String>> {
 }
 
 fn list_soc_files_7z(soc_path: &str) -> Result<Vec<String>> {
-    let mut file = std::fs::File::open(soc_path)
-        .with_context(|| format!("Cannot open: {soc_path}"))?;
+    let mut file =
+        std::fs::File::open(soc_path).with_context(|| format!("Cannot open: {soc_path}"))?;
     let password = sevenz_rust2::Password::empty();
-    let archive = sevenz_rust2::Archive::read(&mut file, &password)
-        .context("Failed to read 7z archive")?;
+    let archive =
+        sevenz_rust2::Archive::read(&mut file, &password).context("Failed to read 7z archive")?;
     let names: Vec<String> = archive
         .files
         .iter()

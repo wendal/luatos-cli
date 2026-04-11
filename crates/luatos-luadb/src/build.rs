@@ -10,10 +10,7 @@ use walkdir::WalkDir;
 use crate::{add_bk_crc, pack_luadb, LuadbEntry};
 
 /// Search directories (relative to cwd) for luac executables.
-const SEARCH_DIRS: &[&str] = &[
-    "refs/origin_tools/tools",
-    "../refs/origin_tools/tools",
-];
+const SEARCH_DIRS: &[&str] = &["refs/origin_tools/tools", "../refs/origin_tools/tools"];
 
 /// Find the appropriate luac executable for the given bit width.
 ///
@@ -78,11 +75,7 @@ pub fn compile_lua(src: &Path, dst: &Path, bitw: u32) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "luac compilation failed for {}:\n{}",
-            src.display(),
-            stderr
-        );
+        bail!("luac compilation failed for {}:\n{}", src.display(), stderr);
     }
     Ok(())
 }
@@ -167,7 +160,9 @@ pub fn collect_script_entries(dirs: &[&Path]) -> Result<Vec<LuadbEntry>> {
     entries.sort_by(|a, b| {
         let a_main = is_main(&a.filename);
         let b_main = is_main(&b.filename);
-        b_main.cmp(&a_main).then_with(|| a.filename.cmp(&b.filename))
+        b_main
+            .cmp(&a_main)
+            .then_with(|| a.filename.cmp(&b.filename))
     });
 
     Ok(entries)
@@ -206,11 +201,7 @@ pub fn build_script_image(
 
     let image = pack_luadb(&entries);
 
-    let result = if use_bkcrc {
-        add_bk_crc(&image)
-    } else {
-        image
-    };
+    let result = if use_bkcrc { add_bk_crc(&image) } else { image };
 
     // Clean up temp dir if we created one
     if let Some(tmp_path) = _tmp_guard {

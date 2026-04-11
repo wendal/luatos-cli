@@ -72,14 +72,10 @@ const CMD_ERASE: [u8; 13] = [
 ];
 
 /// Read MAC address
-const CMD_MAC_READ: [u8; 9] = [
-    0x21, 0x06, 0x00, 0xea, 0x2d, 0x38, 0x00, 0x00, 0x00,
-];
+const CMD_MAC_READ: [u8; 9] = [0x21, 0x06, 0x00, 0xea, 0x2d, 0x38, 0x00, 0x00, 0x00];
 
 /// Reset device
-const CMD_RESET: [u8; 9] = [
-    0x21, 0x06, 0x00, 0xc7, 0x7c, 0x3f, 0x00, 0x00, 0x00,
-];
+const CMD_RESET: [u8; 9] = [0x21, 0x06, 0x00, 0xc7, 0x7c, 0x3f, 0x00, 0x00, 0x00];
 
 // ─── CRC16-CCITT ──────────────────────────────────────────────────────────────
 
@@ -174,10 +170,7 @@ fn send_esc_burst(port: &mut dyn serialport::SerialPort, duration_ms: u32) {
 ///   4. Toggle RTS every 2 seconds as recovery
 ///   5. Success when counter reaches 3
 ///   6. Timeout after 60 seconds
-fn sync_bootloader(
-    port: &mut dyn serialport::SerialPort,
-    cancel: &AtomicBool,
-) -> Result<()> {
+fn sync_bootloader(port: &mut dyn serialport::SerialPort, cancel: &AtomicBool) -> Result<()> {
     let _ = port.set_timeout(Duration::from_millis(10));
 
     // Initial ESC burst: 50 bytes over 500ms
@@ -260,10 +253,7 @@ fn set_baud_rate(port: &mut dyn serialport::SerialPort, baud: u32) -> Result<()>
 // ─── Erase ───────────────────────────────────────────────────────────────────
 
 /// Send erase command and wait for 3 consecutive 'C'/'P' responses.
-fn erase_flash(
-    port: &mut dyn serialport::SerialPort,
-    cancel: &AtomicBool,
-) -> Result<()> {
+fn erase_flash(port: &mut dyn serialport::SerialPort, cancel: &AtomicBool) -> Result<()> {
     port.write_all(&CMD_ERASE)?;
     port.flush()?;
 
@@ -310,7 +300,7 @@ fn xmodem_transfer(
     cancel: &AtomicBool,
     on_progress: &ProgressCallback,
 ) -> Result<()> {
-    let total_blocks = (data.len() + XMODEM_DATA_SIZE_1K - 1) / XMODEM_DATA_SIZE_1K;
+    let total_blocks = data.len().div_ceil(XMODEM_DATA_SIZE_1K);
     let mut block_num: u8 = 1; // XMODEM block numbers start at 1
 
     let _ = port.set_timeout(Duration::from_millis(100));
@@ -408,7 +398,10 @@ fn xmodem_transfer(
 /// Header is 256 bytes, magic at offset 0 = 0xA0FFFF9F.
 fn verify_image(data: &[u8]) -> Result<()> {
     if data.len() < IMAGE_HEADER_SIZE {
-        bail!("Image too small: {} bytes (need >= {IMAGE_HEADER_SIZE})", data.len());
+        bail!(
+            "Image too small: {} bytes (need >= {IMAGE_HEADER_SIZE})",
+            data.len()
+        );
     }
 
     let magic = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
@@ -471,7 +464,11 @@ fn connect_bootloader(
     cancel: &Arc<AtomicBool>,
     on_progress: &ProgressCallback,
 ) -> Result<Box<dyn serialport::SerialPort>> {
-    on_progress(&FlashProgress::info("Connect", 0.0, &format!("Opening {port} at 115200")));
+    on_progress(&FlashProgress::info(
+        "Connect",
+        0.0,
+        &format!("Opening {port} at 115200"),
+    ));
 
     let mut serial = serialport::new(port, 115200)
         .timeout(Duration::from_millis(100))
@@ -482,11 +479,19 @@ fn connect_bootloader(
     std::thread::sleep(Duration::from_millis(500));
 
     // Reset into bootloader
-    on_progress(&FlashProgress::info("Reset", 5.0, "Resetting device into bootloader"));
+    on_progress(&FlashProgress::info(
+        "Reset",
+        5.0,
+        "Resetting device into bootloader",
+    ));
     reset_to_bootloader(serial.as_mut())?;
 
     // Sync
-    on_progress(&FlashProgress::info("Sync", 10.0, "Waiting for bootloader..."));
+    on_progress(&FlashProgress::info(
+        "Sync",
+        10.0,
+        "Waiting for bootloader...",
+    ));
     sync_bootloader(serial.as_mut(), cancel)?;
     on_progress(&FlashProgress::info("Sync", 15.0, "Bootloader detected"));
 
@@ -553,7 +558,11 @@ pub fn flash_xt804(
     on_progress(&FlashProgress::info("Erase", 40.0, "Flash erased"));
 
     // Transfer via XMODEM
-    on_progress(&FlashProgress::info("Write", 40.0, "Starting XMODEM transfer..."));
+    on_progress(&FlashProgress::info(
+        "Write",
+        40.0,
+        "Starting XMODEM transfer...",
+    ));
     xmodem_transfer(serial.as_mut(), &image_data, &cancel, &on_progress)?;
     on_progress(&FlashProgress::info("Write", 95.0, "Transfer complete"));
 
@@ -609,7 +618,9 @@ pub fn flash_via_subprocess(
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     if output.status.success() {
-        on_progress(&FlashProgress::done_ok(&format!("Subprocess flash OK\n{stdout}")));
+        on_progress(&FlashProgress::done_ok(&format!(
+            "Subprocess flash OK\n{stdout}"
+        )));
         Ok(())
     } else {
         bail!("Flash tool failed:\nstdout: {stdout}\nstderr: {stderr}");
@@ -646,8 +657,8 @@ pub fn flash_script_only(
             .context("Invalid file path")?
             .to_string_lossy()
             .to_string();
-        let data = std::fs::read(path)
-            .with_context(|| format!("Cannot read script file: {path_str}"))?;
+        let data =
+            std::fs::read(path).with_context(|| format!("Cannot read script file: {path_str}"))?;
         entries.push(luatos_luadb::LuadbEntry { filename, data });
     }
     let final_data = luatos_luadb::pack_luadb(&entries);
@@ -662,7 +673,11 @@ pub fn flash_script_only(
     let mut serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
 
     // For script-only flash, we need to erase first then transfer
-    on_progress(&FlashProgress::info("Erase", 30.0, "Erasing script area..."));
+    on_progress(&FlashProgress::info(
+        "Erase",
+        30.0,
+        "Erasing script area...",
+    ));
     erase_flash(serial.as_mut(), &cancel)?;
 
     // Transfer

@@ -161,10 +161,8 @@ impl Project {
     /// already exist.
     pub fn save(&self, dir: &Path) -> Result<()> {
         let path = Self::config_file(dir);
-        let content =
-            toml::to_string_pretty(self).context("failed to serialize project config")?;
-        fs::write(&path, content)
-            .with_context(|| format!("failed to write {}", path.display()))?;
+        let content = toml::to_string_pretty(self).context("failed to serialize project config")?;
+        fs::write(&path, content).with_context(|| format!("failed to write {}", path.display()))?;
         Ok(())
     }
 }
@@ -180,11 +178,7 @@ impl Project {
 pub fn scaffold_project(dir: &Path, name: &str, chip: &str) -> Result<()> {
     let config_path = Project::config_file(dir);
     if config_path.exists() {
-        bail!(
-            "{} already exists in {}",
-            CONFIG_FILE_NAME,
-            dir.display()
-        );
+        bail!("{} already exists in {}", CONFIG_FILE_NAME, dir.display());
     }
 
     // Ensure the target directory exists.
@@ -201,13 +195,15 @@ pub fn scaffold_project(dir: &Path, name: &str, chip: &str) -> Result<()> {
         .with_context(|| format!("failed to create {}", lua_dir.display()))?;
 
     let main_lua = lua_dir.join("main.lua");
-    fs::write(
-        &main_lua,
-        "print(\"Hello from \" .. _VERSION)\n",
-    )
-    .with_context(|| format!("failed to write {}", main_lua.display()))?;
+    fs::write(&main_lua, "print(\"Hello from \" .. _VERSION)\n")
+        .with_context(|| format!("failed to write {}", main_lua.display()))?;
 
-    log::info!("scaffolded project '{}' for chip '{}' in {}", name, chip, dir.display());
+    log::info!(
+        "scaffolded project '{}' for chip '{}' in {}",
+        name,
+        chip,
+        dir.display()
+    );
     Ok(())
 }
 

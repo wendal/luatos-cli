@@ -538,7 +538,8 @@ fn crc16_modbus(data: &[u8]) -> u16 {
 /// Decode tag name from the tag bitfield (7 bits per character, up to 8 chars).
 fn decode_tag_name(tag_bits: u64) -> String {
     // ASCII lookup: each 7-bit value maps to a character
-    const TAG_CHARS: &[u8; 64] = b" abcdefghijklmnopqrstuvwxyz012345ABCDEFGHIJKLMNOPQRSTUVWXYZ_*-./";
+    const TAG_CHARS: &[u8; 64] =
+        b" abcdefghijklmnopqrstuvwxyz012345ABCDEFGHIJKLMNOPQRSTUVWXYZ_*-./";
 
     let mut name = String::new();
     let mut bits = tag_bits;

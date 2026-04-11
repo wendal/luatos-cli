@@ -105,7 +105,7 @@ impl SocInfo {
         self.download
             .force_br
             .as_deref()
-            .and_then(|s| parse_baud_rate(s))
+            .and_then(parse_baud_rate)
             .unwrap_or(2_000_000)
     }
 
@@ -121,13 +121,8 @@ impl SocInfo {
 
     /// Get the script download address (ISP protocol address).
     pub fn script_addr(&self) -> u32 {
-        parse_addr(
-            self.download
-                .script_addr
-                .as_deref()
-                .unwrap_or("0x200000"),
-        )
-        .unwrap_or(0x200000) as u32
+        parse_addr(self.download.script_addr.as_deref().unwrap_or("0x200000")).unwrap_or(0x200000)
+            as u32
     }
 
     /// Get the script partition size in bytes.

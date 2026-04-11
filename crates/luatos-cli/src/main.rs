@@ -10,7 +10,11 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "luatos-cli", version, about = "LuatOS CLI tool — flash, log, project management")]
+#[command(
+    name = "luatos-cli",
+    version,
+    about = "LuatOS CLI tool — flash, log, project management"
+)]
 struct Cli {
     /// Output format
     #[arg(long, default_value = "text", global = true)]
@@ -299,7 +303,9 @@ fn main() {
         },
         Commands::Soc { action } => match action {
             SocCommands::Info { path } => cmd_soc_info(&path, &cli.format),
-            SocCommands::Unpack { path, output } => cmd_soc_unpack(&path, output.as_deref(), &cli.format),
+            SocCommands::Unpack { path, output } => {
+                cmd_soc_unpack(&path, output.as_deref(), &cli.format)
+            }
             SocCommands::Files { path } => cmd_soc_files(&path, &cli.format),
             SocCommands::Pack { dir, output } => cmd_soc_pack(&dir, &output, &cli.format),
         },
@@ -310,7 +316,11 @@ fn main() {
                 baud,
                 script,
             } => {
-                let script_opt = if script.is_empty() { None } else { Some(script.as_slice()) };
+                let script_opt = if script.is_empty() {
+                    None
+                } else {
+                    Some(script.as_slice())
+                };
                 cmd_flash_run(&soc, &port, baud, script_opt, &cli.format)
             }
             FlashCommands::Script { soc, port, script } => {
@@ -333,8 +343,20 @@ fn main() {
                 timeout,
                 keyword,
             } => {
-                let script_opt = if script.is_empty() { None } else { Some(script.as_slice()) };
-                cmd_flash_test(&soc, &port, baud, script_opt, timeout, &keyword, &cli.format)
+                let script_opt = if script.is_empty() {
+                    None
+                } else {
+                    Some(script.as_slice())
+                };
+                cmd_flash_test(
+                    &soc,
+                    &port,
+                    baud,
+                    script_opt,
+                    timeout,
+                    &keyword,
+                    &cli.format,
+                )
             }
         },
         Commands::Log { action } => match action {
@@ -397,7 +419,7 @@ fn cmd_serial_list(format: &OutputFormat) -> anyhow::Result<()> {
             if ports.is_empty() {
                 println!("No serial ports found.");
             } else {
-                println!("{:<10} {:<10} {:<10} {}", "PORT", "VID", "PID", "PRODUCT");
+                println!("{:<10} {:<10} {:<10} PRODUCT", "PORT", "VID", "PID");
                 for p in &ports {
                     println!(
                         "{:<10} {:<10} {:<10} {}",
@@ -529,8 +551,8 @@ fn cmd_flash_run(
 
     match chip {
         "bk72xx" | "air8101" | "air8000" => {
-            let folders_refs: Option<Vec<&str>> = script_folders
-                .map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
+            let folders_refs: Option<Vec<&str>> =
+                script_folders.map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
             let lines = luatos_flash::bk7258::flash_bk7258(
                 soc,
                 folders_refs.as_deref(),
@@ -643,9 +665,7 @@ fn cmd_flash_partition(
             "script" => {
                 let folders = script_folders.expect("script folder required");
                 let files = collect_script_files(folders)?;
-                luatos_flash::xt804::flash_script_only(
-                    soc, port, &files, on_progress, cancel,
-                )?;
+                luatos_flash::xt804::flash_script_only(soc, port, &files, on_progress, cancel)?;
             }
             _ => {
                 anyhow::bail!(
@@ -704,7 +724,10 @@ fn cmd_flash_test(
     keywords: &[String],
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
-    use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
     use std::time::{Duration, Instant};
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -723,8 +746,8 @@ fn cmd_flash_test(
 
     let boot_lines_from_flash: Vec<String> = match chip.as_str() {
         "bk72xx" | "air8101" | "air8000" => {
-            let folders_refs: Option<Vec<&str>> = script_folders
-                .map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
+            let folders_refs: Option<Vec<&str>> =
+                script_folders.map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
             luatos_flash::bk7258::flash_bk7258(
                 soc,
                 folders_refs.as_deref(),
@@ -784,9 +807,9 @@ fn cmd_flash_test(
                     }
 
                     // Early exit if we already found all keywords
-                    let found_all = keywords.iter().all(|kw| {
-                        all_lines.iter().any(|line| line.contains(kw.as_str()))
-                    });
+                    let found_all = keywords
+                        .iter()
+                        .all(|kw| all_lines.iter().any(|line| line.contains(kw.as_str())));
                     if found_all {
                         break;
                     }
@@ -828,7 +851,10 @@ fn cmd_flash_test(
             println!("  Log lines: {}", all_lines.len());
             for (kw, found) in &keyword_results {
                 let icon = if *found { "✓" } else { "✗" };
-                println!("  [{icon}] Keyword \"{kw}\": {}", if *found { "FOUND" } else { "NOT FOUND" });
+                println!(
+                    "  [{icon}] Keyword \"{kw}\": {}",
+                    if *found { "FOUND" } else { "NOT FOUND" }
+                );
             }
             if !all_lines.is_empty() {
                 println!("\n--- Boot Log ({} lines) ---", all_lines.len());
@@ -922,20 +948,11 @@ fn cmd_log_view_binary(port: &str, baud: u32, format: &OutputFormat) -> anyhow::
                     match format_clone {
                         OutputFormat::Text => {
                             let module = entry.module.as_deref().unwrap_or("-");
-                            let time = entry
-                                .device_time
-                                .as_deref()
-                                .unwrap_or("?");
-                            println!(
-                                "[{}] {}/{} {}",
-                                time, entry.level, module, entry.message
-                            );
+                            let time = entry.device_time.as_deref().unwrap_or("?");
+                            println!("[{}] {}/{} {}", time, entry.level, module, entry.message);
                         }
                         OutputFormat::Json => {
-                            println!(
-                                "{}",
-                                serde_json::to_string(&entry).unwrap_or_default()
-                            );
+                            println!("{}", serde_json::to_string(&entry).unwrap_or_default());
                         }
                     }
                 }
@@ -971,8 +988,7 @@ fn cmd_log_record(
         None
     };
 
-    let writer =
-        luatos_log::LogWriter::new(Some(&text_path), json_path.as_deref())?;
+    let writer = luatos_log::LogWriter::new(Some(&text_path), json_path.as_deref())?;
 
     eprintln!(
         "Recording log on {port} @ {baud} bps → {}",
@@ -1008,7 +1024,7 @@ fn cmd_log_record(
             if let Ok(mut w) = writer.lock() {
                 let _ = w.write(&entry);
                 let count = line_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if count % 50 == 0 {
+                if count.is_multiple_of(50) {
                     let _ = w.flush();
                 }
             }
@@ -1028,17 +1044,8 @@ fn cmd_log_parse(path: &str, format: &OutputFormat) -> anyhow::Result<()> {
             println!("Parsed {} log entries from {path}:", entries.len());
             for entry in &entries {
                 let module = entry.module.as_deref().unwrap_or("-");
-                let time = entry
-                    .device_time
-                    .as_deref()
-                    .unwrap_or(&entry.timestamp);
-                println!(
-                    "[{}] {}/{} {}",
-                    time,
-                    entry.level,
-                    module,
-                    entry.message
-                );
+                let time = entry.device_time.as_deref().unwrap_or(&entry.timestamp);
+                println!("[{}] {}/{} {}", time, entry.level, module, entry.message);
             }
         }
         OutputFormat::Json => {
@@ -1209,11 +1216,7 @@ fn get_config_value(project: &luatos_project::Project, key: &str) -> anyhow::Res
         "project.name" => project.project.name.clone(),
         "project.chip" => project.project.chip.clone(),
         "project.version" => project.project.version.clone(),
-        "project.description" => project
-            .project
-            .description
-            .clone()
-            .unwrap_or_default(),
+        "project.description" => project.project.description.clone().unwrap_or_default(),
         "build.script_dir" | "build.script_dirs" => project.build.script_dirs.join(", "),
         "build.output_dir" => project.build.output_dir.clone(),
         "build.use_luac" => project.build.use_luac.to_string(),
@@ -1319,7 +1322,11 @@ fn cmd_build_filesystem(
     match format {
         OutputFormat::Text => {
             println!("Built filesystem image: {output}");
-            println!("  Size:   {} bytes ({:.1} KB)", image.len(), image.len() as f64 / 1024.0);
+            println!(
+                "  Size:   {} bytes ({:.1} KB)",
+                image.len(),
+                image.len() as f64 / 1024.0
+            );
             println!("  Luac:   {use_luac}");
             println!("  BK CRC: {bkcrc}");
         }

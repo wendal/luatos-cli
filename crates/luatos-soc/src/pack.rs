@@ -13,11 +13,11 @@ use crate::SocInfo;
 
 /// Create a ZIP-format .soc archive from all files in `dir`.
 pub fn pack_soc_zip(dir: &Path, out_path: &str) -> Result<()> {
-    let file = fs::File::create(out_path)
-        .with_context(|| format!("Cannot create output: {out_path}"))?;
+    let file =
+        fs::File::create(out_path).with_context(|| format!("Cannot create output: {out_path}"))?;
     let mut writer = zip::ZipWriter::new(file);
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Stored);
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
     add_dir_to_zip(&mut writer, dir, dir, options)?;
     writer.finish().context("Finalize ZIP")?;
@@ -51,8 +51,8 @@ fn add_dir_to_zip<W: Write + std::io::Seek>(
             writer
                 .start_file(&rel, options)
                 .with_context(|| format!("Start ZIP entry: {rel}"))?;
-            let mut f = fs::File::open(&path)
-                .with_context(|| format!("Open file: {}", path.display()))?;
+            let mut f =
+                fs::File::open(&path).with_context(|| format!("Open file: {}", path.display()))?;
             let mut buf = Vec::new();
             f.read_to_end(&mut buf)?;
             writer.write_all(&buf)?;
@@ -80,8 +80,8 @@ pub fn pack_soc_7z(dir: &Path, out_path: &str) -> Result<()> {
             .to_string_lossy()
             .replace('\\', "/");
 
-        let src_file = fs::File::open(path)
-            .with_context(|| format!("Read file: {}", path.display()))?;
+        let src_file =
+            fs::File::open(path).with_context(|| format!("Read file: {}", path.display()))?;
 
         let archive_entry = sevenz_rust2::ArchiveEntry::from_path(path, rel);
         encoder
@@ -101,10 +101,9 @@ pub fn pack_soc_7z(dir: &Path, out_path: &str) -> Result<()> {
 pub fn pack_soc(dir: &Path, out_path: &str) -> Result<()> {
     let info_path = dir.join("info.json");
     if info_path.exists() {
-        let info: SocInfo = serde_json::from_reader(
-            fs::File::open(&info_path).context("Open info.json")?,
-        )
-        .context("Parse info.json")?;
+        let info: SocInfo =
+            serde_json::from_reader(fs::File::open(&info_path).context("Open info.json")?)
+                .context("Parse info.json")?;
 
         let chip = info.chip.chip_type.to_lowercase();
         if matches!(chip.as_str(), "air6208" | "air101" | "air103") {
@@ -144,8 +143,8 @@ fn update_script_zip(soc_path: &str, script_data: &[u8], out_path: &str) -> Resu
     let out_file =
         fs::File::create(out_path).with_context(|| format!("Create output: {out_path}"))?;
     let mut writer = zip::ZipWriter::new(out_file);
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Stored);
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i).context("Read ZIP entry")?;

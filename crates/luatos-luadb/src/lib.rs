@@ -59,7 +59,7 @@ pub fn pack_luadb(entries: &[LuadbEntry]) -> Vec<u8> {
 /// The final block is padded with 0xFF bytes to reach 32 bytes before
 /// the CRC is calculated.
 pub fn add_bk_crc(data: &[u8]) -> Vec<u8> {
-    let blocks = (data.len() + 31) / 32;
+    let blocks = data.len().div_ceil(32);
     let mut out = Vec::with_capacity(blocks * 34);
     let mut i = 0;
     while i < data.len() {

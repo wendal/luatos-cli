@@ -128,11 +128,7 @@ fn get_bus(port: &mut dyn serialport::SerialPort) -> Result<bool> {
 }
 
 /// Switch baud rate. Sends command to device, waits, then switches host side.
-fn set_baud_rate(
-    port: &mut dyn serialport::SerialPort,
-    baud: u32,
-    delay_ms: u64,
-) -> Result<bool> {
+fn set_baud_rate(port: &mut dyn serialport::SerialPort, baud: u32, delay_ms: u64) -> Result<bool> {
     let [b0, b1, b2, b3] = baud.to_le_bytes();
     let d = delay_ms as u8;
     let tx = [0x01u8, 0xE0, 0xFC, 0x06, 0x0F, b0, b1, b2, b3, d];
@@ -250,11 +246,7 @@ fn erase_sector(port: &mut dyn serialport::SerialPort, addr: u32, sz_cmd: u8) ->
     }
     let ok = buf[0] == 0x04 && buf[1] == 0x0E && buf[2] == 0xFF;
     if !ok {
-        log::warn!(
-            "Erase bad response at 0x{:08x}: {:02x?}",
-            addr,
-            &buf[..5]
-        );
+        log::warn!("Erase bad response at 0x{:08x}: {:02x?}", addr, &buf[..5]);
     }
     Ok(ok)
 }
@@ -407,7 +399,7 @@ where
     }
 
     // 1. Align to 64K block boundary with 4K erases
-    while current < end && (current % SECTORS_PER_BLOCK) != 0 {
+    while current < end && !current.is_multiple_of(SECTORS_PER_BLOCK) {
         do_erase_4k!();
     }
     // 2. 64K block erases
@@ -438,6 +430,7 @@ where
 }
 
 /// Erase then write `data` to flash at `start_addr`.
+#[allow(clippy::too_many_arguments)]
 fn flash_data(
     port: &mut dyn serialport::SerialPort,
     data: &[u8],
@@ -448,7 +441,7 @@ fn flash_data(
     cancel: &AtomicBool,
     on_progress: &ProgressCallback,
 ) -> Result<()> {
-    let num_sectors = (data.len() + SECTOR_SIZE - 1) / SECTOR_SIZE;
+    let num_sectors = data.len().div_ceil(SECTOR_SIZE);
     let erase_end = pct_start + (pct_end - pct_start) * 0.4;
 
     // Erase phase
@@ -541,7 +534,9 @@ fn flash_via_subprocess(
     ));
 
     let mut child = std::process::Command::new(exe_path)
-        .args(["download", "-p", &port_num, "-b", "2000000", "-s", "0", "-i"])
+        .args([
+            "download", "-p", &port_num, "-b", "2000000", "-s", "0", "-i",
+        ])
         .arg(rom_path)
         .current_dir(exe_path.parent().unwrap_or(Path::new(".")))
         .stdout(std::process::Stdio::piped())
@@ -556,7 +551,7 @@ fn flash_via_subprocess(
         let (tx, rx) = std::sync::mpsc::channel::<String>();
         let progress_thread = std::thread::spawn(move || {
             use std::io::{BufRead, BufReader};
-            for line in BufReader::new(stdout).lines().filter_map(|l| l.ok()) {
+            for line in BufReader::new(stdout).lines().map_while(|l| l.ok()) {
                 let t = line.trim().to_string();
                 if !t.is_empty() {
                     let _ = tx.send(t);
@@ -689,10 +684,12 @@ pub fn flash_bk7258(
     // 1. Extract .soc
     let tempdir = tempfile::tempdir().context("Failed to create temp dir")?;
     {
-        let file = std::fs::File::open(soc_path)
-            .with_context(|| format!("Cannot open {soc_path}"))?;
+        let file =
+            std::fs::File::open(soc_path).with_context(|| format!("Cannot open {soc_path}"))?;
         let mut archive = zip::ZipArchive::new(file)?;
-        archive.extract(tempdir.path()).context("Extraction failed")?;
+        archive
+            .extract(tempdir.path())
+            .context("Extraction failed")?;
     }
 
     // 2. Parse info.json
@@ -729,8 +726,7 @@ pub fn flash_bk7258(
     let flash_br = info.flash_baud_rate();
     let flash_br = baud_rate.unwrap_or(flash_br);
 
-    let bl_addr =
-        parse_addr(info.download.bl_addr.as_deref().unwrap_or("0")).unwrap_or(0) as u32;
+    let bl_addr = parse_addr(info.download.bl_addr.as_deref().unwrap_or("0")).unwrap_or(0) as u32;
     let rom_data =
         std::fs::read(&rom_path).with_context(|| format!("Cannot read {}", info.rom.file))?;
 
@@ -757,13 +753,8 @@ pub fn flash_bk7258(
             let valid_paths: Vec<&Path> = paths.into_iter().filter(|p| p.is_dir()).collect();
             match build_script_bin(&valid_paths, &info) {
                 Ok(data) => {
-                    let sa = parse_addr(
-                        info.download
-                            .script_addr
-                            .as_deref()
-                            .unwrap_or("0x200000"),
-                    )
-                    .unwrap_or(0x200000) as u32;
+                    let sa = parse_addr(info.download.script_addr.as_deref().unwrap_or("0x200000"))
+                        .unwrap_or(0x200000) as u32;
                     on_progress(&FlashProgress::info(
                         "Building",
                         5.0,
@@ -807,9 +798,7 @@ pub fn flash_bk7258(
         "Resetting device into bootloader…",
     ));
     if !get_bus(&mut *serial)? {
-        bail!(
-            "Cannot enter bootloader mode on {port}. Check cable and DTR/RTS wiring."
-        );
+        bail!("Cannot enter bootloader mode on {port}. Check cable and DTR/RTS wiring.");
     }
     on_progress(&FlashProgress::info(
         "Connecting",
@@ -1086,8 +1075,7 @@ pub fn flash_script_only(
     on_progress(&FlashProgress::info("Preparing", 1.0, "Parsing SOC info…"));
 
     // Parse SOC info
-    let file = std::fs::File::open(soc_path)
-        .with_context(|| format!("Cannot open {soc_path}"))?;
+    let file = std::fs::File::open(soc_path).with_context(|| format!("Cannot open {soc_path}"))?;
     let mut archive = zip::ZipArchive::new(file)?;
     let info: SocInfo = {
         let info_file = archive.by_name("info.json").context("info.json missing")?;
@@ -1158,8 +1146,7 @@ pub fn clear_filesystem(
     cancel.store(false, Ordering::Relaxed);
     on_progress(&FlashProgress::info("Preparing", 1.0, "Parsing SOC info…"));
 
-    let file = std::fs::File::open(soc_path)
-        .with_context(|| format!("Cannot open {soc_path}"))?;
+    let file = std::fs::File::open(soc_path).with_context(|| format!("Cannot open {soc_path}"))?;
     let mut archive = zip::ZipArchive::new(file)?;
     let info: SocInfo = {
         let info_file = archive.by_name("info.json").context("info.json missing")?;
@@ -1183,7 +1170,7 @@ pub fn clear_filesystem(
         bail!("Flash cancelled by user");
     }
 
-    let num_sectors = (fs_size + SECTOR_SIZE - 1) / SECTOR_SIZE;
+    let num_sectors = fs_size.div_ceil(SECTOR_SIZE);
     on_progress(&FlashProgress::info(
         "Erasing",
         30.0,
@@ -1221,8 +1208,7 @@ pub fn flash_filesystem(
     cancel.store(false, Ordering::Relaxed);
     on_progress(&FlashProgress::info("Preparing", 1.0, "Parsing SOC info…"));
 
-    let file = std::fs::File::open(soc_path)
-        .with_context(|| format!("Cannot open {soc_path}"))?;
+    let file = std::fs::File::open(soc_path).with_context(|| format!("Cannot open {soc_path}"))?;
     let mut archive = zip::ZipArchive::new(file)?;
     let info: SocInfo = {
         let info_file = archive.by_name("info.json").context("info.json missing")?;
@@ -1285,8 +1271,7 @@ pub fn clear_fskv(
     cancel.store(false, Ordering::Relaxed);
     on_progress(&FlashProgress::info("Preparing", 1.0, "Parsing SOC info…"));
 
-    let file = std::fs::File::open(soc_path)
-        .with_context(|| format!("Cannot open {soc_path}"))?;
+    let file = std::fs::File::open(soc_path).with_context(|| format!("Cannot open {soc_path}"))?;
     let mut archive = zip::ZipArchive::new(file)?;
     let info: SocInfo = {
         let info_file = archive.by_name("info.json").context("info.json missing")?;
@@ -1310,7 +1295,7 @@ pub fn clear_fskv(
         bail!("Flash cancelled by user");
     }
 
-    let num_sectors = (kv_size + SECTOR_SIZE - 1) / SECTOR_SIZE;
+    let num_sectors = kv_size.div_ceil(SECTOR_SIZE);
     on_progress(&FlashProgress::info(
         "Erasing",
         30.0,
