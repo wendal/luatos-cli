@@ -85,11 +85,35 @@ luatos-cli --format json flash test --soc firmware.soc --port COM6
 
 ## 支持的模组
 
+> 以下结果基于 2026-04-11 实机测试验证 (Air8101 @ COM6, Air6208 @ COM7)
+
 | 模组 | 芯片 | 刷机 | 脚本区 | 文件系统 | FSKV | 日志 | 闭环测试 |
 |------|------|:----:|:------:|:--------:|:----:|:----:|:--------:|
-| Air8101 | BK7258 (bk72xx) | ✓ | ✓ | ✓ | ✓ | 文本 | ✓ |
-| Air6208 | XT804 (air6208) | ✓ | ✓ | — | — | 二进制 | ✓ |
-| Air101/103 | XT804 | ✓ | ✓ | — | — | 二进制 | ✓ |
+| Air8101 | BK7258 (bk72xx) | ✅ | ✅ | ✅ | ✅ | 文本 | ✅ |
+| Air6208 | XT804 (air6208) | ✅ | ✅ | — | — | 二进制 | ✅ |
+| Air101/103 | XT804 | ✅ | ✅ | — | — | 二进制 | ✅ |
+
+<details>
+<summary>详细测试结果 (点击展开)</summary>
+
+| 模组 | 操作 | 结果 | 备注 |
+|------|------|:----:|------|
+| Air8101 | `flash run` (全量刷机) | ✅ | 通过 air602_flash.exe 子进程，约 37s |
+| Air8101 | `flash script` (刷脚本区) | ✅ | LuaDB 612B, bkcrc=true, luac bitw=64 |
+| Air8101 | `flash clear-fs` (清文件系统) | ✅ | 638 扇区擦除 |
+| Air8101 | `flash clear-kv` (清 FSKV) | ✅ | 16 扇区擦除 |
+| Air8101 | `flash flash-fs` (烧文件系统) | ✅ | LuaDB 打包写入文件系统分区 |
+| Air8101 | `flash test` (闭环测试) | ✅ | 关键字 "LuatOS@" 在启动日志中匹配 |
+| Air8101 | `log view` (文本日志) | ✅ | 2000000 baud 实时查看 |
+| Air6208 | `flash run` (全量刷机) | ✅ | XMODEM-1K, 1974 块, 2M baud |
+| Air6208 | `flash script` (刷脚本区) | ✅ | LuaDB 566B, luac bitw=64 |
+| Air6208 | `flash clear-fs` (清文件系统) | — | SOC 无文件系统分区定义 |
+| Air6208 | `flash clear-kv` (清 FSKV) | — | SOC 无 KV 分区定义 |
+| Air6208 | `flash flash-fs` (烧文件系统) | — | SOC 无文件系统分区定义 |
+| Air6208 | `flash test` (闭环测试) | ✅ | 二进制日志中部分文本匹配 |
+| Air6208 | `log view-binary` (二进制日志) | ✅ | SOC 二进制帧解码正确 |
+
+</details>
 
 ## 架构
 
