@@ -153,7 +153,7 @@ fn extract_7z(soc_path: &str, out_dir: &Path) -> Result<()> {
 }
 
 /// Find the 7z executable path. Checks bundled location first, then PATH.
-fn find_7z_exe() -> String {
+pub(crate) fn find_7z_exe() -> String {
     // Check for bundled 7za.exe relative to the executable
     let bundled_paths = [
         "refs/origin_tools/7za.exe",

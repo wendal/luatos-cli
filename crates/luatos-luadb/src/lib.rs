@@ -91,6 +91,8 @@ fn bk_crc16(block: &[u8; 32]) -> u16 {
     (crc & 0xFFFF) as u16
 }
 
+pub mod build;
+
 #[cfg(test)]
 mod tests {
     use super::*;

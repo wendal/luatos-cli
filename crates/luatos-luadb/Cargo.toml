@@ -8,3 +8,5 @@ description = "LuaDB script image packer + BK CRC16"
 [dependencies]
 anyhow.workspace = true
 log.workspace = true
+walkdir.workspace = true
+tempfile.workspace = true

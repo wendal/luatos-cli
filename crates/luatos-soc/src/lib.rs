@@ -6,7 +6,9 @@
 //   - Optional: air602_flash.exe, luac, etc.
 
 mod info;
+pub mod pack;
 mod unpack;
 
 pub use info::*;
+pub use pack::*;
 pub use unpack::*;
