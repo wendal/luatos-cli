@@ -18,15 +18,28 @@ const SEARCH_DIRS: &[&str] = &["refs/origin_tools/tools", "../refs/origin_tools/
 /// For `bitw == 32` (or any other value), tries `luac.exe`.
 /// Searches relative directories first, then the system PATH.
 pub fn find_luac(bitw: u32) -> Result<PathBuf> {
-    let candidates: Vec<&str> = if bitw == 64 {
-        vec!["luac_64bit.exe", "luac.exe"]
+    let (exe_candidates, bare_candidates): (Vec<&str>, Vec<&str>) = if bitw == 64 {
+        if cfg!(windows) {
+            (vec!["luac_64bit.exe", "luac.exe"], vec![])
+        } else {
+            (vec![], vec!["luac_64bit", "luac"])
+        }
     } else {
-        vec!["luac.exe"]
+        if cfg!(windows) {
+            (vec!["luac.exe"], vec![])
+        } else {
+            (vec![], vec!["luac"])
+        }
     };
 
+    let all_candidates: Vec<&str> = exe_candidates
+        .iter()
+        .chain(bare_candidates.iter())
+        .copied()
+        .collect();
     let cwd = std::env::current_dir().context("failed to get current directory")?;
 
-    for name in &candidates {
+    for name in &all_candidates {
         // Search in well-known relative directories
         for dir in SEARCH_DIRS {
             let p = cwd.join(dir).join(name);
@@ -42,7 +55,8 @@ pub fn find_luac(bitw: u32) -> Result<PathBuf> {
         }
 
         // Search system PATH
-        if let Ok(output) = Command::new("where").arg(name).output() {
+        let which_cmd = if cfg!(windows) { "where" } else { "which" };
+        if let Ok(output) = Command::new(which_cmd).arg(name).output() {
             if output.status.success() {
                 let s = String::from_utf8_lossy(&output.stdout);
                 if let Some(line) = s.lines().next() {

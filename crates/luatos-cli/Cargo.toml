@@ -28,3 +28,6 @@ ctrlc = "3"
 serialport.workspace = true
 toml.workspace = true
 chrono.workspace = true
+ureq = { workspace = true }
+sha2 = { workspace = true }
+indicatif = { workspace = true }

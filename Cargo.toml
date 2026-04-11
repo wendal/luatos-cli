@@ -31,3 +31,6 @@ tempfile = "3"
 toml = "0.8"
 walkdir = "2"
 sevenz-rust2 = { version = "0.20", features = ["compress"] }
+ureq = "2"
+sha2 = "0.10"
+indicatif = "0.17"

@@ -23,6 +23,12 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             artifact: luatos-cli
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            artifact: luatos-cli
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            artifact: luatos-cli
     steps:
       - uses: actions/checkout@v4
         with:
@@ -57,6 +63,13 @@ jobs:
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
+        run: |
+          mkdir dist
+          cp target/${{ matrix.target }}/release/luatos-cli dist/
+          tar czf luatos-cli-${{ matrix.target }}.tar.gz -C dist .
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
         run: |
           mkdir dist
           cp target/${{ matrix.target }}/release/luatos-cli dist/
