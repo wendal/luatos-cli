@@ -377,8 +377,11 @@ fn xmodem_transfer(
         ));
     }
 
-    // Send EOT to end transfer
-    for _ in 0..10 {
+    // Send EOT to end transfer.
+    // The XT804 bootloader often reboots immediately after writing the image,
+    // so the EOT ACK may never arrive. Use a short timeout and treat failure
+    // as success since all data blocks were already ACKed.
+    for _ in 0..3 {
         port.write_all(&[XMODEM_EOT])?;
         port.flush()?;
 
@@ -389,7 +392,10 @@ fn xmodem_transfer(
         }
     }
 
-    bail!("XMODEM EOT: no ACK from receiver");
+    // All data blocks were ACKed — EOT timeout is expected when the bootloader
+    // reboots before acknowledging.
+    log::info!("XMODEM EOT not ACKed (normal for XT804 partition flash)");
+    Ok(())
 }
 
 // ─── Image verification ──────────────────────────────────────────────────────
@@ -694,16 +700,15 @@ pub fn flash_script_only(
         ),
     ));
 
-    // Wrap in XT804 image header
-    let final_data = build_xt804_image(&luadb_data, script_addr);
+    // Wrap in XT804 image header (partition config: SRAM header, img_type=1)
+    let final_data = build_xt804_image(&luadb_data, script_addr, &partition_image_config());
 
     // Connect to bootloader
     let mut serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
 
-    // Erase + transfer
-    on_progress(&FlashProgress::info("Erase", 30.0, "Erasing flash..."));
-    erase_flash(serial.as_mut(), &cancel)?;
-
+    // No erase for script-only flash — only the target partition is overwritten.
+    // The XT804 bootloader uses the image header's run_img_addr to determine
+    // where to write, so erasing the entire flash is unnecessary and destructive.
     on_progress(&FlashProgress::info("Write", 40.0, "Writing script..."));
     xmodem_transfer(serial.as_mut(), &final_data, &cancel, &on_progress)?;
 
@@ -756,15 +761,11 @@ pub fn flash_filesystem(
         &format!("LFS image: {} bytes → addr 0x{:X}", fs_image.len(), fs_addr),
     ));
 
-    // Wrap in XT804 image header
-    let final_data = build_xt804_image(&fs_image, fs_addr);
+    // Wrap in XT804 image header (partition config)
+    let final_data = build_xt804_image(&fs_image, fs_addr, &partition_image_config());
 
     // Connect to bootloader
     let mut serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
-
-    // Erase + transfer
-    on_progress(&FlashProgress::info("Erase", 30.0, "Erasing flash..."));
-    erase_flash(serial.as_mut(), &cancel)?;
 
     on_progress(&FlashProgress::info("Write", 40.0, "Writing filesystem..."));
     xmodem_transfer(serial.as_mut(), &final_data, &cancel, &on_progress)?;
@@ -796,12 +797,9 @@ pub fn clear_filesystem(
     ));
 
     let blank = vec![0xFF_u8; fs_size];
-    let final_data = build_xt804_image(&blank, fs_addr);
+    let final_data = build_xt804_image(&blank, fs_addr, &partition_image_config());
 
     let mut serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
-
-    on_progress(&FlashProgress::info("Erase", 30.0, "Erasing flash..."));
-    erase_flash(serial.as_mut(), &cancel)?;
 
     on_progress(&FlashProgress::info(
         "Write",
@@ -835,12 +833,9 @@ pub fn clear_kv(
     ));
 
     let blank = vec![0xFF_u8; kv_size];
-    let final_data = build_xt804_image(&blank, kv_addr);
+    let final_data = build_xt804_image(&blank, kv_addr, &partition_image_config());
 
     let mut serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
-
-    on_progress(&FlashProgress::info("Erase", 30.0, "Erasing flash..."));
-    erase_flash(serial.as_mut(), &cancel)?;
 
     on_progress(&FlashProgress::info("Write", 40.0, "Clearing KV store..."));
     xmodem_transfer(serial.as_mut(), &final_data, &cancel, &on_progress)?;
@@ -869,53 +864,95 @@ fn xt804_crc32(data: &[u8]) -> u32 {
     crc
 }
 
+/// XT804 image header configuration.
+struct Xt804ImageConfig {
+    /// img_type / img_attr field (0 = secboot, 1 = user image)
+    img_type: u16,
+    /// Where the header is stored: flash addr for firmware, SRAM 0x20008000 for partitions
+    img_header_addr: u32,
+    /// Upgrade image address (0x08010000 for firmware, 0 for partitions)
+    upgrade_img_addr: u32,
+    /// Next boot header address (for chained images, 0 for last/only image)
+    next_boot: u32,
+}
+
 /// Build an XT804 firmware image with proper header.
 ///
 /// The header tells the bootloader where to write the payload in flash.
+/// Payload is padded to 1024-byte alignment (matching wm_tool.c behavior).
+///
 /// Layout (64 bytes, LE):
 ///   0x00: magic_no         (u32) = 0xA0FFFF9F
-///   0x04: img_type         (u16) = 0 (1M layout)
+///   0x04: img_type         (u16)
 ///   0x06: zip_type         (u16) = 0 (uncompressed)
 ///   0x08: run_img_addr     (u32) = target flash address
-///   0x0C: run_img_len      (u32) = payload length
-///   0x10: img_header_addr  (u32) = 0x8002000
-///   0x14: upgrade_img_addr (u32) = 0x8090000
-///   0x18: run_org_checksum (u32) = CRC32 of payload
+///   0x0C: run_img_len      (u32) = payload length (padded)
+///   0x10: img_header_addr  (u32)
+///   0x14: upgrade_img_addr (u32)
+///   0x18: run_org_checksum (u32) = CRC32 of payload (padded)
 ///   0x1C: upd_no           (u32) = 0
 ///   0x20: ver[16]          (bytes) = version string
 ///   0x30: reserved0        (u32) = 0
 ///   0x34: reserved1        (u32) = 0
-///   0x38: next_boot        (u32) = 0
+///   0x38: next_boot        (u32)
 ///   0x3C: hd_checksum      (u32) = CRC32 of header[0..60]
-fn build_xt804_image(payload: &[u8], run_addr: u32) -> Vec<u8> {
+fn build_xt804_image(payload: &[u8], run_addr: u32, cfg: &Xt804ImageConfig) -> Vec<u8> {
+    // Pad payload to 1024-byte alignment with 0x00 (minimum 1KB).
+    // wm_tool.c uses memset(buf, 0, ...) before reading, so padding is 0x00.
+    let padded_len = ((payload.len() + 1023) & !1023).max(1024);
+    let mut padded_payload = vec![0u8; padded_len];
+    padded_payload[..payload.len()].copy_from_slice(payload);
+
     let mut header = [0u8; 64];
 
     // magic
     header[0..4].copy_from_slice(&IMAGE_MAGIC.to_le_bytes());
-    // img_type = 0 (1M), zip_type = 0 (uncompressed)
+    // img_type
+    header[4..6].copy_from_slice(&cfg.img_type.to_le_bytes());
+    // zip_type = 0 (uncompressed)
     // run_img_addr
     header[8..12].copy_from_slice(&run_addr.to_le_bytes());
-    // run_img_len
-    let payload_len = payload.len() as u32;
-    header[12..16].copy_from_slice(&payload_len.to_le_bytes());
-    // img_header_addr = 0x8002000
-    header[16..20].copy_from_slice(&0x8002000_u32.to_le_bytes());
-    // upgrade_img_addr = 0x8090000
-    header[20..24].copy_from_slice(&0x8090000_u32.to_le_bytes());
-    // run_org_checksum = CRC32 of payload
-    let payload_crc = xt804_crc32(payload);
+    // run_img_len (padded length)
+    header[12..16].copy_from_slice(&(padded_len as u32).to_le_bytes());
+    // img_header_addr
+    header[16..20].copy_from_slice(&cfg.img_header_addr.to_le_bytes());
+    // upgrade_img_addr
+    header[20..24].copy_from_slice(&cfg.upgrade_img_addr.to_le_bytes());
+    // run_org_checksum = CRC32 of padded payload
+    let payload_crc = xt804_crc32(&padded_payload);
     header[24..28].copy_from_slice(&payload_crc.to_le_bytes());
-    // version string (optional)
-    let ver = b"luatos-cli";
-    header[32..32 + ver.len()].copy_from_slice(ver);
+    // ver[16] left as zeros (matching wm_tool default)
+    // next_boot
+    header[56..60].copy_from_slice(&cfg.next_boot.to_le_bytes());
     // hd_checksum = CRC32 of header[0..60]
     let hd_crc = xt804_crc32(&header[0..60]);
     header[60..64].copy_from_slice(&hd_crc.to_le_bytes());
 
-    let mut image = Vec::with_capacity(64 + payload.len());
+    let mut image = Vec::with_capacity(64 + padded_len);
     image.extend_from_slice(&header);
-    image.extend_from_slice(payload);
+    image.extend_from_slice(&padded_payload);
     image
+}
+
+/// Config for partition images (script, filesystem, KV).
+/// Uses SRAM header addr so the header is not persisted to flash.
+fn partition_image_config() -> Xt804ImageConfig {
+    Xt804ImageConfig {
+        img_type: 1,
+        img_header_addr: 0x20008000,
+        upgrade_img_addr: 0,
+        next_boot: 0,
+    }
+}
+
+/// Config for full firmware images (secboot + app chain).
+fn firmware_image_config() -> Xt804ImageConfig {
+    Xt804ImageConfig {
+        img_type: 0,
+        img_header_addr: 0x08002000,
+        upgrade_img_addr: 0x08010000,
+        next_boot: 0,
+    }
 }
 
 /// Copy all files/dirs from src to dst (non-recursive merge).
