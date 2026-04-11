@@ -687,7 +687,11 @@ pub fn flash_script_only(
     on_progress(&FlashProgress::info(
         "Build",
         10.0,
-        &format!("Script image: {} bytes → addr 0x{:X}", luadb_data.len(), script_addr),
+        &format!(
+            "Script image: {} bytes → addr 0x{:X}",
+            luadb_data.len(),
+            script_addr
+        ),
     ));
 
     // Wrap in XT804 image header
@@ -743,9 +747,8 @@ pub fn flash_filesystem(
             .with_context(|| format!("failed to copy files from {}", dir_str))?;
     }
 
-    let fs_image =
-        luatos_luadb::build::build_littlefs_image(tmpdir.path(), fs_size, 4096)
-            .context("failed to build LittleFS image")?;
+    let fs_image = luatos_luadb::build::build_littlefs_image(tmpdir.path(), fs_size, 4096)
+        .context("failed to build LittleFS image")?;
 
     on_progress(&FlashProgress::info(
         "Build",
@@ -800,7 +803,11 @@ pub fn clear_filesystem(
     on_progress(&FlashProgress::info("Erase", 30.0, "Erasing flash..."));
     erase_flash(serial.as_mut(), &cancel)?;
 
-    on_progress(&FlashProgress::info("Write", 40.0, "Clearing filesystem..."));
+    on_progress(&FlashProgress::info(
+        "Write",
+        40.0,
+        "Clearing filesystem...",
+    ));
     xmodem_transfer(serial.as_mut(), &final_data, &cancel, &on_progress)?;
 
     reset_device(serial.as_mut())?;

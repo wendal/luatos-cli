@@ -137,10 +137,7 @@ fn build_mklfs_helper(lfs_src: &str, out_dir: &Path, target_os: &str) {
         panic!("Failed to build mklfs helper");
     }
 
-    println!(
-        "cargo:rustc-env=MKLFS_HELPER_EMBED={}",
-        output.display()
-    );
+    println!("cargo:rustc-env=MKLFS_HELPER_EMBED={}", output.display());
 }
 
 fn main() {
