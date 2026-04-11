@@ -1,0 +1,69 @@
+{
+ "HashAlgorithm": "SHA256",
+ "imageinfo": [
+  {
+   "addr": 0,
+   "file": "ban_old_tool_poison.bin",
+   "flashsize": 0,
+   "hash": "0",
+   "type": "VIRTUALIMG"
+  },
+  {
+   "addr": 8404992,
+   "file": "ap_bootloader.bin",
+   "flashsize": 131072,
+   "hash": "1CC29C411DFAE044FBB68BB7E6783E9FB84F4523E589299CEE4F7ED72D8C406B",
+   "type": "BL"
+  },
+  {
+   "addr": 8536064,
+   "file": "ap_at_command.bin",
+   "flashsize": 2621440,
+   "hash": "EC5204C878A7315FF5B7C6847C34F508B14C9CFDB4871BD13205E8C7626ECC62",
+   "type": "AP"
+  },
+  {
+   "addr": 142606336,
+   "file": "cp-demo-flash.bin",
+   "flashsize": 524288,
+   "hash": "2EE71BFA864F128A8264997D01B67738BE07D0ECCF6DD727A596E240B1C52C3F",
+   "type": "CP"
+  },
+  {
+   "addr": 12075008,
+   "file": "lfs-demo-flash.bin",
+   "flashsize": 3981312,
+   "hash": "CBB965F8B62358E703A9BDD68B5D3328B3D6BECF987D97E04CB3F34F3D357D9E",
+   "type": "PKGFLXFS"
+  },
+  {
+   "addr": 2147483648,
+   "file": "pkgflxfile_1.bin",
+   "flashsize": 524288,
+   "hash": "CBB965F8B62358E703A9BDD68B5D3328B3D6BECF987D97E04CB3F34F3D357D9E",
+   "type": "EF"
+  },
+  {
+   "addr": 2148007936,
+   "file": "pkgflxfile_2.bin",
+   "flashsize": 393216,
+   "hash": "6D88E4EDB5F64D70512A9CF6400727B20DF1209DF579A3ABD430D2B49953C57D",
+   "type": "EF"
+  }
+ ],
+ "imagepath": "C:\\Users\\ivan\\Documents\\projects\\ec616_00\\release_ec616_01\\jwzhuang20191121_20191031_flashtoolcli\\FlashToolsEC618\\FlashToolCLI_V4.1.1_20230323_1752_Test\\image_ec618\\pkgsingle_dir\\pkg_extract_tmp\\",
+ "pkgarg": {
+  "pkgmode": 1,
+  "productname": "EC618_4M"
+ },
+ "version": "111",
+ "ExtractSyncRec": {
+  "LastSyncTime": 1679565320,
+  "LastSyncStat": 1,
+  "PackagePath": "C:\\Users\\ivan\\Documents\\projects\\ec616_00\\release_ec616_01\\jwzhuang20191121_20191031_flashtoolcli\\FlashToolsEC618\\FlashToolCLI_V4.1.1_20230323_1752_Test\\image_ec618\\pkgsingle_dir\\merge_multi_test_ext_2imgs.binpkg",
+  "PackageExtDir": "C:\\Users\\ivan\\Documents\\projects\\ec616_00\\release_ec616_01\\jwzhuang20191121_20191031_flashtoolcli\\FlashToolsEC618\\FlashToolCLI_V4.1.1_20230323_1752_Test\\image_ec618\\pkgsingle_dir\\pkg_extract_tmp",
+  "PackageModTime": 1679367961,
+  "PackageSize": 3098994,
+  "PackageHash": "f966c76f2d01576e9c11a85b8a15cec6dd14336d3faeebfd0e664d714bd070a8"
+ }
+}

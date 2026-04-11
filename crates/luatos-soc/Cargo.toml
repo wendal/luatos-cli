@@ -1,0 +1,13 @@
+[package]
+name = "luatos-soc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LuatOS SOC file parser — unpack/pack/info.json"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zip.workspace = true
+log.workspace = true

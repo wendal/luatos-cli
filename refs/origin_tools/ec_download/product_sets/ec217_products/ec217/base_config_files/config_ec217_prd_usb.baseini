@@ -1,0 +1,50 @@
+[config]
+line_0_com = COM9
+agbaud=921600
+;baud=130000
+filter_embedusb=0
+filter_externcom=1
+embedusb_hwid_list=05C6:9330
+
+
+[agentboot]
+tool_basedir = 1
+agpath = .\product_sets\ec217_products\common_data\agentboot_usb\agentboot.bin
+
+[storage_cfg]
+#will be update when load
+format_path = format_ec718_none.json
+
+[bootloader]
+blpath = .\empty.bin
+blloadskip = 0
+burnaddr=0xf
+;system.bin file infomation
+[system]
+syspath =.\empty.bin
+sysloadskip = 0
+burnaddr = 0xf
+
+[cp_system]
+cp_syspath = .\empty.bin
+cp_sysloadskip = 0
+burnaddr = 0xf
+
+[control]
+prempt_detect_time = 6
+msg_waittime = 2
+max_preamble_cnt = 8
+lpc_recover_en = 0
+;cfg reset to 2, skip reset pin
+pullup_qspi =1
+trc_ser= 1
+rom_version= 0000000103020000
+
+;dld_upg_ctrl_valid=1
+;dld_upg_connwait_100ms_cnt=50
+;dld_upg_ctrlwait_100ms_cnt=100
+
+[flexfile0]
+filepath = .\product_sets\ec217_products\ec217\rfCaliTb\MergeRfTable.bin
+burnaddr = 0x74b000
+

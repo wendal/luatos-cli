@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/luatos-cli",
+    "crates/luatos-soc",
+    "crates/luatos-luadb",
+    "crates/luatos-flash",
+    "crates/luatos-serial",
+    "crates/luatos-project",
+    "crates/luatos-log",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serialport = { version = "4", features = ["usbportinfo-interface"] }
+log = "0.4"
+env_logger = "0.11"
+zip = "2"
+chrono = { version = "0.4", features = ["clock"] }
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }

@@ -1,0 +1,48 @@
+{
+ "HashAlgorithm": "SHA256",
+ "imageinfo": [
+  {
+   "addr": 0,
+   "file": "ban_old_tool_poison.bin",
+   "flashsize": 0,
+   "hash": "0",
+   "type": "VIRTUALIMG"
+  },
+  {
+   "addr": 8400896,
+   "file": "ap_bootloader.bin",
+   "flashsize": 131072,
+   "hash": "908EB83D963318A49DF537DDAE2D18A955C25ABDB2FB6CE29CD7BD31457A74E7",
+   "type": "BL"
+  },
+  {
+   "addr": 9494528,
+   "file": "ap_at_command.bin",
+   "flashsize": 4268032,
+   "hash": "6CA153E74B7B4A3A41198D9D946B7CCC312BA03A9A6C76E8C5F0D43BAFBAA422",
+   "type": "AP"
+  },
+  {
+   "addr": 8650752,
+   "file": "cp-demo-flash.bin",
+   "flashsize": 843776,
+   "hash": "DC1CCB5772E0604E6B085291D8DB00CAA034E8CD15F85AD065A8863BFED0E348",
+   "type": "CP"
+  }
+ ],
+ "imagepath": "C:\\Users\\ivan\\Documents\\projects\\ec616_00\\release_ec616_01\\FlashToolsRelease\\FlashTools_V4.0.10\\FlashTools_V4.1.3_20230606_p01\\image_ec718\\named_product\\ec718u\\pkgdir\\pkg_extract_tmp/",
+ "pkgarg": {
+  "pkgmode": 1,
+  "productname": "EC718U_PRD"
+ },
+ "version": "111",
+ "ExtractSyncRec": {
+  "LastSyncTime": 1689229670,
+  "LastSyncStat": 1,
+  "PackagePath": "C:\\Users\\ivan\\Documents\\projects\\ec616_00\\release_ec616_01\\FlashToolsRelease\\FlashTools_V4.0.10\\FlashTools_V4.1.3_20230606_p01\\image_ec718\\named_product\\ec718u\\pkgdir\\at_command.binpkg",
+  "PackageExtDir": "C:\\Users\\ivan\\Documents\\projects\\ec616_00\\release_ec616_01\\FlashToolsRelease\\FlashTools_V4.0.10\\FlashTools_V4.1.3_20230606_p01\\image_ec718\\named_product\\ec718u\\pkgdir\\pkg_extract_tmp",
+  "PackageModTime": 1686017103,
+  "PackageSize": 2288132,
+  "PackageHash": "5c872484dd5c2410f20e85fb35517b6d900b1cd566db93407f9107fe60917c7a"
+ }
+}

@@ -1,0 +1,62 @@
+[config]
+line_0_com = COM9
+agbaud=921600
+
+;filter com config
+comment_filter= "filter for com config"
+filter_embedusb=0
+filter_externcom=1
+
+
+;agentboot.bin file infomation
+[agentboot]
+comment_agentboot="agentboot.bin file infomation"
+tool_basedir = 1
+agpath =.\product_sets\ec618_products\common_data\agentboot_usb\agentboot.bin
+
+[storage_cfg]
+format_path = format_ec618_none.json
+
+[bootloader]
+comment_default="bootloader.bin file infomation"
+blpath = .\image_ec618\named_product\ec618_custom_test\ap_bootloader.bin
+blloadskip = 0
+burnaddr=0x4000
+
+;system.bin file infomation
+[system]
+comment_default="system.bin file infomation"
+syspath = .\image_ec618\named_product\ec618_custom_test\ap_demo-flash.bin
+sysloadskip = 0
+burnaddr = 0x24000
+
+[cp_system]
+cp_syspath = .\image_ec618\named_product\ec618_custom_test\cp-demo-flash.bin
+cp_sysloadskip = 0
+burnaddr = 0x0
+
+;control such as reset before download
+[control]
+comment_default="control such as reset before download"
+
+prempt_detect_time = 6
+msg_waittime = 2
+max_preamble_cnt = 8
+lpc_recover_en = 0
+;cfg reset to 2, skip reset pin
+pullup_qspi =1
+;remap_dld_addr = 32768
+rom_version= 0000000102000000
+;auto_disconnect = reset,poweroff
+auto_disconnect =none,poweroff
+
+[flexfile0]
+filepath = .\product_sets\ec618_products\ec618_custom_test\rfCaliTb\MergeRfTable.bin
+burnaddr = 0xe7000
+storage_type=cp_flash
+
+
+[flexfile1]
+filepath = .\product_sets\ec618_products\ec618_custom_test\rfCaliTb\MergeRfTable.bin
+burnaddr = 0xce000
+storage_type=cp_flash

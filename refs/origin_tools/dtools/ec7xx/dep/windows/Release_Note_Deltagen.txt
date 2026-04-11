@@ -1,0 +1,7 @@
+程序名称：Deltagen
+程序版本：deltagen20221121
+deltagen20221121
+1.优化了相同块的差分包生成方式，兼容新旧bootloader 差分库。
+
+
+

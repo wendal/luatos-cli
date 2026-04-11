@@ -1,0 +1,47 @@
+[config]
+line_0_com = COM9
+agbaud=921600
+filter_embedusb=0
+filter_externcom=1
+
+
+
+[agentboot]
+tool_basedir = 1
+agpath = .\product_sets\ec718_products\common_data\agentboot_usb\agentboot.bin
+
+[storage_cfg]
+#will be update when load
+format_path = format_ec718_none.json
+
+[bootloader]
+blpath = .\image_ec619\ap_bootloader.bin
+blloadskip = 0
+burnaddr=0xf
+;system.bin file infomation
+[system]
+syspath =.\image_ec619\ap_demo-flash.bin
+sysloadskip = 0
+burnaddr = 0xf
+
+[cp_system]
+cp_syspath = .\image_ec619\cp-demo-flash.bin
+cp_sysloadskip = 0
+burnaddr = 0xf
+
+[control]
+prempt_detect_time = 6
+msg_waittime = 2
+max_preamble_cnt = 8
+lpc_recover_en = 0
+;cfg reset to 2, skip reset pin
+pullup_qspi =1
+trc_ser= 1
+rom_version= 0000000203000000
+
+dribble_dld_en=0
+[flexfile0]
+filepath = .\product_sets\ec718_products\ec718h\rfCaliTb\MergeRfTable.bin
+burnaddr = 0xe7000
+storage_type=cp_flash
+

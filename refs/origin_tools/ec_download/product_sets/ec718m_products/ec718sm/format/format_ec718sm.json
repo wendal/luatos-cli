@@ -1,0 +1,54 @@
+{
+	"fs": {
+		"begin":"0x9a6000",
+		"length":"49152"
+	},
+	"fraw": {
+		"begin":"0x9ff000",
+		"length":"4096"
+	},	
+	"rr": {
+		"begin":"0x9f3000",
+		"length":"49152"
+	},
+	"drr": {
+		"begin":"0x815000",
+		"length":"20480"
+	},
+	"hfd": {
+		"begin":"0",
+		"length":"0"
+	},
+	"opt": {
+		"begin":"0x0800000",
+		"length":"2097152"
+	},
+	"cal":[
+		{
+			"stor_type": "ap_flash",
+			"offst_flag": "1",		
+			"begin":"0x1f3000",
+			"length":"0xc000"
+		}
+	],
+	"erallum":[
+		{
+			"stor_type": "ap_flash",
+			"offst_flag": "1",			
+			"begin":"0x0",
+			"length":"0x15000"			
+		},
+		{
+			"stor_type": "ap_flash",
+			"offst_flag": "1",			
+			"begin":"0x1a000",
+			"length":"0x1d8000"			
+		},			
+		{
+			"stor_type": "ap_flash",
+			"offst_flag": "1",			
+			"begin":"0x1ff000",
+			"length":"0x1000"			
+		}
+	]
+}

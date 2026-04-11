@@ -1,0 +1,34 @@
+{
+ "TheseAreComments!":[
+  {"Comment": "'PatchBlockSize' must be set 32K, other block size has not been supported yet!"},
+  {"Comment": "'FotaMemSize' is not the entire customized FOTA zone in flash but the one only for delta downloading!"},
+  {"Comment": "'attr' in 'ImageMem' must be set with one of these choices('BINPKG/BL/AP/CP/APP/APP2'), which is forbidden to be redefined!"},
+  {"Comment": "However, other fields can be redefined to whatever you want, including the name of this config file!"}
+ ],
+ "CompanyName": "EiGENCOMM",
+ "ProductName": "EC618",
+ "PatchBlockSize": 32768,
+ "FotaMemSize": 491520,
+ "ImageMem": [
+  {
+   "attr": "BINPKG",
+   "addr": 0,
+   "size": 0
+  },
+  {
+   "attr": "AP",
+   "addr": 8536064,
+   "size": 3014656
+  },
+  {
+   "attr": "CP",
+   "addr": 8388608,
+   "size": 524288
+  },
+  {
+   "attr": "APP",
+   "addr": 0,
+   "size": 0
+  }
+ ]
+}

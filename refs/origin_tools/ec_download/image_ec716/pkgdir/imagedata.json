@@ -1,0 +1,48 @@
+{
+ "HashAlgorithm": "SHA256",
+ "imageinfo": [
+  {
+   "addr": 0,
+   "file": "ban_old_tool_poison.bin",
+   "flashsize": 0,
+   "hash": "0",
+   "type": "VIRTUALIMG"
+  },
+  {
+   "addr": 8400896,
+   "file": "ap_bootloader.bin",
+   "flashsize": 73728,
+   "hash": "07444ED6F17135048A750049FAB9A9BFEFA64A85830B9F122BE9C2F7DBD599DF",
+   "type": "BL"
+  },
+  {
+   "addr": 8855552,
+   "file": "ap_at_command.bin",
+   "flashsize": 1261568,
+   "hash": "55CFAE6DE7878421B9ABF9591BFC67F046E4D13F4337D2CFE4BD68A008BDAE2E",
+   "type": "AP"
+  },
+  {
+   "addr": 8495104,
+   "file": "cp-demo-flash.bin",
+   "flashsize": 360448,
+   "hash": "3379B761FA59434963A132A2BCEAA433A64BEC490D1989F221A2859E9BBCD04F",
+   "type": "CP"
+  }
+ ],
+ "imagepath": "D:\\Eigencomm\\FTP׾αƷ׊�\\ec718\\tools\\FlashTool٤ޟ\\FlashToolCLI_V4.1.11_20240123\\image_ec716\\pkgdir\\pkg_extract_tmp/",
+ "pkgarg": {
+  "pkgmode": 1,
+  "productname": "EC716S_PRD"
+ },
+ "version": "111",
+ "ExtractSyncRec": {
+  "LastSyncTime": 1709712070,
+  "LastSyncStat": 1,
+  "PackagePath": "D:\\Eigencomm\\FTP服务器资料\\ec718\\tools\\FlashTool工具\\FlashToolCLI_V4.1.11_20240123\\image_ec716\\pkgdir\\at_command.binpkg",
+  "PackageExtDir": "D:\\Eigencomm\\FTP服务器资料\\ec718\\tools\\FlashTool工具\\FlashToolCLI_V4.1.11_20240123\\image_ec716\\pkgdir\\pkg_extract_tmp",
+  "PackageModTime": 1700462950,
+  "PackageSize": 1697308,
+  "PackageHash": "28910f1934a4256d0affa57dbda7a9ffe2b84272944dc0e2cf38eb30fad16665"
+ }
+}
