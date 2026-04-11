@@ -1028,7 +1028,7 @@ pub fn erase_partition_ccm4211(
             partition_addr,
             &[],
             &mut sn,
-            Duration::from_secs(2),
+            Duration::from_secs(10),
         )
         .is_ok()
         {
