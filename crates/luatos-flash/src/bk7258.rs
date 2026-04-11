@@ -968,6 +968,363 @@ fn build_script_bin(folder: &Path, info: &SocInfo) -> Result<Vec<u8>> {
     Ok(data)
 }
 
+// ─── Bootloader connection helper ─────────────────────────────────────────────
+
+/// Connect to BK7258 bootloader and prepare for flash operations.
+///
+/// Returns an open serial port that has completed handshake, baud switch, and SR unprotect.
+fn connect_bootloader(
+    port: &str,
+    flash_br: u32,
+    cancel: &AtomicBool,
+    on_progress: &ProgressCallback,
+) -> Result<Box<dyn serialport::SerialPort>> {
+    on_progress(&FlashProgress::info(
+        "Connecting",
+        5.0,
+        &format!("Opening {port} @ 115200…"),
+    ));
+    let mut serial = serialport::new(port, 115_200)
+        .timeout(Duration::from_millis(200))
+        .open()
+        .with_context(|| format!("Cannot open serial port {port}"))?;
+
+    on_progress(&FlashProgress::info(
+        "Connecting",
+        10.0,
+        "Resetting device into bootloader…",
+    ));
+    if !get_bus(&mut *serial)? {
+        bail!("Cannot enter bootloader mode on {port}. Check cable and DTR/RTS wiring.");
+    }
+    on_progress(&FlashProgress::info(
+        "Connecting",
+        15.0,
+        "Bootloader link established!",
+    ));
+
+    if flash_br != 115_200 {
+        on_progress(&FlashProgress::info(
+            "Connecting",
+            18.0,
+            &format!("Switching to {flash_br} bps…"),
+        ));
+        match set_baud_rate(&mut *serial, flash_br, 200) {
+            Ok(true) => {
+                on_progress(&FlashProgress::info(
+                    "Connecting",
+                    20.0,
+                    &format!("Baud rate set to {flash_br}"),
+                ));
+            }
+            Ok(false) => {
+                on_progress(&FlashProgress::info(
+                    "Connecting",
+                    20.0,
+                    "[WARN] Baud rate switch ACK failed — continuing at 115200",
+                ));
+            }
+            Err(e) => {
+                on_progress(&FlashProgress::info(
+                    "Connecting",
+                    20.0,
+                    &format!("[WARN] set_baud_rate error: {e}"),
+                ));
+            }
+        }
+    }
+
+    if cancel.load(Ordering::Relaxed) {
+        bail!("Flash cancelled by user");
+    }
+
+    match get_flash_mid(&mut *serial) {
+        Ok(m) => {
+            on_progress(&FlashProgress::info(
+                "Connecting",
+                22.0,
+                &format!("Flash MID: 0x{m:06x}"),
+            ));
+            unprotect_flash(&mut *serial, m)?;
+            on_progress(&FlashProgress::info(
+                "Connecting",
+                25.0,
+                "Flash SR unprotected",
+            ));
+        }
+        Err(e) => {
+            on_progress(&FlashProgress::info(
+                "Connecting",
+                22.0,
+                &format!("[WARN] GetFlashMID: {e}"),
+            ));
+        }
+    }
+
+    Ok(serial)
+}
+
+// ─── Partition-level operations ───────────────────────────────────────────────
+
+/// Flash only the script partition using native ISP protocol.
+///
+/// This is the most common operation during development:
+///   get_bus → set_baud → unprotect → build LuaDB → erase+write at script_addr
+pub fn flash_script_only(
+    soc_path: &str,
+    script_folder: &str,
+    port: &str,
+    cancel: Arc<AtomicBool>,
+    on_progress: ProgressCallback,
+) -> Result<()> {
+    cancel.store(false, Ordering::Relaxed);
+    on_progress(&FlashProgress::info("Preparing", 1.0, "Parsing SOC info…"));
+
+    // Parse SOC info
+    let file = std::fs::File::open(soc_path)
+        .with_context(|| format!("Cannot open {soc_path}"))?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    let info: SocInfo = {
+        let info_file = archive.by_name("info.json").context("info.json missing")?;
+        serde_json::from_reader(info_file)?
+    };
+
+    let flash_br = info.flash_baud_rate();
+    let script_addr = info.script_addr();
+
+    on_progress(&FlashProgress::info(
+        "Preparing",
+        3.0,
+        &format!("Script addr: 0x{script_addr:06x}, baud: {flash_br}"),
+    ));
+
+    // Build LuaDB script
+    on_progress(&FlashProgress::info(
+        "Building",
+        5.0,
+        "Packing script LuaDB…",
+    ));
+    let script_data = build_script_bin(Path::new(script_folder), &info)?;
+    let script_size = info.script_size();
+    if script_data.len() > script_size {
+        bail!(
+            "Script data ({} bytes) exceeds partition size ({} bytes)",
+            script_data.len(),
+            script_size
+        );
+    }
+
+    // Connect bootloader
+    let mut serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
+
+    if cancel.load(Ordering::Relaxed) {
+        bail!("Flash cancelled by user");
+    }
+
+    // Flash script
+    flash_data(
+        &mut *serial,
+        &script_data,
+        script_addr,
+        30.0,
+        95.0,
+        "Script",
+        &cancel,
+        &on_progress,
+    )?;
+
+    drop(serial);
+    on_progress(&FlashProgress::done_ok(
+        "Script flash complete! Device is rebooting.",
+    ));
+    Ok(())
+}
+
+/// Erase the filesystem partition (fill with 0xFF).
+pub fn clear_filesystem(
+    soc_path: &str,
+    port: &str,
+    cancel: Arc<AtomicBool>,
+    on_progress: ProgressCallback,
+) -> Result<()> {
+    cancel.store(false, Ordering::Relaxed);
+    on_progress(&FlashProgress::info("Preparing", 1.0, "Parsing SOC info…"));
+
+    let file = std::fs::File::open(soc_path)
+        .with_context(|| format!("Cannot open {soc_path}"))?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    let info: SocInfo = {
+        let info_file = archive.by_name("info.json").context("info.json missing")?;
+        serde_json::from_reader(info_file)?
+    };
+
+    let (fs_addr, fs_size) = info
+        .filesystem_partition()
+        .context("Filesystem partition not found in info.json")?;
+    let flash_br = info.flash_baud_rate();
+
+    on_progress(&FlashProgress::info(
+        "Preparing",
+        3.0,
+        &format!("FS partition: 0x{fs_addr:06x}, {fs_size} bytes"),
+    ));
+
+    let mut serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
+
+    if cancel.load(Ordering::Relaxed) {
+        bail!("Flash cancelled by user");
+    }
+
+    let num_sectors = (fs_size + SECTOR_SIZE - 1) / SECTOR_SIZE;
+    on_progress(&FlashProgress::info(
+        "Erasing",
+        30.0,
+        &format!("Erasing {num_sectors} sectors at 0x{fs_addr:06x}…"),
+    ));
+
+    erase_range(&mut *serial, fs_addr, num_sectors, |done, total| {
+        if cancel.load(Ordering::Relaxed) {
+            return false;
+        }
+        let pct = 30.0 + 65.0 * (done as f32 / total as f32);
+        on_progress(&FlashProgress::info(
+            "Erasing",
+            pct,
+            &format!("Filesystem erase {done}/{total}"),
+        ));
+        true
+    })?;
+
+    drop(serial);
+    on_progress(&FlashProgress::done_ok(
+        "Filesystem cleared! Device is rebooting.",
+    ));
+    Ok(())
+}
+
+/// Build LuaDB from script folder and flash to filesystem partition.
+pub fn flash_filesystem(
+    soc_path: &str,
+    script_folder: &str,
+    port: &str,
+    cancel: Arc<AtomicBool>,
+    on_progress: ProgressCallback,
+) -> Result<()> {
+    cancel.store(false, Ordering::Relaxed);
+    on_progress(&FlashProgress::info("Preparing", 1.0, "Parsing SOC info…"));
+
+    let file = std::fs::File::open(soc_path)
+        .with_context(|| format!("Cannot open {soc_path}"))?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    let info: SocInfo = {
+        let info_file = archive.by_name("info.json").context("info.json missing")?;
+        serde_json::from_reader(info_file)?
+    };
+
+    let (fs_addr, fs_size) = info
+        .filesystem_partition()
+        .context("Filesystem partition not found in info.json")?;
+    let flash_br = info.flash_baud_rate();
+
+    on_progress(&FlashProgress::info(
+        "Building",
+        3.0,
+        "Packing filesystem LuaDB…",
+    ));
+    let fs_data = build_script_bin(Path::new(script_folder), &info)?;
+    if fs_data.len() > fs_size {
+        bail!(
+            "Filesystem data ({} bytes) exceeds partition ({} bytes)",
+            fs_data.len(),
+            fs_size
+        );
+    }
+
+    let mut serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
+
+    if cancel.load(Ordering::Relaxed) {
+        bail!("Flash cancelled by user");
+    }
+
+    flash_data(
+        &mut *serial,
+        &fs_data,
+        fs_addr,
+        30.0,
+        95.0,
+        "Filesystem",
+        &cancel,
+        &on_progress,
+    )?;
+
+    drop(serial);
+    on_progress(&FlashProgress::done_ok(
+        "Filesystem flash complete! Device is rebooting.",
+    ));
+    Ok(())
+}
+
+/// Erase the FSKV (key-value) partition.
+pub fn clear_fskv(
+    soc_path: &str,
+    port: &str,
+    cancel: Arc<AtomicBool>,
+    on_progress: ProgressCallback,
+) -> Result<()> {
+    cancel.store(false, Ordering::Relaxed);
+    on_progress(&FlashProgress::info("Preparing", 1.0, "Parsing SOC info…"));
+
+    let file = std::fs::File::open(soc_path)
+        .with_context(|| format!("Cannot open {soc_path}"))?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    let info: SocInfo = {
+        let info_file = archive.by_name("info.json").context("info.json missing")?;
+        serde_json::from_reader(info_file)?
+    };
+
+    let (kv_addr, kv_size) = info
+        .kv_partition()
+        .context("FSKV partition not found in info.json")?;
+    let flash_br = info.flash_baud_rate();
+
+    on_progress(&FlashProgress::info(
+        "Preparing",
+        3.0,
+        &format!("FSKV partition: 0x{kv_addr:06x}, {kv_size} bytes"),
+    ));
+
+    let mut serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
+
+    if cancel.load(Ordering::Relaxed) {
+        bail!("Flash cancelled by user");
+    }
+
+    let num_sectors = (kv_size + SECTOR_SIZE - 1) / SECTOR_SIZE;
+    on_progress(&FlashProgress::info(
+        "Erasing",
+        30.0,
+        &format!("Erasing {num_sectors} sectors at 0x{kv_addr:06x}…"),
+    ));
+
+    erase_range(&mut *serial, kv_addr, num_sectors, |done, total| {
+        if cancel.load(Ordering::Relaxed) {
+            return false;
+        }
+        let pct = 30.0 + 65.0 * (done as f32 / total as f32);
+        on_progress(&FlashProgress::info(
+            "Erasing",
+            pct,
+            &format!("FSKV erase {done}/{total}"),
+        ));
+        true
+    })?;
+
+    drop(serial);
+    on_progress(&FlashProgress::done_ok(
+        "FSKV cleared! Device is rebooting.",
+    ));
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;

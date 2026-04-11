@@ -1,6 +1,9 @@
 // Serial port enumeration and log streaming.
 
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 /// Metadata about a serial port visible on the host system.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +84,76 @@ impl SerialBuffer {
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
+}
+
+// ─── Log streaming ────────────────────────────────────────────────────────────
+
+/// Callback invoked for each complete log line read from serial.
+pub type LineCallback = Box<dyn Fn(&str) + Send>;
+
+/// Open a serial port and stream log lines until `stop` is set.
+///
+/// Reads bytes from the port, splits on `\n`, trims `\r`, and calls
+/// `on_line` for each complete line. Blocks the calling thread.
+pub fn stream_log_lines(
+    port_name: &str,
+    baud_rate: u32,
+    stop: Arc<AtomicBool>,
+    on_line: LineCallback,
+) -> anyhow::Result<()> {
+    let mut serial = serialport::new(port_name, baud_rate)
+        .timeout(Duration::from_millis(100))
+        .open()
+        .map_err(|e| anyhow::anyhow!("Cannot open {port_name}: {e}"))?;
+
+    // Release DTR/RTS so the device runs normally
+    let _ = serial.write_data_terminal_ready(false);
+    let _ = serial.write_request_to_send(false);
+
+    let mut buf = vec![0u8; 4096];
+    let mut line_buf: Vec<u8> = Vec::with_capacity(256);
+
+    while !stop.load(Ordering::Relaxed) {
+        match serial.read(&mut buf) {
+            Ok(n) if n > 0 => {
+                for &b in &buf[..n] {
+                    if b == b'\n' {
+                        let text = String::from_utf8_lossy(&line_buf)
+                            .trim_end_matches('\r')
+                            .to_string();
+                        line_buf.clear();
+                        if !text.is_empty() {
+                            on_line(&text);
+                        }
+                    } else {
+                        line_buf.push(b);
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                // Normal timeout, continue
+            }
+            Err(e) => {
+                if !stop.load(Ordering::Relaxed) {
+                    log::warn!("Serial read error: {e}");
+                }
+                break;
+            }
+        }
+    }
+
+    // Flush remaining partial line
+    if !line_buf.is_empty() {
+        let text = String::from_utf8_lossy(&line_buf)
+            .trim_end_matches('\r')
+            .to_string();
+        if !text.is_empty() {
+            on_line(&text);
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

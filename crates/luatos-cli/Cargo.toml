@@ -25,3 +25,4 @@ tracing-subscriber.workspace = true
 env_logger.workspace = true
 log.workspace = true
 ctrlc = "3"
+chrono.workspace = true

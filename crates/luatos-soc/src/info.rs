@@ -31,10 +31,10 @@ pub struct SocRom {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SocFs {
     pub script: Option<SocScriptFs>,
-    pub filesystem: Option<serde_json::Value>,
-    pub kv: Option<serde_json::Value>,
-    pub ap: Option<serde_json::Value>,
-    pub fota: Option<serde_json::Value>,
+    pub filesystem: Option<SocPartition>,
+    pub kv: Option<SocPartition>,
+    pub ap: Option<SocPartition>,
+    pub fota: Option<SocPartition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,6 +45,15 @@ pub struct SocScriptFs {
     pub fs_type: Option<String>,
     pub bkcrc: Option<bool>,
     pub location: Option<String>,
+}
+
+/// Generic flash partition descriptor (filesystem, kv, fota, etc.)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SocPartition {
+    pub offset: Option<String>,
+    pub size: Option<u64>,
+    #[serde(rename = "type")]
+    pub fs_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +110,44 @@ impl SocInfo {
             .and_then(|fs| fs.script.as_ref())
             .and_then(|s| s.bkcrc)
             .unwrap_or(false)
+    }
+
+    /// Get the script download address (ISP protocol address).
+    pub fn script_addr(&self) -> u32 {
+        parse_addr(
+            self.download
+                .script_addr
+                .as_deref()
+                .unwrap_or("0x200000"),
+        )
+        .unwrap_or(0x200000) as u32
+    }
+
+    /// Get the script partition size in bytes.
+    pub fn script_size(&self) -> usize {
+        self.rom
+            .fs
+            .as_ref()
+            .and_then(|fs| fs.script.as_ref())
+            .and_then(|s| s.size)
+            .unwrap_or(512) as usize
+            * 1024
+    }
+
+    /// Get the filesystem partition address and size (bytes).
+    pub fn filesystem_partition(&self) -> Option<(u32, usize)> {
+        let fs = self.rom.fs.as_ref()?.filesystem.as_ref()?;
+        let offset = parse_addr(fs.offset.as_deref()?)? as u32;
+        let size = fs.size? as usize * 1024;
+        Some((offset, size))
+    }
+
+    /// Get the FSKV (key-value) partition address and size (bytes).
+    pub fn kv_partition(&self) -> Option<(u32, usize)> {
+        let fs = self.rom.fs.as_ref()?.kv.as_ref()?;
+        let offset = parse_addr(fs.offset.as_deref()?)? as u32;
+        let size = fs.size? as usize * 1024;
+        Some((offset, size))
     }
 }
 
