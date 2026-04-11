@@ -938,6 +938,7 @@ name = "luatos-flash"
 version = "1.2.0"
 dependencies = [
  "anyhow",
+ "crc32fast",
  "log",
  "luatos-luadb",
  "luatos-soc",
@@ -945,6 +946,8 @@ dependencies = [
  "serde",
  "serde_json",
  "serialport",
+ "sevenz-rust2",
+ "sha2",
  "tempfile",
  "walkdir",
  "windows-sys 0.59.0",

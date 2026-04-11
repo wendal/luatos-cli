@@ -34,3 +34,4 @@ sevenz-rust2 = { version = "0.20", features = ["compress"] }
 ureq = "2"
 sha2 = "0.10"
 indicatif = "0.17"
+crc32fast = "1"

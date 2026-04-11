@@ -241,7 +241,7 @@ enum ProjectCommands {
     New {
         /// Project name
         name: String,
-        /// Target chip (bk72xx, air6208, air8101, air8000, air101)
+        /// Target chip (bk72xx, air6208, air8101, air8000, air101, ec7xx)
         #[arg(long, default_value = "bk72xx")]
         chip: String,
         /// Directory to create project in (default: ./<name>)
@@ -606,7 +606,7 @@ fn cmd_flash_run(
     let chip = info.chip.chip_type.as_str();
 
     match chip {
-        "bk72xx" | "air8101" | "air8000" => {
+        "bk72xx" | "air8101" => {
             let folders_refs: Option<Vec<&str>> =
                 script_folders.map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
             let lines = luatos_flash::bk7258::flash_bk7258(
@@ -668,9 +668,30 @@ fn cmd_flash_run(
                 }
             }
         }
+        "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" => {
+            // EC718 series: auto-detect boot mode, reboot if needed
+            let boot_port = luatos_flash::ec718::auto_enter_boot_mode(
+                Some(port),
+                &on_progress,
+            )?;
+            luatos_flash::ec718::flash_ec718(soc, &boot_port, &on_progress, cancel)?;
+            match format {
+                OutputFormat::Text => {
+                    println!("EC718 flash completed successfully.");
+                }
+                OutputFormat::Json => {
+                    let json = serde_json::json!({
+                        "status": "ok",
+                        "command": "flash.run",
+                        "data": { "chip": chip },
+                    });
+                    println!("{}", serde_json::to_string_pretty(&json)?);
+                }
+            }
+        }
         _ => {
             anyhow::bail!(
-                "Unsupported chip type: {chip}. Supported: bk72xx, air6208, air101, air1601"
+                "Unsupported chip type: {chip}. Supported: bk72xx, air6208, air101, air1601, ec7xx"
             );
         }
     }
@@ -716,7 +737,7 @@ fn cmd_flash_partition(
     let chip = info.chip.chip_type.as_str();
 
     match chip {
-        "bk72xx" | "air8101" | "air8000" => match op {
+        "bk72xx" | "air8101" => match op {
             "script" => {
                 let folders = script_folders.expect("script folder required");
                 let refs: Vec<&str> = folders.iter().map(|s| s.as_str()).collect();
@@ -789,6 +810,38 @@ fn cmd_flash_partition(
             }
             _ => unreachable!(),
         },
+        "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" => match op {
+            "script" => {
+                let folders = script_folders.expect("script folder required");
+                let folder_paths: Vec<std::path::PathBuf> =
+                    folders.iter().map(std::path::PathBuf::from).collect();
+                let path_refs: Vec<&std::path::Path> =
+                    folder_paths.iter().map(|p| p.as_path()).collect();
+                let script_data = luatos_luadb::build::build_script_image(
+                    &path_refs,
+                    info.script_use_luac(),
+                    info.script_bitw(),
+                    info.use_bkcrc(),
+                )?;
+                let boot_port = luatos_flash::ec718::auto_enter_boot_mode(
+                    Some(port),
+                    &on_progress,
+                )?;
+                luatos_flash::ec718::flash_script_ec718(
+                    soc,
+                    &boot_port,
+                    &script_data,
+                    &on_progress,
+                    cancel,
+                )?;
+            }
+            _ => {
+                anyhow::bail!(
+                    "EC718 only supports 'script' partition operation currently. \
+                     Use 'flash run' for full firmware flash."
+                );
+            }
+        },
         _ => {
             anyhow::bail!("Unsupported chip type: {chip}");
         }
@@ -860,7 +913,7 @@ fn cmd_flash_test(
     let log_br = info.log_baud_rate();
 
     let boot_lines_from_flash: Vec<String> = match chip.as_str() {
-        "bk72xx" | "air8101" | "air8000" => {
+        "bk72xx" | "air8101" => {
             let folders_refs: Option<Vec<&str>> =
                 script_folders.map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
             luatos_flash::bk7258::flash_bk7258(
@@ -882,6 +935,15 @@ fn cmd_flash_test(
             luatos_flash::ccm4211::flash_ccm4211(soc, port, &on_progress2, cancel.clone())?;
             Vec::new()
         }
+        "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" => {
+            let on_progress2 = make_progress_callback(format);
+            let boot_port = luatos_flash::ec718::auto_enter_boot_mode(
+                Some(port),
+                &on_progress2,
+            )?;
+            luatos_flash::ec718::flash_ec718(soc, &boot_port, &on_progress2, cancel.clone())?;
+            Vec::new()
+        }
         _ => {
             anyhow::bail!("Unsupported chip type for flash test: {chip}");
         }
@@ -899,7 +961,7 @@ fn cmd_flash_test(
     }
 
     // Determine if this chip uses binary SOC log protocol
-    let use_binary_log = matches!(chip.as_str(), "air1601" | "ccm4211");
+    let use_binary_log = matches!(chip.as_str(), "air1601" | "ccm4211" | "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg");
 
     // Open serial port and capture lines for the timeout period
     let serial = serialport::new(port, log_br)

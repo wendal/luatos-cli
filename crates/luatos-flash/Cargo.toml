@@ -17,6 +17,9 @@ zip.workspace = true
 tempfile = "3"
 walkdir.workspace = true
 md5 = "0.7"
+sha2.workspace = true
+crc32fast = "1"
+sevenz-rust2.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
