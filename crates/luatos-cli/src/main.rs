@@ -201,7 +201,7 @@ enum LogCommands {
         #[arg(long, default_value = "921600")]
         baud: u32,
     },
-    /// View serial log in binary SOC mode (Air6208 etc.)
+    /// View serial log in binary SOC mode (Air6208, Air1601 etc.)
     ViewBinary {
         /// Serial port (e.g. COM7)
         #[arg(long)]
@@ -209,6 +209,9 @@ enum LogCommands {
         /// Baud rate (default: 2000000)
         #[arg(long, default_value = "2000000")]
         baud: u32,
+        /// Send probe command to trigger log output (required for Air1601/CCM4211)
+        #[arg(long)]
+        probe: bool,
     },
     /// Record serial log to file
     Record {
@@ -388,7 +391,7 @@ fn main() {
         },
         Commands::Log { action } => match action {
             LogCommands::View { port, baud } => cmd_log_view(&port, baud, &cli.format),
-            LogCommands::ViewBinary { port, baud } => cmd_log_view_binary(&port, baud, &cli.format),
+            LogCommands::ViewBinary { port, baud, probe } => cmd_log_view_binary(&port, baud, probe, &cli.format),
             LogCommands::Record {
                 port,
                 baud,
@@ -891,53 +894,94 @@ fn cmd_flash_test(
         eprintln!("Capturing boot log for {timeout_secs}s on {port} @ {log_br}...");
     }
 
+    // Determine if this chip uses binary SOC log protocol
+    let use_binary_log = matches!(chip.as_str(), "air1601" | "ccm4211");
+
     // Open serial port and capture lines for the timeout period
     let serial = serialport::new(port, log_br)
         .timeout(Duration::from_millis(500))
         .open();
 
     if let Ok(mut serial) = serial {
-        use std::io::Read;
+        use std::io::{Read, Write};
+
+        // For Air1601/CCM4211: send probe to trigger log output
+        if use_binary_log {
+            let probe = luatos_flash::ccm4211::build_log_probe();
+            let _ = serial.write_all(&probe);
+            let _ = serial.flush();
+        }
+
         let start = Instant::now();
         let timeout = Duration::from_secs(timeout_secs);
         let mut buf = vec![0u8; 4096];
-        let mut line_buf = String::new();
 
-        while start.elapsed() < timeout && !cancel.load(Ordering::Relaxed) {
-            match serial.read(&mut buf) {
-                Ok(n) if n > 0 => {
-                    let text = String::from_utf8_lossy(&buf[..n]);
-                    for ch in text.chars() {
-                        if ch == '\n' {
-                            let line = line_buf.trim_end_matches('\r').to_string();
-                            if !line.is_empty() {
-                                all_lines.push(line);
-                            }
-                            line_buf.clear();
-                        } else {
-                            line_buf.push(ch);
+        if use_binary_log {
+            // Binary SOC log: decode 0xA5 frames via SocLogDecoder
+            let mut decoder = luatos_log::SocLogDecoder::new();
+            while start.elapsed() < timeout && !cancel.load(Ordering::Relaxed) {
+                match serial.read(&mut buf) {
+                    Ok(n) if n > 0 => {
+                        let entries = decoder.feed(&buf[..n]);
+                        for entry in &entries {
+                            let module = entry.module.as_deref().unwrap_or("-");
+                            let msg = format!("[{}] {}/{} {}", entry.device_time.as_deref().unwrap_or("?"), entry.level, module, entry.message);
+                            all_lines.push(msg);
+                        }
+                        let found_all = keywords
+                            .iter()
+                            .all(|kw| all_lines.iter().any(|line| line.contains(kw.as_str())));
+                        if found_all {
+                            break;
                         }
                     }
-
-                    // Early exit if we already found all keywords
-                    let found_all = keywords
-                        .iter()
-                        .all(|kw| all_lines.iter().any(|line| line.contains(kw.as_str())));
-                    if found_all {
+                    Ok(_) => {}
+                    Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+                    Err(e) => {
+                        log::warn!("Serial read error: {e}");
                         break;
                     }
                 }
-                Ok(_) => {}
-                Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
-                Err(e) => {
-                    log::warn!("Serial read error: {e}");
-                    break;
+            }
+        } else {
+            // Text log: parse as newline-delimited text
+            let mut line_buf = String::new();
+            while start.elapsed() < timeout && !cancel.load(Ordering::Relaxed) {
+                match serial.read(&mut buf) {
+                    Ok(n) if n > 0 => {
+                        let text = String::from_utf8_lossy(&buf[..n]);
+                        for ch in text.chars() {
+                            if ch == '\n' {
+                                let line = line_buf.trim_end_matches('\r').to_string();
+                                if !line.is_empty() {
+                                    all_lines.push(line);
+                                }
+                                line_buf.clear();
+                            } else {
+                                line_buf.push(ch);
+                            }
+                        }
+
+                        // Early exit if we already found all keywords
+                        let found_all = keywords
+                            .iter()
+                            .all(|kw| all_lines.iter().any(|line| line.contains(kw.as_str())));
+                        if found_all {
+                            break;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+                    Err(e) => {
+                        log::warn!("Serial read error: {e}");
+                        break;
+                    }
                 }
             }
-        }
-        // Flush remaining line buffer
-        if !line_buf.is_empty() {
-            all_lines.push(line_buf.trim_end_matches('\r').to_string());
+            // Flush remaining line buffer
+            if !line_buf.is_empty() {
+                all_lines.push(line_buf.trim_end_matches('\r').to_string());
+            }
         }
     } else if all_lines.is_empty() {
         // Could not open serial and no lines from flash
@@ -1038,12 +1082,19 @@ fn cmd_log_view(port: &str, baud: u32, format: &OutputFormat) -> anyhow::Result<
     Ok(())
 }
 
-fn cmd_log_view_binary(port: &str, baud: u32, format: &OutputFormat) -> anyhow::Result<()> {
+fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, format: &OutputFormat) -> anyhow::Result<()> {
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
     let _ = ctrlc::set_handler(move || {
         stop_clone.store(true, std::sync::atomic::Ordering::Relaxed);
     });
+
+    let init_data = if probe {
+        eprintln!("Sending SOC probe to trigger log output ...");
+        Some(luatos_flash::ccm4211::build_log_probe())
+    } else {
+        None
+    };
 
     eprintln!("Viewing SOC binary log on {port} @ {baud} bps (Ctrl+C to stop)");
 
@@ -1071,6 +1122,7 @@ fn cmd_log_view_binary(port: &str, baud: u32, format: &OutputFormat) -> anyhow::
                 }
             }
         }),
+        init_data.as_deref(),
     )?;
 
     eprintln!("\nLog viewing stopped.");

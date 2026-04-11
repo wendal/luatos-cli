@@ -1,0 +1,30 @@
+[package]
+name = "luatos-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# GUI Framework
+eframe = { version = "0.27", default-features = false, features = ["default_fonts", "wgpu", "x11", "wayland"] }
+egui = "0.27"
+egui_extras = { version = "0.27", features = ["all_loaders", "image"] }
+image = "0.25"
+
+# Internals
+luatos-flash = { path = "../crates/luatos-flash" }
+luatos-soc = { path = "../crates/luatos-soc" }
+luatos-project = { path = "../crates/luatos-project" }
+luatos-serial = { path = "../crates/luatos-serial" }
+# Remove if luatos-cli isn't a lib or simply duplicate logic where needed, but wait: we might need ureq and others.
+
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["full"] }
+chrono.workspace = true
+log.workspace = true
+env_logger.workspace = true
+crossbeam-channel = "0.5"
+ureq.workspace = true
+rfd = "0.14"

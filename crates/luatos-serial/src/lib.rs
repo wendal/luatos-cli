@@ -162,11 +162,14 @@ pub type BinaryCallback = Box<dyn Fn(&[u8]) + Send>;
 /// Open a serial port and stream raw binary data until `stop` is set.
 ///
 /// Used for SOC binary log protocol (0xA5 framed) and other binary protocols.
+/// When `init_data` is provided, it is written to the port before reading
+/// begins (e.g. a probe command to trigger log output on Air1601).
 pub fn stream_binary(
     port_name: &str,
     baud_rate: u32,
     stop: Arc<AtomicBool>,
     on_data: BinaryCallback,
+    init_data: Option<&[u8]>,
 ) -> anyhow::Result<()> {
     let mut serial = serialport::new(port_name, baud_rate)
         .timeout(Duration::from_millis(100))
@@ -176,6 +179,13 @@ pub fn stream_binary(
     // Release DTR/RTS so the device runs normally
     let _ = serial.write_data_terminal_ready(false);
     let _ = serial.write_request_to_send(false);
+
+    // Send initial probe / handshake data if provided
+    if let Some(data) = init_data {
+        use std::io::Write;
+        serial.write_all(data)?;
+        serial.flush()?;
+    }
 
     let mut buf = vec![0u8; 4096];
 

@@ -140,6 +140,15 @@ fn soc_escape(data: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Build a SOC CMD_GET_BASE_INFO probe frame.
+///
+/// Air1601/CCM4211 firmware buffers log output internally and will not start
+/// sending log frames until it receives a command on the debug UART.  Sending
+/// this probe triggers device-info output **and** flushes the log buffer.
+pub fn build_log_probe() -> Vec<u8> {
+    build_soc_frame(SOC_CMD_GET_BASE_INFO, 0, &[], 1)
+}
+
 /// Build a complete SOC frame: [0xA5] [escaped(header+payload)] [escaped(crc16)] [0xA5]
 fn build_soc_frame(cmd: u32, address: u32, payload: &[u8], sn: u16) -> Vec<u8> {
     let header = build_soc_header(cmd, address, payload.len() as u32, sn);
