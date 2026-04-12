@@ -25,22 +25,6 @@ cargo build --release -p luatos-cli
 # 二进制位于 target/release/luatos-cli.exe
 ```
 
-### GUI 桌面版
-
-基于 Tauri 2 + Vue 3 的图形界面版本，功能对标 LuaTools：
-
-```bash
-# 安装前端依赖
-cd crates/luatos-gui && npm install
-
-# 开发模式
-npx tauri dev
-
-# 构建发布版
-npx tauri build
-# 安装包位于 crates/luatos-gui/src-tauri/target/release/bundle/
-```
-
 ## 快速开始
 
 ```bash
@@ -136,24 +120,6 @@ luatos-cli --format json flash test --soc firmware.soc --port COM6
 luatos-cli --format json project deps
 ```
 
-## GUI 桌面版功能
-
-`luatos-gui` 提供完整的图形界面，6 大功能视图：
-
-| 视图 | 功能 | 说明 |
-|------|------|------|
-| ⚡ 刷机 | 全量刷机 / 刷脚本区 | 支持 4 大芯片系列，进度条，刷完自动跳转日志 |
-| 📋 日志 | 文本 / 二进制日志 | 实时流式显示，日志级别着色，过滤搜索，错误提示 |
-| 📁 项目 | 新建 / 打开 / 编辑 / 导入 | 完整项目管理：可编辑配置、多项目切换、最近项目、LuaTools INI 导入 |
-| 🔨 构建 | Lua 编译 + LuaDB 打包 | 多目录支持，BK CRC16 可选 |
-| 📦 固件 | 在线固件列表 + 下载 | 从 CDN 获取固件清单、按模组下载、SHA256 校验、进度显示 |
-| ⚙️ 设置 | 全局偏好 | 波特率、日志行数、刷机后自动切日志 |
-
-**核心 UX 特性：**
-- 全局串口工具栏 — 选一次串口，所有视图共享
-- 刷机→日志无缝切换 — 刷机成功后自动跳转到日志视图
-- 暗色主题 — 舒适的深色界面
-
 ## 支持的模组
 
 > 以下结果基于 2026-04-12 实机测试验证
@@ -199,7 +165,7 @@ luatos-cli --format json project deps
 ## 架构
 
 ```
-luatos-cli (workspace, 9 crates)
+luatos-cli (workspace, 8 crates)
 ├── luatos-cli/           # 主入口 CLI (clap)
 │   ├── main.rs           #   CLI 定义 + 分发 (~490 行)
 │   ├── cmd_serial.rs     #   串口命令
@@ -209,9 +175,6 @@ luatos-cli (workspace, 9 crates)
 │   ├── cmd_project.rs    #   项目管理 / 导入 / 依赖分析
 │   ├── cmd_build.rs      #   Lua 编译 / 文件系统打包
 │   └── cmd_resource.rs   #   固件资源下载 (薄包装层)
-├── luatos-gui/           # GUI 桌面版 (Tauri 2 + Vue 3)
-│   ├── src-tauri/        #   Rust 后端 (22 个 Tauri 命令)
-│   └── src/              #   Vue 3 前端 (6 视图)
 ├── luatos-flash/         # 刷机协议 (BK7258 + XT804 + CCM4211 + EC718)
 ├── luatos-soc/           # SOC 文件解包/打包 (ZIP + 7z)
 ├── luatos-luadb/         # LuaDB 脚本打包 + Lua 编译 + BK CRC16
