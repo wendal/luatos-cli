@@ -2,6 +2,45 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-04-12
+
+### Features
+
+#### EC718 (Air8000/Air780E) 完整刷机支持
+- **EC718 刷机协议** — 纯 Rust 实现，支持 Air8000/Air780E/Air201 系列
+  - 全量刷机 (`flash run`) — 自动进入 boot 模式，多串口自动检测
+  - 单刷脚本区 (`flash script`) — CP 协议修正，测试脚本验证
+  - USB 端口自动检测 — VID/PID 匹配 + 端口映射修正
+- **EC718 日志解析**
+  - 0x7E HDLC 帧解码器 — DTR/RTS 控制
+  - 自动端口检测 + 串口日志抓取
+
+#### 项目管理增强
+- **完善项目管理功能** — 对标 LuaTools 功能集
+
+#### 代码重构
+- **CLI 模块拆分** — main.rs 拆分为 `cmd_serial.rs`、`cmd_soc.rs`、`cmd_flash.rs`、`cmd_log.rs`、`cmd_project.rs`、`cmd_build.rs`、`cmd_resource.rs` 功能模块
+- **BUILTIN_MODULES 整理** — 统一内置模块注册
+
+### Bug Fixes
+
+- **EC718 USB 端口检测修正** — 修正 USB 端口映射和 CP 刷机协议
+- **EC718 脚本区刷写修正** — 修正 script flash 协议，添加测试脚本
+- **修复 cargo fmt 和 clippy 警告** — 清理 rustfmt.toml
+
+### Documentation
+
+- `docs/air6208-flash-protocol.md` — Air6208 刷机协议文档
+- `docs/air8101-flash-protocol.md` — Air8101 刷机协议文档
+- `docs/ec718-flash-protocol.md` — EC718 刷机协议文档（含端口映射、CP 修正）
+- 更新 copilot-instructions，添加提交前检查清单
+
+### Tests
+
+- 测试数从 ~80 增加到 99（+2 ignored）
+
+---
+
 ## [1.2.0] - 2026-04-11
 
 ### Features
