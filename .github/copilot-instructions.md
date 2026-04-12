@@ -1,10 +1,22 @@
 # Copilot Instructions — luatos-cli
 
+## Pre-commit Checklist
+
+Every commit **must** pass these checks before being committed:
+
+```bash
+cargo fmt --check                    # Formatting (auto-fix with: cargo fmt)
+cargo clippy                         # Lint warnings
+cargo test --workspace               # All unit tests
+```
+
+If `cargo fmt --check` fails, run `cargo fmt` to auto-fix, then re-check clippy and tests.
+
 ## Build & Test
 
 ```bash
 cargo build --release                # Release build
-cargo test --workspace               # All unit tests (~52)
+cargo test --workspace               # All unit tests (~99)
 cargo test -p luatos-luadb           # Single crate
 cargo test pack_luadb_               # Single test by name pattern
 cargo clippy -- -D warnings          # Lint (CI enforces this)
@@ -17,12 +29,12 @@ Linux requires `libudev-dev` and `pkg-config` for serial port support.
 
 Cargo workspace with 7 crates — the CLI binary orchestrates 6 library crates:
 
-- **luatos-cli** — Binary entry point. Clap-based CLI with nested subcommands (`serial`, `soc`, `flash`, `log`, `project`, `build`). Owns the `--format json|text` global flag and progress display.
-- **luatos-flash** — Flash protocols for BK7258, XT804 (Air6208), and CCM4211 (Air1601). Each chip module exposes a top-level function that accepts a `ProgressCallback`.
+- **luatos-cli** — Binary entry point. Clap-based CLI with nested subcommands (`serial`, `soc`, `flash`, `log`, `project`, `build`, `resource`). Owns the `--format json|text` global flag and progress display. Main logic split into `cmd_serial.rs`, `cmd_soc.rs`, `cmd_flash.rs`, `cmd_log.rs`, `cmd_project.rs`, `cmd_build.rs`, `cmd_resource.rs` modules.
+- **luatos-flash** — Flash protocols for BK7258, XT804 (Air6208), EC718 (Air780/Air201/Air8000), and CCM4211 (Air1601). Each chip module exposes a top-level function that accepts a `ProgressCallback`.
 - **luatos-soc** — Parse/unpack/pack SOC firmware archives (ZIP + 7z via `sevenz-rust2`).
-- **luatos-luadb** — LuaDB filesystem image packer, embedded Lua 5.3 compiler (C, built via `build.rs`), BK CRC16 adapter. The `build.rs` compiles C code into `luac32_helper`, `luac64_helper`, and `mklfs_helper` executables that get embedded.
+- **luatos-luadb** — LuaDB filesystem image packer, embedded Lua 5.3 compiler (C, built via `build.rs`), BK CRC16 adapter.
 - **luatos-serial** — Serial port enumeration and log streaming (text + binary).
-- **luatos-project** — Project scaffolding and `luatos-project.toml` config loader.
+- **luatos-project** — Project scaffolding, `luatos-project.toml` config, LuaTools INI import (`import.rs`), Lua dependency analysis (`lua_deps.rs`).
 - **luatos-log** — Log parsing framework built around the `LogParser` trait. Includes `LuatosParser`, `BootLogParser`, `SocLogDecoder`. `LogDispatcher` tries parsers in registration order.
 
 ## Key Conventions
