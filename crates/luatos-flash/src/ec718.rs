@@ -1083,25 +1083,28 @@ fn extract_soc_7z(soc_path: &str, out_dir: &std::path::Path) -> Result<()> {
 
 // ─── Map entry to BurnImageType / storage type ──────────────────────────────
 
-fn entry_to_burn_type(entry: &BinpkgEntry) -> Option<(BurnImageType, u8)> {
+fn entry_to_burn_type(entry: &BinpkgEntry) -> Option<(BurnImageType, u8, u32)> {
     let name = entry.name.to_lowercase();
     let itype = entry.image_type.to_uppercase();
 
     if name.contains("bootloader") || name.contains("bl") {
-        Some((BurnImageType::Bootloader, STYPE_AP_FLASH))
+        Some((BurnImageType::Bootloader, STYPE_AP_FLASH, entry.addr))
     } else if itype == "CP" || name.contains("cp") {
-        Some((BurnImageType::Cp, STYPE_CP_FLASH))
+        // EC7xx: CP uses AP_FLASH storage type with adjusted address
+        let mut addr = entry.addr;
+        if addr >= 0x800000 {
+            addr -= 0x800000;
+        }
+        Some((BurnImageType::Cp, STYPE_AP_FLASH, addr))
     } else if name == "script" {
-        Some((BurnImageType::Ap, STYPE_AP_FLASH))
+        Some((BurnImageType::Ap, STYPE_AP_FLASH, entry.addr))
     } else if itype == "AP" || name.contains("ap") || name.contains("system") {
-        Some((BurnImageType::Ap, STYPE_AP_FLASH))
+        Some((BurnImageType::Ap, STYPE_AP_FLASH, entry.addr))
     } else if name.contains("flex") || name.contains("rf") {
-        // Determine storage type from address
         let stor = if entry.addr >= 0x800000 { STYPE_AP_FLASH } else { STYPE_CP_FLASH };
-        Some((BurnImageType::FlexFile, stor))
+        Some((BurnImageType::FlexFile, stor, entry.addr))
     } else {
-        // Default to AP flash
-        Some((BurnImageType::Ap, STYPE_AP_FLASH))
+        Some((BurnImageType::Ap, STYPE_AP_FLASH, entry.addr))
     }
 }
 
@@ -1179,56 +1182,58 @@ pub fn try_reboot_to_download(on_progress: &ProgressCallback) -> bool {
     true
 }
 
-/// Find the EC718 command port (running mode).
+/// Find an EC718 port by USB interface number.
 ///
-/// In running mode, EC718 USB shows:
-///   VID=0x19D1, PID=0x0001, with multiple interfaces (x.2 = command/log, x.4, x.6)
-/// We look for any port with matching VID/PID, preferring the lowest COM number.
-pub fn find_ec718_cmd_port() -> Option<String> {
+/// EC718 USB composite device (VID=0x19D1, PID=0x0001) exposes 3 interfaces:
+///   interface 2 (x.2) = SOC log + AT command port
+///   interface 4 (x.4) = AP log port
+///   interface 6 (x.6) = User COM port
+///
+/// COM port numbers do NOT necessarily correspond to interface order,
+/// so we must match by USB interface number, not by sorting COM names.
+fn find_ec718_port_by_interface(target_interface: u8) -> Option<String> {
     let ports = serialport::available_ports().ok()?;
-    let mut candidates: Vec<String> = Vec::new();
 
     for port in &ports {
         if let serialport::SerialPortType::UsbPort(usb_info) = &port.port_type {
             if usb_info.vid == LOG_VID && usb_info.pid == LOG_PID {
-                candidates.push(port.port_name.clone());
+                if usb_info.interface == Some(target_interface) {
+                    return Some(port.port_name.clone());
+                }
             }
         }
     }
 
-    if candidates.is_empty() {
-        return None;
+    // Fallback: if interface info unavailable, return any matching port
+    for port in &ports {
+        if let serialport::SerialPortType::UsbPort(usb_info) = &port.port_type {
+            if usb_info.vid == LOG_VID && usb_info.pid == LOG_PID {
+                log::warn!(
+                    "USB interface number unavailable, falling back to {} (may be wrong port)",
+                    port.port_name
+                );
+                return Some(port.port_name.clone());
+            }
+        }
     }
 
-    // Prefer the port with the lowest COM number (typically the command port x.2)
-    candidates.sort();
-    Some(candidates[0].clone())
+    None
 }
 
-/// Find the EC718 log port (VID=0x19D1, second USB interface = x.4).
+/// Find the EC718 command port (running mode, USB interface 2 = x.2).
 ///
-/// The EC718 USB composite device exposes 3 COM ports:
-///   x.2 (lowest COM#)  = AT/command port
-///   x.4 (middle COM#)  = SOC binary log port (0x7E framed)
-///   x.6 (highest COM#) = User COM port
+/// This is the same physical port as the SOC log port. It handles both
+/// AT commands (AT+ECRST for reboot) and binary log output (0x7E frames).
+pub fn find_ec718_cmd_port() -> Option<String> {
+    find_ec718_port_by_interface(2)
+}
+
+/// Find the EC718 SOC log port (running mode, USB interface 2 = x.2).
+///
+/// The SOC binary log (0x7E HDLC frames) is on the same port as the
+/// AT command interface (both on USB interface 2).
 pub fn find_ec718_log_port() -> Option<String> {
-    let ports = serialport::available_ports().ok()?;
-    let mut candidates: Vec<String> = Vec::new();
-
-    for port in &ports {
-        if let serialport::SerialPortType::UsbPort(usb_info) = &port.port_type {
-            if usb_info.vid == LOG_VID && usb_info.pid == LOG_PID {
-                candidates.push(port.port_name.clone());
-            }
-        }
-    }
-
-    if candidates.len() < 2 {
-        return candidates.into_iter().next(); // fallback to first if only one
-    }
-
-    candidates.sort();
-    Some(candidates[1].clone()) // second port = log port (x.4)
+    find_ec718_port_by_interface(2)
 }
 
 /// Find a serial port by USB VID/PID.
@@ -1502,7 +1507,7 @@ pub fn flash_ec718(
             bail!("Cancelled");
         }
 
-        let (img_type, stor_type) = match entry_to_burn_type(entry) {
+        let (img_type, stor_type, burn_addr) = match entry_to_burn_type(entry) {
             Some(v) => v,
             None => {
                 log::warn!("Skipping unknown entry: {}", entry.name);
@@ -1523,7 +1528,7 @@ pub fn flash_ec718(
                 num_entries,
                 entry.name,
                 data.len() / 1024,
-                entry.addr,
+                burn_addr,
             ),
         ));
 
@@ -1532,7 +1537,7 @@ pub fn flash_ec718(
             data,
             img_type,
             stor_type,
-            entry.addr,
+            burn_addr,
             &entry.name,
             on_progress,
             base_pct,

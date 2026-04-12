@@ -11,6 +11,10 @@ pub struct SocInfo {
     pub script: SocScript,
     pub download: SocDownload,
     pub user: Option<SocUser>,
+    /// Top-level fs info (EC718: total_len, format_len).
+    pub fs: Option<serde_json::Value>,
+    /// FOTA info (EC718: full_addr, fota_len, etc.).
+    pub fota: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +44,7 @@ pub struct SocFs {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SocScriptFs {
     pub offset: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_size_flex")]
     pub size: Option<u64>,
     #[serde(rename = "type")]
     pub fs_type: Option<String>,
@@ -51,9 +56,58 @@ pub struct SocScriptFs {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SocPartition {
     pub offset: Option<String>,
+    /// Size in KB — may be a JSON number or a hex string (e.g. "160000").
+    #[serde(default, deserialize_with = "deserialize_size_flex")]
     pub size: Option<u64>,
     #[serde(rename = "type")]
     pub fs_type: Option<String>,
+}
+
+/// Deserialize `size` from either a JSON number or a hex/decimal string.
+fn deserialize_size_flex<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct SizeVisitor;
+    impl<'de> de::Visitor<'de> for SizeVisitor {
+        type Value = Option<u64>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a number or numeric string")
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(Some(v))
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            Ok(Some(v as u64))
+        }
+
+        fn visit_str<E: de::Error>(self, s: &str) -> Result<Self::Value, E> {
+            let s = s.trim();
+            // Try decimal first, then hex
+            if let Ok(v) = s.parse::<u64>() {
+                return Ok(Some(v));
+            }
+            let hex = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
+            u64::from_str_radix(hex, 16)
+                .map(Some)
+                .map_err(de::Error::custom)
+        }
+    }
+
+    deserializer.deserialize_any(SizeVisitor)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,6 +138,9 @@ pub struct SocDownload {
     pub fs_addr: Option<String>,
     pub fskv_addr: Option<String>,
     pub nvm_addr: Option<String>,
+    // EC718 specific fields
+    pub partition_addr: Option<String>,
+    pub extra_param: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

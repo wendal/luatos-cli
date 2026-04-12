@@ -911,6 +911,14 @@ fn cmd_flash_test(
     let info = luatos_soc::read_soc_info(soc)?;
     let chip = info.chip.chip_type.clone();
     let log_br = info.log_baud_rate();
+    // For EC718 USB CDC, 2000000 baud is not supported; use 921600
+    let log_br = if matches!(chip.as_str(), "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg")
+        && log_br == 2000000
+    {
+        921600
+    } else {
+        log_br
+    };
 
     let boot_lines_from_flash: Vec<String> = match chip.as_str() {
         "bk72xx" | "air8101" => {
@@ -1263,6 +1271,10 @@ fn cmd_log_view_binary(
     } else {
         port.to_string()
     };
+
+    // For EC718 USB CDC, 921600 is the supported baud rate.
+    // The info.json may specify 2000000 but Windows USB CDC rejects it.
+    let baud = if is_ec718 && baud == 2000000 { 921600 } else { baud };
 
     // Build probe data — same 0xA5 probe works for both chip types
     let init_data = if probe {
