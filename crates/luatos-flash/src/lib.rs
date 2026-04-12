@@ -7,6 +7,7 @@
 
 pub mod bk7258;
 pub mod ccm4211;
+pub mod device;
 pub mod ec718;
 pub mod xt804;
 

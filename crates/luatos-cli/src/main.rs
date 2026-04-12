@@ -10,6 +10,7 @@
 use clap::{Parser, Subcommand};
 
 mod cmd_build;
+mod cmd_device;
 mod cmd_flash;
 mod cmd_log;
 mod cmd_project;
@@ -70,6 +71,11 @@ enum Commands {
     Resource {
         #[command(subcommand)]
         action: ResourceCommands,
+    },
+    /// Device control (reboot, enter boot mode)
+    Device {
+        #[command(subcommand)]
+        action: DeviceCommands,
     },
     /// Show version information
     Version,
@@ -344,6 +350,30 @@ enum ResourceCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum DeviceCommands {
+    /// Reboot the device via DTR/RTS or AT command
+    Reboot {
+        /// Serial port (e.g. COM6). EC718 series can be omitted for auto-detect.
+        #[arg(long)]
+        port: Option<String>,
+        /// Chip type (bk72xx, air8101, xt804, air6208, air101, ec718, air8000, air1601, ccm4211, ...)
+        /// If omitted, generic DTR pulse is used.
+        #[arg(long)]
+        chip: Option<String>,
+    },
+    /// Force device into bootloader (boot) mode via DTR/RTS or AT command
+    Boot {
+        /// Serial port (e.g. COM6). EC718 series can be omitted for auto-detect.
+        #[arg(long)]
+        port: Option<String>,
+        /// Chip type (bk72xx, air8101, xt804, air6208, air101, ec718, air8000, air1601, ccm4211, ...)
+        /// If omitted, generic DTR+RTS pulse is used.
+        #[arg(long)]
+        chip: Option<String>,
+    },
+}
+
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp_millis()
@@ -405,6 +435,10 @@ fn main() {
         Commands::Resource { action } => match action {
             ResourceCommands::List { module } => cmd_resource::cmd_resource_list(module.as_deref(), &cli.format),
             ResourceCommands::Download { module, version, output } => cmd_resource::cmd_resource_download(&module, version.as_deref(), &output, &cli.format),
+        },
+        Commands::Device { action } => match action {
+            DeviceCommands::Reboot { port, chip } => cmd_device::cmd_device_reboot(port.as_deref(), chip.as_deref(), &cli.format),
+            DeviceCommands::Boot { port, chip } => cmd_device::cmd_device_boot(port.as_deref(), chip.as_deref(), &cli.format),
         },
         Commands::Version => {
             let version = env!("CARGO_PKG_VERSION");
