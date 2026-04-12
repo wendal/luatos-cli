@@ -446,10 +446,11 @@ pub fn parse_binpkg(fdata: &[u8]) -> Result<BinpkgResult> {
         let name_raw = &meta[0..64];
         let name = name_raw.split(|&b| b == 0).next().map(|s| String::from_utf8_lossy(s).to_string()).unwrap_or_default();
 
-        let addr = u32::from_le_bytes(meta[64..68].try_into().unwrap());
-        let flash_size = u32::from_le_bytes(meta[68..72].try_into().unwrap());
-        let _offset = u32::from_le_bytes(meta[72..76].try_into().unwrap());
-        let img_size = u32::from_le_bytes(meta[76..80].try_into().unwrap());
+        let addr = u32::from_le_bytes(meta[64..68].try_into().context("binpkg 元数据 addr 字段损坏")?);
+        let flash_size = u32::from_le_bytes(meta[68..72].try_into().context("binpkg 元数据 flash_size 字段损坏")?);
+        let _offset = u32::from_le_bytes(meta[72..76].try_into().context("binpkg 元数据 offset 字段损坏")?);
+        let img_size = u32::from_le_bytes(meta[76..80].try_into().context("binpkg 元数据 img_size 字段损坏")?);
+
 
         let hash_raw = &meta[80..336];
         let hash = hash_raw

@@ -166,7 +166,7 @@ pub fn build_script_image(script_dirs: &[&Path], use_luac: bool, bitw: u32, use_
     let entries = collect_script_entries(&dir_refs)?;
     log::info!("packing {} entries into LuaDB image", entries.len());
 
-    let image = pack_luadb(&entries);
+    let image = pack_luadb(&entries)?;
 
     let result = if use_bkcrc { add_bk_crc(&image) } else { image };
 

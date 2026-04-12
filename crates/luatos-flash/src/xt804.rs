@@ -593,7 +593,7 @@ pub fn flash_script_only(soc_path: &str, port: &str, script_files: &[String], on
             data: final_data,
         });
     }
-    let luadb_data = luatos_luadb::pack_luadb(&entries);
+    let luadb_data = luatos_luadb::pack_luadb(&entries)?;
 
     on_progress(&FlashProgress::info(
         "Build",

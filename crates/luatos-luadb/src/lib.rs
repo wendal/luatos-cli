@@ -1,3 +1,5 @@
+use anyhow::{ensure, Result};
+
 // LuaDB script image packer + BK CRC16 for Air8101.
 //
 // LuaDB is a simple archive format for bundling Lua scripts into a flash
@@ -21,7 +23,7 @@ const LUADB_MAGIC: &[u8] = &[0x01, 0x04, 0x5A, 0xA5, 0x5A, 0xA5];
 /// Per-File Entry:
 ///   MAGIC[6] | name TLV[2+N] | size TLV[6] | CRC TLV[4] | data[N]
 /// ```
-pub fn pack_luadb(entries: &[LuadbEntry]) -> Vec<u8> {
+pub fn pack_luadb(entries: &[LuadbEntry]) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let count = entries.len() as u16;
 
@@ -35,6 +37,12 @@ pub fn pack_luadb(entries: &[LuadbEntry]) -> Vec<u8> {
     // Per-file entries
     for e in entries {
         out.extend_from_slice(LUADB_MAGIC);
+        ensure!(
+            e.filename.len() <= 27,
+            "LuaDB 文件名过长 (最大27字节，实际{}字节): {}",
+            e.filename.len(),
+            e.filename
+        );
         out.push(0x02);
         out.push(e.filename.len() as u8);
         out.extend_from_slice(e.filename.as_bytes());
@@ -43,7 +51,7 @@ pub fn pack_luadb(entries: &[LuadbEntry]) -> Vec<u8> {
         out.extend_from_slice(&[0xFE, 0x02, 0xFF, 0xFF]); // CRC (unused)
         out.extend_from_slice(&e.data);
     }
-    out
+    Ok(out)
 }
 
 /// Add BK CRC16 framing required by Air8101 script partition.
@@ -93,7 +101,7 @@ mod tests {
             filename: "main.lua".into(),
             data: b"print('hello')".to_vec(),
         }];
-        let data = pack_luadb(&entries);
+        let data = pack_luadb(&entries).unwrap();
         assert_eq!(&data[0..6], LUADB_MAGIC);
         // File count = 1 at offset 18
         assert_eq!(data[18], 1);
@@ -137,7 +145,7 @@ mod tests {
                 data: b"return {}".to_vec(),
             },
         ];
-        let data = pack_luadb(&entries);
+        let data = pack_luadb(&entries).unwrap();
         assert_eq!(&data[0..6], LUADB_MAGIC);
         assert_eq!(data[18], 2); // file count
     }

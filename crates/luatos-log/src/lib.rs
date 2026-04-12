@@ -865,7 +865,7 @@ fn decode_ec718_printf(body: &[u8]) -> String {
                         if arg_pos + 4 <= args_data.len() {
                             let precision = u32::from_le_bytes(args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4])) as usize;
                             arg_pos += 4;
-                            let end = (arg_pos + precision).min(args_data.len());
+                            let end = arg_pos.checked_add(precision).unwrap_or(args_data.len()).min(args_data.len());
                             let s = String::from_utf8_lossy(&args_data[arg_pos..end]);
                             result.push_str(&s);
                             arg_pos = (end + 3) & !3; // align to 4
@@ -875,7 +875,7 @@ fn decode_ec718_printf(body: &[u8]) -> String {
                         if arg_pos + 4 <= args_data.len() {
                             let slen = u32::from_le_bytes(args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4])) as usize;
                             arg_pos += 4;
-                            let end = (arg_pos + slen).min(args_data.len());
+                            let end = arg_pos.checked_add(slen).unwrap_or(args_data.len()).min(args_data.len());
                             let s = String::from_utf8_lossy(&args_data[arg_pos..end]);
                             result.push_str(&s);
                             arg_pos = (end + 3) & !3; // align to 4

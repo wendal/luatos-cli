@@ -429,7 +429,9 @@ fn flash_data(
         }
         let offset = i * SECTOR_SIZE;
         let end_off = (offset + SECTOR_SIZE).min(data.len());
-        let addr = start_addr + offset as u32;
+        let addr = start_addr
+            .checked_add(offset as u32)
+            .ok_or_else(|| anyhow::anyhow!("Flash 地址溢出: start={:#x} offset={:#x}", start_addr, offset))?;
 
         let mut sector = [0xFFu8; SECTOR_SIZE];
         sector[..end_off - offset].copy_from_slice(&data[offset..end_off]);
@@ -788,7 +790,7 @@ fn build_script_bin(folders: &[&Path], info: &SocInfo) -> Result<Vec<u8>> {
         bail!("No files found in script folders");
     }
 
-    let mut data = luatos_luadb::pack_luadb(&entries);
+    let mut data = luatos_luadb::pack_luadb(&entries)?;
     if use_bkcrc {
         data = luatos_luadb::add_bk_crc(&data);
     }
