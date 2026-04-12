@@ -8,10 +8,12 @@ members = [
     "crates/luatos-serial",
     "crates/luatos-project",
     "crates/luatos-log",
+    "crates/luatos-resource",
+    "crates/luatos-gui/src-tauri",
 ]
 
 [workspace.package]
-version = "1.3.0"
+version = "1.5.0"
 edition = "2021"
 license = "MIT"
 

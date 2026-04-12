@@ -1,0 +1,49 @@
+[package]
+name = "luatos-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LuatOS GUI — 刷机、日志、项目管理桌面工具"
+
+[[bin]]
+name = "luatos-gui"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# workspace library crates
+luatos-soc = { path = "../../luatos-soc" }
+luatos-luadb = { path = "../../luatos-luadb" }
+luatos-flash = { path = "../../luatos-flash" }
+luatos-serial = { path = "../../luatos-serial" }
+luatos-project = { path = "../../luatos-project" }
+luatos-log = { path = "../../luatos-log" }
+luatos-resource = { path = "../../luatos-resource" }
+
+# Tauri
+tauri = { version = "2", features = [] }
+
+# 序列化
+serde.workspace = true
+serde_json.workspace = true
+
+# 串口
+serialport.workspace = true
+
+# 异步运行时
+tokio = { version = "1", features = ["full"] }
+
+# 错误处理
+anyhow.workspace = true
+
+# 日志
+log.workspace = true
+env_logger.workspace = true
+
+# 文件对话框
+rfd = "0.15"
+
+# HTTP 客户端（资源下载）
+ureq.workspace = true

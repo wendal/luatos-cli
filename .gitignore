@@ -3,3 +3,5 @@ target/
 *.o
 *.exe
 !csrc/
+node_modules/
+dist/

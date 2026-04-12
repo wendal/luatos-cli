@@ -2,9 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.3.0] - 2026-04-12
+## [1.5.0] - 2026-04-12
 
 ### Features
+
+#### GUI 桌面版 (luatos-gui)
+- **Tauri 2 + Vue 3 图形界面** — 新增 `luatos-gui` crate，功能对标 LuaTools
+  - 刷机视图 — 全量刷机/刷脚本区，支持所有 4 芯片系列，实时进度条，取消操作
+  - 日志视图 — 文本+二进制日志流式显示，日志级别着色，过滤搜索，错误提示
+  - 项目视图 — 新建/打开/编辑保存/导入 LuaTools INI 项目，最近项目侧栏，多项目切换
+  - 构建视图 — Lua 编译 + LuaDB 打包，多目录支持
+  - 固件视图 — 在线 CDN 固件清单浏览、按模组下载、SHA256 校验、进度显示
+  - 设置视图 — 全局偏好持久化 (JSON)
+- **全局串口工具栏** — 选一次串口，所有视图共享
+- **刷机→日志自动跳转** — 刷完自动切到日志视图查看启动日志
+- **暗色主题** — Tailwind CSS 深色界面
+
+#### 固件资源库 (luatos-resource)
+- **新增 `luatos-resource` crate** — 将资源清单获取/下载逻辑从 CLI 中抽取为独立库
+  - `fetch_manifest()` — 从 CDN 获取资源清单 (JSON)
+  - `collect_files()` — 按模组名/版本过滤可下载文件
+  - `download_files()` — 多镜像回退下载 + SHA256 校验
+  - `DownloadCallback` — 类型化进度回调，CLI 和 GUI 各自实现展示层
+  - 9 个单元测试覆盖清单解析、文件条目、大小格式化、SHA256 等
 
 #### EC718 (Air8000/Air780E) 完整刷机支持
 - **EC718 刷机协议** — 纯 Rust 实现，支持 Air8000/Air780E/Air201 系列

@@ -451,7 +451,6 @@ pub fn parse_binpkg(fdata: &[u8]) -> Result<BinpkgResult> {
         let _offset = u32::from_le_bytes(meta[72..76].try_into().context("binpkg 元数据 offset 字段损坏")?);
         let img_size = u32::from_le_bytes(meta[76..80].try_into().context("binpkg 元数据 img_size 字段损坏")?);
 
-
         let hash_raw = &meta[80..336];
         let hash = hash_raw
             .split(|&b| b == 0)

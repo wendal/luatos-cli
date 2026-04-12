@@ -1,114 +1,16 @@
 use crate::OutputFormat;
 
-const RESOURCE_MANIFEST_URLS: &[&str] = &["http://bj02.air32.cn:10888/files/files.json", "http://sh.air32.cn:10888/files/files.json"];
-
-#[derive(serde::Deserialize, Debug)]
-struct ResourceManifest {
-    #[allow(dead_code)]
-    version: u32,
-    mirrors: Vec<Mirror>,
-    resouces: Vec<ResourceCategory>, // NOTE: typo in server JSON, keep as-is
-}
-
-#[derive(serde::Deserialize, Debug, Clone)]
-struct Mirror {
-    url: String,
-    #[allow(dead_code)]
-    speed: Option<u32>,
-}
-
-#[derive(serde::Deserialize, Debug)]
-struct ResourceCategory {
-    name: String,
-    #[serde(default)]
-    desc: Option<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    url: Option<String>,
-    #[serde(default)]
-    childrens: Vec<ResourceChild>,
-}
-
-#[derive(serde::Deserialize, Debug)]
-struct ResourceChild {
-    name: String,
-    #[serde(default)]
-    desc: Option<String>,
-    #[serde(default)]
-    versions: Vec<ResourceVersion>,
-}
-
-#[derive(serde::Deserialize, Debug)]
-struct ResourceVersion {
-    name: String,
-    #[serde(default)]
-    desc: Option<String>,
-    #[serde(default)]
-    files: Vec<serde_json::Value>,
-}
-
-#[allow(dead_code)]
-struct FileEntry {
-    desc: String,
-    filename: String,
-    sha256: String,
-    size: u64,
-    path: String,
-}
-
-/// Parse a file entry from the JSON value.
-/// Format: array `["desc", "filename", "sha256", size_number, "path"]`
-fn parse_file_entry(val: &serde_json::Value) -> Option<FileEntry> {
-    let arr = val.as_array()?;
-    if arr.len() < 5 {
-        return None;
-    }
-    Some(FileEntry {
-        desc: arr[0].as_str()?.to_string(),
-        filename: arr[1].as_str()?.to_string(),
-        sha256: arr[2].as_str()?.to_string(),
-        size: arr[3].as_u64()?,
-        path: arr[4].as_str()?.to_string(),
-    })
-}
-
-fn fetch_manifest() -> anyhow::Result<ResourceManifest> {
-    let mut last_err = None;
-    for url in RESOURCE_MANIFEST_URLS {
-        match ureq::get(url).call() {
-            Ok(resp) => {
-                let body = resp.into_string()?;
-                let manifest: ResourceManifest = serde_json::from_str(&body)?;
-                return Ok(manifest);
-            }
-            Err(e) => {
-                log::warn!("Failed to fetch {url}: {e}");
-                last_err = Some(e);
-            }
-        }
-    }
-    anyhow::bail!(
-        "Failed to fetch resource manifest from all mirrors: {}",
-        last_err.map(|e| e.to_string()).unwrap_or_else(|| "no URLs".into())
-    );
-}
-
+/// 格式化文件大小
 fn format_size(bytes: u64) -> String {
-    if bytes >= 1_000_000 {
-        format!("{:.1} MB", bytes as f64 / 1_000_000.0)
-    } else if bytes >= 1_000 {
-        format!("{:.1} KB", bytes as f64 / 1_000.0)
-    } else {
-        format!("{bytes} B")
-    }
+    luatos_resource::format_size(bytes)
 }
 
 pub fn cmd_resource_list(module: Option<&str>, format: &OutputFormat) -> anyhow::Result<()> {
-    let manifest = fetch_manifest()?;
+    let manifest = luatos_resource::fetch_manifest()?;
 
     match module {
         None => {
-            // List all modules
+            // 列出所有模组
             match format {
                 OutputFormat::Text => {
                     println!("{:<20} DESCRIPTION", "MODULE");
@@ -137,11 +39,7 @@ pub fn cmd_resource_list(module: Option<&str>, format: &OutputFormat) -> anyhow:
             }
         }
         Some(name) => {
-            let cat = manifest
-                .resouces
-                .iter()
-                .find(|c| c.name.eq_ignore_ascii_case(name))
-                .ok_or_else(|| anyhow::anyhow!("Module '{}' not found", name))?;
+            let cat = luatos_resource::find_category(&manifest, name).ok_or_else(|| anyhow::anyhow!("Module '{}' not found", name))?;
 
             match format {
                 OutputFormat::Text => {
@@ -150,10 +48,8 @@ pub fn cmd_resource_list(module: Option<&str>, format: &OutputFormat) -> anyhow:
                         println!("\n  {} — {}", child.name, child.desc.as_deref().unwrap_or(""));
                         for ver in &child.versions {
                             println!("    {} — {}", ver.name, ver.desc.as_deref().unwrap_or(""));
-                            for raw in &ver.files {
-                                if let Some(entry) = parse_file_entry(raw) {
-                                    println!("      {}  {}  {}", entry.desc, entry.filename, format_size(entry.size));
-                                }
+                            for entry in ver.file_entries() {
+                                println!("      {}  {}  {}", entry.desc, entry.filename, format_size(entry.size));
                             }
                         }
                     }
@@ -168,17 +64,15 @@ pub fn cmd_resource_list(module: Option<&str>, format: &OutputFormat) -> anyhow:
                                 .iter()
                                 .map(|ver| {
                                     let files: Vec<_> = ver
-                                        .files
+                                        .file_entries()
                                         .iter()
-                                        .filter_map(|raw| {
-                                            parse_file_entry(raw).map(|e| {
-                                                serde_json::json!({
-                                                    "desc": e.desc,
-                                                    "filename": e.filename,
-                                                    "sha256": e.sha256,
-                                                    "size": e.size,
-                                                    "path": e.path,
-                                                })
+                                        .map(|e| {
+                                            serde_json::json!({
+                                                "desc": e.desc,
+                                                "filename": e.filename,
+                                                "sha256": e.sha256,
+                                                "size": e.size,
+                                                "path": e.path,
                                             })
                                         })
                                         .collect();
@@ -214,143 +108,89 @@ pub fn cmd_resource_list(module: Option<&str>, format: &OutputFormat) -> anyhow:
 }
 
 pub fn cmd_resource_download(module: &str, version_filter: Option<&str>, output: &str, format: &OutputFormat) -> anyhow::Result<()> {
-    use sha2::Digest;
+    let manifest = luatos_resource::fetch_manifest()?;
 
-    let manifest = fetch_manifest()?;
+    let cat = luatos_resource::find_category(&manifest, module).ok_or_else(|| anyhow::anyhow!("Module '{}' not found", module))?;
 
-    let cat = manifest
-        .resouces
-        .iter()
-        .find(|c| c.name.eq_ignore_ascii_case(module))
-        .ok_or_else(|| anyhow::anyhow!("Module '{}' not found", module))?;
-
-    // Collect all matching files
-    let mut files_to_download: Vec<FileEntry> = Vec::new();
-
-    for child in &cat.childrens {
-        for ver in &child.versions {
-            if let Some(filter) = version_filter {
-                if !ver.name.contains(filter) {
-                    continue;
-                }
-            }
-            for raw in &ver.files {
-                if let Some(entry) = parse_file_entry(raw) {
-                    files_to_download.push(entry);
-                }
-            }
-            // If no version filter, only take the first (latest) version per child
-            if version_filter.is_none() {
-                break;
-            }
-        }
-    }
-
-    if files_to_download.is_empty() {
+    let files = luatos_resource::collect_files(cat, version_filter);
+    if files.is_empty() {
         anyhow::bail!("No files found for module '{}' with version filter {:?}", module, version_filter);
     }
 
-    // Sort mirrors by speed (descending)
-    let mut mirrors = manifest.mirrors.clone();
-    mirrors.sort_by(|a, b| b.speed.unwrap_or(0).cmp(&a.speed.unwrap_or(0)));
-
     let out_path = std::path::Path::new(output);
-    std::fs::create_dir_all(out_path)?;
 
-    let mut downloaded = 0u32;
-    let mut failed = 0u32;
+    // 构建进度回调 — CLI 使用 indicatif 进度条
+    let pb = std::sync::Mutex::new(None::<indicatif::ProgressBar>);
+    let is_text = format == &OutputFormat::Text;
 
-    for entry in &files_to_download {
-        let dest = out_path.join(&entry.path);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
+    let callback: luatos_resource::DownloadCallback = Box::new(move |event| match event {
+        luatos_resource::DownloadEvent::StartFile { filename, size, index, total } => {
+            if is_text {
+                eprintln!("[{}/{}] 下载 {} ({})...", index + 1, total, filename, luatos_resource::format_size(*size));
+            }
+            let new_pb = indicatif::ProgressBar::new(*size);
+            new_pb.set_style(
+                indicatif::ProgressStyle::default_bar()
+                    .template("  [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+                    .unwrap_or_else(|_| indicatif::ProgressStyle::default_bar())
+                    .progress_chars("##-"),
+            );
+            *pb.lock().unwrap() = Some(new_pb);
         }
-
-        if format == &OutputFormat::Text {
-            eprintln!("Downloading {} ({})...", entry.filename, format_size(entry.size));
-        }
-
-        let mut success = false;
-        for mirror in &mirrors {
-            let url = format!("{}{}", mirror.url, entry.path);
-            match download_file(&url, &dest, entry.size) {
-                Ok(()) => {
-                    // Verify SHA256
-                    let data = std::fs::read(&dest)?;
-                    let hash = sha2::Sha256::digest(&data);
-                    let hex = format!("{:X}", hash);
-                    if hex.eq_ignore_ascii_case(&entry.sha256) {
-                        if format == &OutputFormat::Text {
-                            eprintln!("  ✓ SHA256 verified: {}", dest.display());
-                        }
-                        downloaded += 1;
-                        success = true;
-                        break;
-                    } else {
-                        eprintln!("  ✗ SHA256 mismatch for {} (expected {}, got {})", entry.filename, entry.sha256, hex);
-                        let _ = std::fs::remove_file(&dest);
-                    }
-                }
-                Err(e) => {
-                    log::warn!("  Mirror {} failed: {e}", mirror.url);
-                }
+        luatos_resource::DownloadEvent::Progress { downloaded, .. } => {
+            if let Some(p) = pb.lock().unwrap().as_ref() {
+                p.set_position(*downloaded);
             }
         }
-        if !success {
-            eprintln!("  ✗ Failed to download {}", entry.filename);
-            failed += 1;
+        luatos_resource::DownloadEvent::Verified { filename, dest } => {
+            if let Some(p) = pb.lock().unwrap().take() {
+                p.finish_and_clear();
+            }
+            if is_text {
+                eprintln!("  ✓ SHA256 校验通过: {} → {}", filename, dest);
+            }
         }
-    }
+        luatos_resource::DownloadEvent::HashMismatch { filename, expected, actual } => {
+            if let Some(p) = pb.lock().unwrap().take() {
+                p.finish_and_clear();
+            }
+            eprintln!("  ✗ SHA256 不匹配 {} (期望 {}, 实际 {})", filename, expected, actual);
+        }
+        luatos_resource::DownloadEvent::MirrorFailed { mirror_url, filename, error } => {
+            log::warn!("镜像 {} 下载 {} 失败: {}", mirror_url, filename, error);
+        }
+        luatos_resource::DownloadEvent::FileFailed { filename } => {
+            if let Some(p) = pb.lock().unwrap().take() {
+                p.finish_and_clear();
+            }
+            eprintln!("  ✗ 下载失败: {}", filename);
+        }
+    });
+
+    let report = luatos_resource::download_files(module, &files, &manifest.mirrors, out_path, Some(&callback))?;
 
     match format {
         OutputFormat::Text => {
-            println!("\nDownload complete: {} succeeded, {} failed", downloaded, failed);
+            println!("\n下载完成: {} 成功, {} 失败", report.succeeded, report.failed);
         }
         OutputFormat::Json => {
             let json = serde_json::json!({
-                "status": if failed == 0 { "ok" } else { "partial" },
+                "status": if report.failed == 0 { "ok" } else { "partial" },
                 "command": "resource.download",
                 "data": {
                     "module": module,
-                    "downloaded": downloaded,
-                    "failed": failed,
+                    "downloaded": report.succeeded,
+                    "failed": report.failed,
                     "output": output,
+                    "files": report.files,
                 },
             });
             println!("{}", serde_json::to_string_pretty(&json)?);
         }
     }
 
-    if failed > 0 {
-        anyhow::bail!("{failed} file(s) failed to download");
+    if report.failed > 0 {
+        anyhow::bail!("{} 个文件下载失败", report.failed);
     }
-    Ok(())
-}
-
-fn download_file(url: &str, dest: &std::path::Path, size: u64) -> anyhow::Result<()> {
-    use std::io::Read;
-
-    let resp = ureq::get(url).call()?;
-    let mut reader = resp.into_reader();
-
-    let pb = indicatif::ProgressBar::new(size);
-    pb.set_style(
-        indicatif::ProgressStyle::default_bar()
-            .template("  [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
-            .unwrap_or_else(|_| indicatif::ProgressStyle::default_bar())
-            .progress_chars("##-"),
-    );
-
-    let mut file = std::fs::File::create(dest)?;
-    let mut buf = [0u8; 8192];
-    loop {
-        let n = reader.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        std::io::Write::write_all(&mut file, &buf[..n])?;
-        pb.inc(n as u64);
-    }
-    pb.finish_and_clear();
     Ok(())
 }

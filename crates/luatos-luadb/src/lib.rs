@@ -37,12 +37,7 @@ pub fn pack_luadb(entries: &[LuadbEntry]) -> Result<Vec<u8>> {
     // Per-file entries
     for e in entries {
         out.extend_from_slice(LUADB_MAGIC);
-        ensure!(
-            e.filename.len() <= 27,
-            "LuaDB 文件名过长 (最大27字节，实际{}字节): {}",
-            e.filename.len(),
-            e.filename
-        );
+        ensure!(e.filename.len() <= 27, "LuaDB 文件名过长 (最大27字节，实际{}字节): {}", e.filename.len(), e.filename);
         out.push(0x02);
         out.push(e.filename.len() as u8);
         out.extend_from_slice(e.filename.as_bytes());
