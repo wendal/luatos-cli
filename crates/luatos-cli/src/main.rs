@@ -9,20 +9,16 @@
 
 use clap::{Parser, Subcommand};
 
-mod cmd_serial;
-mod cmd_soc;
+mod cmd_build;
 mod cmd_flash;
 mod cmd_log;
 mod cmd_project;
-mod cmd_build;
 mod cmd_resource;
+mod cmd_serial;
+mod cmd_soc;
 
 #[derive(Parser)]
-#[command(
-    name = "luatos-cli",
-    version,
-    about = "LuatOS CLI tool — flash, log, project management"
-)]
+#[command(name = "luatos-cli", version, about = "LuatOS CLI tool — flash, log, project management")]
 struct Cli {
     /// Output format
     #[arg(long, default_value = "text", global = true)]
@@ -361,38 +357,19 @@ fn main() {
         },
         Commands::Soc { action } => match action {
             SocCommands::Info { path } => cmd_soc::cmd_soc_info(&path, &cli.format),
-            SocCommands::Unpack { path, output } => {
-                cmd_soc::cmd_soc_unpack(&path, output.as_deref(), &cli.format)
-            }
+            SocCommands::Unpack { path, output } => cmd_soc::cmd_soc_unpack(&path, output.as_deref(), &cli.format),
             SocCommands::Files { path } => cmd_soc::cmd_soc_files(&path, &cli.format),
             SocCommands::Pack { dir, output } => cmd_soc::cmd_soc_pack(&dir, &output, &cli.format),
         },
         Commands::Flash { action } => match action {
-            FlashCommands::Run {
-                soc,
-                port,
-                baud,
-                script,
-            } => {
-                let script_opt = if script.is_empty() {
-                    None
-                } else {
-                    Some(script.as_slice())
-                };
+            FlashCommands::Run { soc, port, baud, script } => {
+                let script_opt = if script.is_empty() { None } else { Some(script.as_slice()) };
                 cmd_flash::cmd_flash_run(&soc, &port, baud, script_opt, &cli.format)
             }
-            FlashCommands::Script { soc, port, script } => {
-                cmd_flash::cmd_flash_partition("script", &soc, &port, Some(&script), &cli.format)
-            }
-            FlashCommands::ClearFs { soc, port } => {
-                cmd_flash::cmd_flash_partition("clear-fs", &soc, &port, None, &cli.format)
-            }
-            FlashCommands::FlashFs { soc, port, script } => {
-                cmd_flash::cmd_flash_partition("flash-fs", &soc, &port, Some(&script), &cli.format)
-            }
-            FlashCommands::ClearKv { soc, port } => {
-                cmd_flash::cmd_flash_partition("clear-kv", &soc, &port, None, &cli.format)
-            }
+            FlashCommands::Script { soc, port, script } => cmd_flash::cmd_flash_partition("script", &soc, &port, Some(&script), &cli.format),
+            FlashCommands::ClearFs { soc, port } => cmd_flash::cmd_flash_partition("clear-fs", &soc, &port, None, &cli.format),
+            FlashCommands::FlashFs { soc, port, script } => cmd_flash::cmd_flash_partition("flash-fs", &soc, &port, Some(&script), &cli.format),
+            FlashCommands::ClearKv { soc, port } => cmd_flash::cmd_flash_partition("clear-kv", &soc, &port, None, &cli.format),
             FlashCommands::Test {
                 soc,
                 port,
@@ -401,33 +378,14 @@ fn main() {
                 timeout,
                 keyword,
             } => {
-                let script_opt = if script.is_empty() {
-                    None
-                } else {
-                    Some(script.as_slice())
-                };
-                cmd_flash::cmd_flash_test(
-                    &soc,
-                    &port,
-                    baud,
-                    script_opt,
-                    timeout,
-                    &keyword,
-                    &cli.format,
-                )
+                let script_opt = if script.is_empty() { None } else { Some(script.as_slice()) };
+                cmd_flash::cmd_flash_test(&soc, &port, baud, script_opt, timeout, &keyword, &cli.format)
             }
         },
         Commands::Log { action } => match action {
             LogCommands::View { port, baud } => cmd_log::cmd_log_view(&port, baud, &cli.format),
-            LogCommands::ViewBinary { port, baud, probe } => {
-                cmd_log::cmd_log_view_binary(&port, baud, probe, &cli.format)
-            }
-            LogCommands::Record {
-                port,
-                baud,
-                output,
-                json,
-            } => cmd_log::cmd_log_record(&port, baud, &output, json, &cli.format),
+            LogCommands::ViewBinary { port, baud, probe } => cmd_log::cmd_log_view_binary(&port, baud, probe, &cli.format),
+            LogCommands::Record { port, baud, output, json } => cmd_log::cmd_log_record(&port, baud, &output, json, &cli.format),
             LogCommands::Parse { path } => cmd_log::cmd_log_parse(&path, &cli.format),
         },
         Commands::Project { action } => match action {
@@ -436,37 +394,17 @@ fn main() {
                 cmd_project::cmd_project_new(&dir, &name, &chip, &cli.format)
             }
             ProjectCommands::Info { dir } => cmd_project::cmd_project_info(&dir, &cli.format),
-            ProjectCommands::Config { dir, key, value } => {
-                cmd_project::cmd_project_config(&dir, key.as_deref(), value.as_deref(), &cli.format)
-            }
-            ProjectCommands::Import { ini, dir } => {
-                cmd_project::cmd_project_import(&ini, &dir, &cli.format)
-            }
-            ProjectCommands::Deps {
-                dir,
-                reachable,
-                unreachable,
-            } => cmd_project::cmd_project_deps(&dir, reachable, unreachable, &cli.format),
+            ProjectCommands::Config { dir, key, value } => cmd_project::cmd_project_config(&dir, key.as_deref(), value.as_deref(), &cli.format),
+            ProjectCommands::Import { ini, dir } => cmd_project::cmd_project_import(&ini, &dir, &cli.format),
+            ProjectCommands::Deps { dir, reachable, unreachable } => cmd_project::cmd_project_deps(&dir, reachable, unreachable, &cli.format),
         },
         Commands::Build { action } => match action {
-            BuildCommands::Luac { src, output, bitw } => {
-                cmd_build::cmd_build_luac(&src, &output, bitw, &cli.format)
-            }
-            BuildCommands::Filesystem {
-                src,
-                output,
-                luac,
-                bitw,
-                bkcrc,
-            } => cmd_build::cmd_build_filesystem(&src, &output, luac, bitw, bkcrc, &cli.format),
+            BuildCommands::Luac { src, output, bitw } => cmd_build::cmd_build_luac(&src, &output, bitw, &cli.format),
+            BuildCommands::Filesystem { src, output, luac, bitw, bkcrc } => cmd_build::cmd_build_filesystem(&src, &output, luac, bitw, bkcrc, &cli.format),
         },
         Commands::Resource { action } => match action {
             ResourceCommands::List { module } => cmd_resource::cmd_resource_list(module.as_deref(), &cli.format),
-            ResourceCommands::Download {
-                module,
-                version,
-                output,
-            } => cmd_resource::cmd_resource_download(&module, version.as_deref(), &output, &cli.format),
+            ResourceCommands::Download { module, version, output } => cmd_resource::cmd_resource_download(&module, version.as_deref(), &output, &cli.format),
         },
         Commands::Version => {
             let version = env!("CARGO_PKG_VERSION");
@@ -503,4 +441,3 @@ fn main() {
         }
     }
 }
-

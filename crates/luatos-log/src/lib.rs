@@ -195,11 +195,7 @@ impl LogParser for BootLogParser {
 
         if let Some(colon_pos) = trimmed.find(": ") {
             let prefix = &trimmed[..colon_pos];
-            if prefix.len() <= 20
-                && prefix
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
-            {
+            if prefix.len() <= 20 && prefix.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
                 let now = Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
                 return Some(LogEntry {
                     timestamp: now,
@@ -225,9 +221,7 @@ pub struct LogDispatcher {
 
 impl LogDispatcher {
     pub fn new() -> Self {
-        Self {
-            parsers: Vec::new(),
-        }
+        Self { parsers: Vec::new() }
     }
 
     /// Create a dispatcher with the default LuatOS parsers.
@@ -280,20 +274,12 @@ pub struct LogWriter {
 
 impl LogWriter {
     /// Create a log writer. Pass None to skip that format.
-    pub fn new(
-        text_path: Option<&std::path::Path>,
-        json_path: Option<&std::path::Path>,
-    ) -> anyhow::Result<Self> {
+    pub fn new(text_path: Option<&std::path::Path>, json_path: Option<&std::path::Path>) -> anyhow::Result<Self> {
         let text_file = if let Some(p) = text_path {
             if let Some(parent) = p.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            Some(std::io::BufWriter::new(
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(p)?,
-            ))
+            Some(std::io::BufWriter::new(std::fs::OpenOptions::new().create(true).append(true).open(p)?))
         } else {
             None
         };
@@ -302,20 +288,12 @@ impl LogWriter {
             if let Some(parent) = p.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            Some(std::io::BufWriter::new(
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(p)?,
-            ))
+            Some(std::io::BufWriter::new(std::fs::OpenOptions::new().create(true).append(true).open(p)?))
         } else {
             None
         };
 
-        Ok(Self {
-            text_file,
-            json_file,
-        })
+        Ok(Self { text_file, json_file })
     }
 
     /// Write a log entry to the configured outputs.
@@ -345,10 +323,7 @@ impl LogWriter {
 // ─── Log file parser ─────────────────────────────────────────────────────────
 
 /// Parse a saved log file into structured entries.
-pub fn parse_log_file(
-    path: &std::path::Path,
-    dispatcher: &LogDispatcher,
-) -> anyhow::Result<Vec<LogEntry>> {
+pub fn parse_log_file(path: &std::path::Path, dispatcher: &LogDispatcher) -> anyhow::Result<Vec<LogEntry>> {
     let content = std::fs::read_to_string(path)?;
     Ok(content.lines().map(|line| dispatcher.parse(line)).collect())
 }
@@ -502,11 +477,7 @@ impl SocLogDecoder {
             timestamp: now,
             device_time: Some(device_time),
             level,
-            module: if module.is_empty() {
-                None
-            } else {
-                Some(module)
-            },
+            module: if module.is_empty() { None } else { Some(module) },
             message,
             raw: format!("[SOC frame {} bytes]", data.len()),
         })
@@ -538,8 +509,7 @@ fn crc16_modbus(data: &[u8]) -> u16 {
 /// Decode tag name from the tag bitfield (7 bits per character, up to 8 chars).
 fn decode_tag_name(tag_bits: u64) -> String {
     // ASCII lookup: each 7-bit value maps to a character
-    const TAG_CHARS: &[u8; 64] =
-        b" abcdefghijklmnopqrstuvwxyz012345ABCDEFGHIJKLMNOPQRSTUVWXYZ_*-./";
+    const TAG_CHARS: &[u8; 64] = b" abcdefghijklmnopqrstuvwxyz012345ABCDEFGHIJKLMNOPQRSTUVWXYZ_*-./";
 
     let mut name = String::new();
     let mut bits = tag_bits;
@@ -612,9 +582,7 @@ fn decode_printf_message(body: &[u8]) -> String {
                     if is_long_long {
                         // 8-byte integer
                         if arg_pos + 8 <= args_data.len() {
-                            let val = i64::from_le_bytes(
-                                args_data[arg_pos..arg_pos + 8].try_into().unwrap_or([0; 8]),
-                            );
+                            let val = i64::from_le_bytes(args_data[arg_pos..arg_pos + 8].try_into().unwrap_or([0; 8]));
                             match next {
                                 'x' => result.push_str(&format!("{val:x}")),
                                 'X' => result.push_str(&format!("{val:X}")),
@@ -625,9 +593,7 @@ fn decode_printf_message(body: &[u8]) -> String {
                     } else {
                         // 4-byte integer
                         if arg_pos + 4 <= args_data.len() {
-                            let val = i32::from_le_bytes(
-                                args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4]),
-                            );
+                            let val = i32::from_le_bytes(args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4]));
                             match next {
                                 'x' => result.push_str(&format!("{val:x}")),
                                 'X' => result.push_str(&format!("{val:X}")),
@@ -643,9 +609,7 @@ fn decode_printf_message(body: &[u8]) -> String {
                     chars.next();
                     // 8-byte double
                     if arg_pos + 8 <= args_data.len() {
-                        let val = f64::from_le_bytes(
-                            args_data[arg_pos..arg_pos + 8].try_into().unwrap_or([0; 8]),
-                        );
+                        let val = f64::from_le_bytes(args_data[arg_pos..arg_pos + 8].try_into().unwrap_or([0; 8]));
                         result.push_str(&format!("{val}"));
                         arg_pos += 8;
                     }
@@ -655,11 +619,7 @@ fn decode_printf_message(body: &[u8]) -> String {
                     chars.next();
                     // String: null-terminated, 4-byte aligned length
                     let str_start = arg_pos;
-                    let str_end = args_data[str_start..]
-                        .iter()
-                        .position(|&b| b == 0)
-                        .map(|p| str_start + p)
-                        .unwrap_or(args_data.len());
+                    let str_end = args_data[str_start..].iter().position(|&b| b == 0).map(|p| str_start + p).unwrap_or(args_data.len());
                     let s = String::from_utf8_lossy(&args_data[str_start..str_end]);
                     result.push_str(&s);
                     arg_pos = (str_end + 4) & !3; // Align
@@ -677,9 +637,7 @@ fn decode_printf_message(body: &[u8]) -> String {
                 'p' => {
                     chars.next();
                     if arg_pos + 4 <= args_data.len() {
-                        let val = u32::from_le_bytes(
-                            args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4]),
-                        );
+                        let val = u32::from_le_bytes(args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4]));
                         result.push_str(&format!("0x{val:08x}"));
                         arg_pos += 4;
                     }
@@ -868,9 +826,7 @@ fn decode_ec718_printf(body: &[u8]) -> String {
                     let spec = chars.next().unwrap();
                     if is_long_long {
                         if arg_pos + 8 <= args_data.len() {
-                            let val = i64::from_le_bytes(
-                                args_data[arg_pos..arg_pos + 8].try_into().unwrap_or([0; 8]),
-                            );
+                            let val = i64::from_le_bytes(args_data[arg_pos..arg_pos + 8].try_into().unwrap_or([0; 8]));
                             match spec {
                                 'x' => result.push_str(&format!("{val:x}")),
                                 'X' => result.push_str(&format!("{val:X}")),
@@ -881,9 +837,7 @@ fn decode_ec718_printf(body: &[u8]) -> String {
                         }
                     } else {
                         if arg_pos + 4 <= args_data.len() {
-                            let val = i32::from_le_bytes(
-                                args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4]),
-                            );
+                            let val = i32::from_le_bytes(args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4]));
                             match spec {
                                 'x' => result.push_str(&format!("{val:x}")),
                                 'X' => result.push_str(&format!("{val:X}")),
@@ -898,9 +852,7 @@ fn decode_ec718_printf(body: &[u8]) -> String {
                 Some(&'f') | Some(&'g') | Some(&'e') => {
                     chars.next();
                     if arg_pos + 8 <= args_data.len() {
-                        let val = f64::from_le_bytes(
-                            args_data[arg_pos..arg_pos + 8].try_into().unwrap_or([0; 8]),
-                        );
+                        let val = f64::from_le_bytes(args_data[arg_pos..arg_pos + 8].try_into().unwrap_or([0; 8]));
                         result.push_str(&format!("{val}"));
                         arg_pos += 8;
                     }
@@ -911,9 +863,7 @@ fn decode_ec718_printf(body: &[u8]) -> String {
                     if has_star {
                         // %.*s: precision from arg (u32) then string bytes
                         if arg_pos + 4 <= args_data.len() {
-                            let precision = u32::from_le_bytes(
-                                args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4]),
-                            ) as usize;
+                            let precision = u32::from_le_bytes(args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4])) as usize;
                             arg_pos += 4;
                             let end = (arg_pos + precision).min(args_data.len());
                             let s = String::from_utf8_lossy(&args_data[arg_pos..end]);
@@ -923,9 +873,7 @@ fn decode_ec718_printf(body: &[u8]) -> String {
                     } else {
                         // %s: [u32 length] [string bytes], 4-byte aligned
                         if arg_pos + 4 <= args_data.len() {
-                            let slen = u32::from_le_bytes(
-                                args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4]),
-                            ) as usize;
+                            let slen = u32::from_le_bytes(args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4])) as usize;
                             arg_pos += 4;
                             let end = (arg_pos + slen).min(args_data.len());
                             let s = String::from_utf8_lossy(&args_data[arg_pos..end]);
@@ -947,9 +895,7 @@ fn decode_ec718_printf(body: &[u8]) -> String {
                 Some(&'p') => {
                     chars.next();
                     if arg_pos + 4 <= args_data.len() {
-                        let val = u32::from_le_bytes(
-                            args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4]),
-                        );
+                        let val = u32::from_le_bytes(args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4]));
                         result.push_str(&format!("0x{val:08x}"));
                         arg_pos += 4;
                     }
@@ -1019,10 +965,7 @@ impl LogParser for SocLogParser {
         }
 
         // Try to parse as hex bytes
-        let bytes: Vec<u8> = trimmed
-            .split_whitespace()
-            .filter_map(|s| u8::from_str_radix(s, 16).ok())
-            .collect();
+        let bytes: Vec<u8> = trimmed.split_whitespace().filter_map(|s| u8::from_str_radix(s, 16).ok()).collect();
 
         if bytes.len() < 26 || bytes[0] != 0xA5 {
             return None;
@@ -1044,16 +987,11 @@ mod tests {
     #[test]
     fn parse_luatos_standard_line() {
         let parser = LuatosParser;
-        let entry = parser
-            .parse_line("[2026-04-09 12:03:37.290] I/user.test 1234")
-            .unwrap();
+        let entry = parser.parse_line("[2026-04-09 12:03:37.290] I/user.test 1234").unwrap();
         assert_eq!(entry.level, LogLevel::Info);
         assert_eq!(entry.module.as_deref(), Some("user.test"));
         assert_eq!(entry.message, "1234");
-        assert_eq!(
-            entry.device_time.as_deref(),
-            Some("2026-04-09 12:03:37.290")
-        );
+        assert_eq!(entry.device_time.as_deref(), Some("2026-04-09 12:03:37.290"));
     }
 
     #[test]

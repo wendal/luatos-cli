@@ -42,34 +42,22 @@ const IMAGE_MAGIC: u32 = 0xA0FFFF9F;
 // XT804 predefined command sequences (from wm_tool.c)
 
 /// Set baud to 115200
-const CMD_BAUD_115200: [u8; 13] = [
-    0x21, 0x0a, 0x00, 0x97, 0x4b, 0x31, 0x00, 0x00, 0x00, 0x00, 0xc2, 0x01, 0x00,
-];
+const CMD_BAUD_115200: [u8; 13] = [0x21, 0x0a, 0x00, 0x97, 0x4b, 0x31, 0x00, 0x00, 0x00, 0x00, 0xc2, 0x01, 0x00];
 
 /// Set baud to 460800
-const CMD_BAUD_460800: [u8; 13] = [
-    0x21, 0x0a, 0x00, 0x07, 0x00, 0x31, 0x00, 0x00, 0x00, 0x00, 0x08, 0x07, 0x00,
-];
+const CMD_BAUD_460800: [u8; 13] = [0x21, 0x0a, 0x00, 0x07, 0x00, 0x31, 0x00, 0x00, 0x00, 0x00, 0x08, 0x07, 0x00];
 
 /// Set baud to 921600
-const CMD_BAUD_921600: [u8; 13] = [
-    0x21, 0x0a, 0x00, 0x5d, 0x63, 0x31, 0x00, 0x00, 0x00, 0x00, 0x10, 0x0e, 0x00,
-];
+const CMD_BAUD_921600: [u8; 13] = [0x21, 0x0a, 0x00, 0x5d, 0x63, 0x31, 0x00, 0x00, 0x00, 0x00, 0x10, 0x0e, 0x00];
 
 /// Set baud to 1000000
-const CMD_BAUD_1000000: [u8; 13] = [
-    0x21, 0x0a, 0x00, 0x7e, 0x1a, 0x31, 0x00, 0x00, 0x00, 0x40, 0x42, 0x0f, 0x00,
-];
+const CMD_BAUD_1000000: [u8; 13] = [0x21, 0x0a, 0x00, 0x7e, 0x1a, 0x31, 0x00, 0x00, 0x00, 0x40, 0x42, 0x0f, 0x00];
 
 /// Set baud to 2000000
-const CMD_BAUD_2000000: [u8; 13] = [
-    0x21, 0x0a, 0x00, 0xef, 0x2a, 0x31, 0x00, 0x00, 0x00, 0x80, 0x84, 0x1e, 0x00,
-];
+const CMD_BAUD_2000000: [u8; 13] = [0x21, 0x0a, 0x00, 0xef, 0x2a, 0x31, 0x00, 0x00, 0x00, 0x80, 0x84, 0x1e, 0x00];
 
 /// Erase command
-const CMD_ERASE: [u8; 13] = [
-    0x21, 0x0a, 0x00, 0xc3, 0x35, 0x32, 0x00, 0x00, 0x00, 0x02, 0x00, 0xfe, 0x01,
-];
+const CMD_ERASE: [u8; 13] = [0x21, 0x0a, 0x00, 0xc3, 0x35, 0x32, 0x00, 0x00, 0x00, 0x02, 0x00, 0xfe, 0x01];
 
 /// Read MAC address
 const CMD_MAC_READ: [u8; 9] = [0x21, 0x06, 0x00, 0xea, 0x2d, 0x38, 0x00, 0x00, 0x00];
@@ -244,8 +232,7 @@ fn set_baud_rate(port: &mut dyn serialport::SerialPort, baud: u32) -> Result<()>
     std::thread::sleep(Duration::from_secs(1));
 
     // Switch host side
-    port.set_baud_rate(baud)
-        .context("Failed to change host baud rate")?;
+    port.set_baud_rate(baud).context("Failed to change host baud rate")?;
 
     Ok(())
 }
@@ -294,12 +281,7 @@ fn erase_flash(port: &mut dyn serialport::SerialPort, cancel: &AtomicBool) -> Re
 /// Transfer firmware image using XMODEM-1K protocol.
 ///
 /// Frame format: [STX, blk#, 255-blk#, 1024_data, CRC16_HI, CRC16_LO]
-fn xmodem_transfer(
-    port: &mut dyn serialport::SerialPort,
-    data: &[u8],
-    cancel: &AtomicBool,
-    on_progress: &ProgressCallback,
-) -> Result<()> {
+fn xmodem_transfer(port: &mut dyn serialport::SerialPort, data: &[u8], cancel: &AtomicBool, on_progress: &ProgressCallback) -> Result<()> {
     let total_blocks = data.len().div_ceil(XMODEM_DATA_SIZE_1K);
     let mut block_num: u8 = 1; // XMODEM block numbers start at 1
 
@@ -370,11 +352,7 @@ fn xmodem_transfer(
 
         // Report progress
         let pct = ((i + 1) as f32 / total_blocks as f32) * 100.0;
-        on_progress(&FlashProgress::info(
-            "Write",
-            pct,
-            &format!("Block {}/{total_blocks}", i + 1),
-        ));
+        on_progress(&FlashProgress::info("Write", pct, &format!("Block {}/{total_blocks}", i + 1)));
     }
 
     // Send EOT to end transfer.
@@ -404,10 +382,7 @@ fn xmodem_transfer(
 /// Header is 256 bytes, magic at offset 0 = 0xA0FFFF9F.
 fn verify_image(data: &[u8]) -> Result<()> {
     if data.len() < IMAGE_HEADER_SIZE {
-        bail!(
-            "Image too small: {} bytes (need >= {IMAGE_HEADER_SIZE})",
-            data.len()
-        );
+        bail!("Image too small: {} bytes (need >= {IMAGE_HEADER_SIZE})", data.len());
     }
 
     let magic = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
@@ -464,17 +439,8 @@ fn reset_device(port: &mut dyn serialport::SerialPort) -> Result<()> {
 
 /// Open port, enter bootloader, and prepare for flash operations.
 /// Returns the serial port handle at the target baud rate.
-fn connect_bootloader(
-    port: &str,
-    target_baud: u32,
-    cancel: &Arc<AtomicBool>,
-    on_progress: &ProgressCallback,
-) -> Result<Box<dyn serialport::SerialPort>> {
-    on_progress(&FlashProgress::info(
-        "Connect",
-        0.0,
-        &format!("Opening {port} at 115200"),
-    ));
+fn connect_bootloader(port: &str, target_baud: u32, cancel: &Arc<AtomicBool>, on_progress: &ProgressCallback) -> Result<Box<dyn serialport::SerialPort>> {
+    on_progress(&FlashProgress::info("Connect", 0.0, &format!("Opening {port} at 115200")));
 
     let mut serial = serialport::new(port, 115200)
         .timeout(Duration::from_millis(100))
@@ -485,29 +451,17 @@ fn connect_bootloader(
     std::thread::sleep(Duration::from_millis(500));
 
     // Reset into bootloader
-    on_progress(&FlashProgress::info(
-        "Reset",
-        5.0,
-        "Resetting device into bootloader",
-    ));
+    on_progress(&FlashProgress::info("Reset", 5.0, "Resetting device into bootloader"));
     reset_to_bootloader(serial.as_mut())?;
 
     // Sync
-    on_progress(&FlashProgress::info(
-        "Sync",
-        10.0,
-        "Waiting for bootloader...",
-    ));
+    on_progress(&FlashProgress::info("Sync", 10.0, "Waiting for bootloader..."));
     sync_bootloader(serial.as_mut(), cancel)?;
     on_progress(&FlashProgress::info("Sync", 15.0, "Bootloader detected"));
 
     // Switch baud rate
     if target_baud != 115200 {
-        on_progress(&FlashProgress::info(
-            "Baud",
-            20.0,
-            &format!("Switching to {target_baud} bps"),
-        ));
+        on_progress(&FlashProgress::info("Baud", 20.0, &format!("Switching to {target_baud} bps")));
         set_baud_rate(serial.as_mut(), target_baud)?;
 
         // Re-sync at new baud rate
@@ -523,12 +477,7 @@ fn connect_bootloader(
 ///
 /// This is the main entry point — handles everything from .soc extraction
 /// through verification.
-pub fn flash_xt804(
-    soc_path: &str,
-    port: &str,
-    on_progress: ProgressCallback,
-    cancel: Arc<AtomicBool>,
-) -> Result<()> {
+pub fn flash_xt804(soc_path: &str, port: &str, on_progress: ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
     // Extract .soc
     on_progress(&FlashProgress::info("Extract", 0.0, "Unpacking .soc file"));
     let tmpdir = tempfile::tempdir().context("Create temp dir")?;
@@ -536,24 +485,15 @@ pub fn flash_xt804(
     let info = &unpacked.info;
 
     let flash_br = info.flash_baud_rate();
-    on_progress(&FlashProgress::info(
-        "Extract",
-        5.0,
-        &format!("Chip: {}, ROM: {}", info.chip.chip_type, info.rom.file),
-    ));
+    on_progress(&FlashProgress::info("Extract", 5.0, &format!("Chip: {}, ROM: {}", info.chip.chip_type, info.rom.file)));
 
     // Read firmware image
-    let image_data = std::fs::read(&unpacked.rom_path)
-        .with_context(|| format!("Cannot read ROM: {:?}", unpacked.rom_path))?;
+    let image_data = std::fs::read(&unpacked.rom_path).with_context(|| format!("Cannot read ROM: {:?}", unpacked.rom_path))?;
 
     // Verify image header
     verify_image(&image_data)?;
 
-    on_progress(&FlashProgress::info(
-        "Extract",
-        8.0,
-        &format!("Image size: {} bytes", image_data.len()),
-    ));
+    on_progress(&FlashProgress::info("Extract", 8.0, &format!("Image size: {} bytes", image_data.len())));
 
     // Connect to bootloader
     let mut serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
@@ -564,11 +504,7 @@ pub fn flash_xt804(
     on_progress(&FlashProgress::info("Erase", 40.0, "Flash erased"));
 
     // Transfer via XMODEM
-    on_progress(&FlashProgress::info(
-        "Write",
-        40.0,
-        "Starting XMODEM transfer...",
-    ));
+    on_progress(&FlashProgress::info("Write", 40.0, "Starting XMODEM transfer..."));
     xmodem_transfer(serial.as_mut(), &image_data, &cancel, &on_progress)?;
     on_progress(&FlashProgress::info("Write", 95.0, "Transfer complete"));
 
@@ -583,25 +519,14 @@ pub fn flash_xt804(
 /// Flash a .soc firmware using the bundled air101_flash.exe subprocess.
 ///
 /// Falls back to this when the SOC file includes the flasher executable.
-pub fn flash_via_subprocess(
-    soc_path: &str,
-    port: &str,
-    on_progress: ProgressCallback,
-) -> Result<()> {
+pub fn flash_via_subprocess(soc_path: &str, port: &str, on_progress: ProgressCallback) -> Result<()> {
     on_progress(&FlashProgress::info("Extract", 0.0, "Unpacking .soc file"));
     let tmpdir = tempfile::tempdir().context("Create temp dir")?;
     let unpacked = luatos_soc::unpack_soc(soc_path, tmpdir.path())?;
 
-    let flash_exe = unpacked
-        .flash_exe
-        .as_ref()
-        .context("No flash executable found in .soc")?;
+    let flash_exe = unpacked.flash_exe.as_ref().context("No flash executable found in .soc")?;
 
-    on_progress(&FlashProgress::info(
-        "Flash",
-        10.0,
-        &format!("Using: {:?}", flash_exe.file_name().unwrap_or_default()),
-    ));
+    on_progress(&FlashProgress::info("Flash", 10.0, &format!("Using: {:?}", flash_exe.file_name().unwrap_or_default())));
 
     // Build command: air101_flash.exe -ds <baud> -p <COM> -rs at -eo all -dl <fls_file>
     let baud = unpacked.info.flash_baud_rate().to_string();
@@ -624,9 +549,7 @@ pub fn flash_via_subprocess(
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     if output.status.success() {
-        on_progress(&FlashProgress::done_ok(&format!(
-            "Subprocess flash OK\n{stdout}"
-        )));
+        on_progress(&FlashProgress::done_ok(&format!("Subprocess flash OK\n{stdout}")));
         Ok(())
     } else {
         bail!("Flash tool failed:\nstdout: {stdout}\nstderr: {stderr}");
@@ -637,13 +560,7 @@ pub fn flash_via_subprocess(
 ///
 /// Builds a LuaDB image from the given script files, wraps it in an XT804
 /// image header pointing at the script address, and flashes via XMODEM.
-pub fn flash_script_only(
-    soc_path: &str,
-    port: &str,
-    script_files: &[String],
-    on_progress: ProgressCallback,
-    cancel: Arc<AtomicBool>,
-) -> Result<()> {
+pub fn flash_script_only(soc_path: &str, port: &str, script_files: &[String], on_progress: ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
     // Parse SOC for addresses and compilation settings
     let info = luatos_soc::read_soc_info(soc_path)?;
     let script_addr = info.script_addr();
@@ -652,36 +569,24 @@ pub fn flash_script_only(
     let bitw = info.script_bitw();
     let strip = info.script_strip_debug();
 
-    on_progress(&FlashProgress::info(
-        "Build",
-        0.0,
-        &format!("Building LuaDB for {} files", script_files.len()),
-    ));
+    on_progress(&FlashProgress::info("Build", 0.0, &format!("Building LuaDB for {} files", script_files.len())));
 
     // Build LuaDB entries from file paths, compiling .lua if use_luac
     let mut entries = Vec::new();
     for path_str in script_files {
         let path = std::path::Path::new(path_str);
-        let filename = path
-            .file_name()
-            .context("Invalid file path")?
-            .to_string_lossy()
-            .to_string();
-        let data =
-            std::fs::read(path).with_context(|| format!("Cannot read script file: {path_str}"))?;
+        let filename = path.file_name().context("Invalid file path")?.to_string_lossy().to_string();
+        let data = std::fs::read(path).with_context(|| format!("Cannot read script file: {path_str}"))?;
 
-        let (final_name, final_data) =
-            if use_luac && filename.ends_with(".lua") && !filename.ends_with(".luac") {
-                let chunk_name = format!("@{}", filename);
-                let bytecode =
-                    luatos_luadb::build::compile_lua_bytes(&data, &chunk_name, strip, bitw)
-                        .with_context(|| format!("Failed to compile {path_str}"))?;
-                let luac_name = format!("{}c", filename);
-                log::info!("compiled {} (bitw={}, strip={})", filename, bitw, strip);
-                (luac_name, bytecode)
-            } else {
-                (filename, data)
-            };
+        let (final_name, final_data) = if use_luac && filename.ends_with(".lua") && !filename.ends_with(".luac") {
+            let chunk_name = format!("@{}", filename);
+            let bytecode = luatos_luadb::build::compile_lua_bytes(&data, &chunk_name, strip, bitw).with_context(|| format!("Failed to compile {path_str}"))?;
+            let luac_name = format!("{}c", filename);
+            log::info!("compiled {} (bitw={}, strip={})", filename, bitw, strip);
+            (luac_name, bytecode)
+        } else {
+            (filename, data)
+        };
 
         entries.push(luatos_luadb::LuadbEntry {
             filename: final_name,
@@ -693,11 +598,7 @@ pub fn flash_script_only(
     on_progress(&FlashProgress::info(
         "Build",
         10.0,
-        &format!(
-            "Script image: {} bytes → addr 0x{:X}",
-            luadb_data.len(),
-            script_addr
-        ),
+        &format!("Script image: {} bytes → addr 0x{:X}", luadb_data.len(), script_addr),
     ));
 
     // Wrap in XT804 image header (partition config: SRAM header, img_type=1)
@@ -722,24 +623,12 @@ pub fn flash_script_only(
 ///
 /// Builds a LittleFS image from files in `fs_dirs`, wraps in an XT804 image
 /// header, and flashes to the filesystem partition address from the SOC info.
-pub fn flash_filesystem(
-    soc_path: &str,
-    port: &str,
-    fs_dirs: &[String],
-    on_progress: ProgressCallback,
-    cancel: Arc<AtomicBool>,
-) -> Result<()> {
+pub fn flash_filesystem(soc_path: &str, port: &str, fs_dirs: &[String], on_progress: ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
     let info = luatos_soc::read_soc_info(soc_path)?;
-    let (fs_addr, fs_size) = info
-        .filesystem_partition()
-        .context("SOC info has no filesystem partition defined")?;
+    let (fs_addr, fs_size) = info.filesystem_partition().context("SOC info has no filesystem partition defined")?;
     let flash_br = info.flash_baud_rate();
 
-    on_progress(&FlashProgress::info(
-        "Build",
-        0.0,
-        &format!("Building LittleFS image ({} KB)", fs_size / 1024),
-    ));
+    on_progress(&FlashProgress::info("Build", 0.0, &format!("Building LittleFS image ({} KB)", fs_size / 1024)));
 
     // Prepare a temp dir with all files from all fs_dirs
     let tmpdir = tempfile::tempdir().context("failed to create temp directory")?;
@@ -748,18 +637,12 @@ pub fn flash_filesystem(
         if !src.is_dir() {
             bail!("Not a directory: {}", dir_str);
         }
-        copy_dir_contents(src, tmpdir.path())
-            .with_context(|| format!("failed to copy files from {}", dir_str))?;
+        copy_dir_contents(src, tmpdir.path()).with_context(|| format!("failed to copy files from {}", dir_str))?;
     }
 
-    let fs_image = luatos_luadb::build::build_littlefs_image(tmpdir.path(), fs_size, 4096)
-        .context("failed to build LittleFS image")?;
+    let fs_image = luatos_luadb::build::build_littlefs_image(tmpdir.path(), fs_size, 4096).context("failed to build LittleFS image")?;
 
-    on_progress(&FlashProgress::info(
-        "Build",
-        10.0,
-        &format!("LFS image: {} bytes → addr 0x{:X}", fs_image.len(), fs_addr),
-    ));
+    on_progress(&FlashProgress::info("Build", 10.0, &format!("LFS image: {} bytes → addr 0x{:X}", fs_image.len(), fs_addr)));
 
     // Wrap in XT804 image header (partition config)
     let final_data = build_xt804_image(&fs_image, fs_addr, &partition_image_config());
@@ -778,34 +661,19 @@ pub fn flash_filesystem(
 /// Clear (erase) the filesystem partition of an XT804 device.
 ///
 /// Writes an all-0xFF image to the filesystem partition address.
-pub fn clear_filesystem(
-    soc_path: &str,
-    port: &str,
-    on_progress: ProgressCallback,
-    cancel: Arc<AtomicBool>,
-) -> Result<()> {
+pub fn clear_filesystem(soc_path: &str, port: &str, on_progress: ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
     let info = luatos_soc::read_soc_info(soc_path)?;
-    let (fs_addr, fs_size) = info
-        .filesystem_partition()
-        .context("SOC info has no filesystem partition defined")?;
+    let (fs_addr, fs_size) = info.filesystem_partition().context("SOC info has no filesystem partition defined")?;
     let flash_br = info.flash_baud_rate();
 
-    on_progress(&FlashProgress::info(
-        "Build",
-        0.0,
-        &format!("Preparing blank FS image ({} KB)", fs_size / 1024),
-    ));
+    on_progress(&FlashProgress::info("Build", 0.0, &format!("Preparing blank FS image ({} KB)", fs_size / 1024)));
 
     let blank = vec![0xFF_u8; fs_size];
     let final_data = build_xt804_image(&blank, fs_addr, &partition_image_config());
 
     let mut serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
 
-    on_progress(&FlashProgress::info(
-        "Write",
-        40.0,
-        "Clearing filesystem...",
-    ));
+    on_progress(&FlashProgress::info("Write", 40.0, "Clearing filesystem..."));
     xmodem_transfer(serial.as_mut(), &final_data, &cancel, &on_progress)?;
 
     reset_device(serial.as_mut())?;
@@ -814,23 +682,12 @@ pub fn clear_filesystem(
 }
 
 /// Clear (erase) the FSKV (key-value store) partition of an XT804 device.
-pub fn clear_kv(
-    soc_path: &str,
-    port: &str,
-    on_progress: ProgressCallback,
-    cancel: Arc<AtomicBool>,
-) -> Result<()> {
+pub fn clear_kv(soc_path: &str, port: &str, on_progress: ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
     let info = luatos_soc::read_soc_info(soc_path)?;
-    let (kv_addr, kv_size) = info
-        .kv_partition()
-        .context("SOC info has no KV partition defined")?;
+    let (kv_addr, kv_size) = info.kv_partition().context("SOC info has no KV partition defined")?;
     let flash_br = info.flash_baud_rate();
 
-    on_progress(&FlashProgress::info(
-        "Build",
-        0.0,
-        &format!("Preparing blank KV image ({} KB)", kv_size / 1024),
-    ));
+    on_progress(&FlashProgress::info("Build", 0.0, &format!("Preparing blank KV image ({} KB)", kv_size / 1024)));
 
     let blank = vec![0xFF_u8; kv_size];
     let final_data = build_xt804_image(&blank, kv_addr, &partition_image_config());
@@ -960,10 +817,7 @@ fn firmware_image_config() -> Xt804ImageConfig {
 fn copy_dir_contents(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
     for entry in walkdir::WalkDir::new(src).min_depth(1) {
         let entry = entry?;
-        let rel = entry
-            .path()
-            .strip_prefix(src)
-            .context("strip_prefix failed")?;
+        let rel = entry.path().strip_prefix(src).context("strip_prefix failed")?;
         let target = dst.join(rel);
         if entry.file_type().is_dir() {
             std::fs::create_dir_all(&target)?;

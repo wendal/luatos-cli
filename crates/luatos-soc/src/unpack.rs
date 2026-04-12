@@ -31,24 +31,16 @@ pub enum SocFormat {
 
 /// Detect the archive format from the first few bytes.
 pub fn detect_soc_format(soc_path: &str) -> Result<SocFormat> {
-    let mut f =
-        std::fs::File::open(soc_path).with_context(|| format!("Cannot open .soc: {soc_path}"))?;
+    let mut f = std::fs::File::open(soc_path).with_context(|| format!("Cannot open .soc: {soc_path}"))?;
     let mut magic = [0u8; 6];
     use std::io::Read;
-    f.read_exact(&mut magic)
-        .context("File too small to detect format")?;
+    f.read_exact(&mut magic).context("File too small to detect format")?;
     if magic[0] == 0x50 && magic[1] == 0x4B {
         Ok(SocFormat::Zip)
     } else if magic[0] == 0x37 && magic[1] == 0x7A && magic[2] == 0xBC && magic[3] == 0xAF {
         Ok(SocFormat::SevenZ)
     } else {
-        bail!(
-            "Unknown .soc format (magic: {:02x}{:02x}{:02x}{:02x})",
-            magic[0],
-            magic[1],
-            magic[2],
-            magic[3]
-        );
+        bail!("Unknown .soc format (magic: {:02x}{:02x}{:02x}{:02x})", magic[0], magic[1], magic[2], magic[3]);
     }
 }
 
@@ -64,9 +56,7 @@ pub fn read_soc_info(soc_path: &str) -> Result<SocInfo> {
 fn read_soc_info_zip(soc_path: &str) -> Result<SocInfo> {
     let file = std::fs::File::open(soc_path)?;
     let mut archive = zip::ZipArchive::new(file).context("Not a valid ZIP")?;
-    let entry = archive
-        .by_name("info.json")
-        .context("info.json not found")?;
+    let entry = archive.by_name("info.json").context("info.json not found")?;
     let info: SocInfo = serde_json::from_reader(entry).context("Parse info.json")?;
     Ok(info)
 }
@@ -74,11 +64,7 @@ fn read_soc_info_zip(soc_path: &str) -> Result<SocInfo> {
 fn read_soc_info_7z(soc_path: &str) -> Result<SocInfo> {
     let tempdir = tempfile::tempdir().context("Create temp dir")?;
     extract_7z(soc_path, tempdir.path())?;
-    let info: SocInfo = serde_json::from_reader(
-        std::fs::File::open(tempdir.path().join("info.json"))
-            .context("info.json missing after 7z extract")?,
-    )
-    .context("Parse info.json")?;
+    let info: SocInfo = serde_json::from_reader(std::fs::File::open(tempdir.path().join("info.json")).context("info.json missing after 7z extract")?).context("Parse info.json")?;
     Ok(info)
 }
 
@@ -104,18 +90,12 @@ fn unpack_soc_7z(soc_path: &str, out_dir: &Path) -> Result<UnpackedSoc> {
 }
 
 fn finalize_unpacked(out_dir: &Path) -> Result<UnpackedSoc> {
-    let info: SocInfo = serde_json::from_reader(
-        std::fs::File::open(out_dir.join("info.json")).context("info.json missing")?,
-    )
-    .context("Parse info.json")?;
+    let info: SocInfo = serde_json::from_reader(std::fs::File::open(out_dir.join("info.json")).context("info.json missing")?).context("Parse info.json")?;
 
     let rom_path = out_dir.join(&info.rom.file);
 
     // Look for known flash executables
-    let flash_exe = ["air602_flash.exe", "air101_flash.exe"]
-        .iter()
-        .map(|name| out_dir.join(name))
-        .find(|p| p.exists());
+    let flash_exe = ["air602_flash.exe", "air101_flash.exe"].iter().map(|name| out_dir.join(name)).find(|p| p.exists());
 
     Ok(UnpackedSoc {
         info,
@@ -127,10 +107,8 @@ fn finalize_unpacked(out_dir: &Path) -> Result<UnpackedSoc> {
 
 /// Extract a 7z archive using the sevenz-rust2 crate (pure Rust, no subprocess).
 pub(crate) fn extract_7z(soc_path: &str, out_dir: &Path) -> Result<()> {
-    std::fs::create_dir_all(out_dir)
-        .with_context(|| format!("Cannot create output dir: {}", out_dir.display()))?;
-    sevenz_rust2::decompress_file(soc_path, out_dir)
-        .with_context(|| format!("7z extraction failed: {soc_path}"))?;
+    std::fs::create_dir_all(out_dir).with_context(|| format!("Cannot create output dir: {}", out_dir.display()))?;
+    sevenz_rust2::decompress_file(soc_path, out_dir).with_context(|| format!("7z extraction failed: {soc_path}"))?;
     Ok(())
 }
 
@@ -146,24 +124,15 @@ pub fn list_soc_files(soc_path: &str) -> Result<Vec<String>> {
 fn list_soc_files_zip(soc_path: &str) -> Result<Vec<String>> {
     let file = std::fs::File::open(soc_path)?;
     let archive = zip::ZipArchive::new(file).context("Not a valid ZIP")?;
-    let names: Vec<String> = (0..archive.len())
-        .filter_map(|i| archive.name_for_index(i).map(|n| n.to_string()))
-        .collect();
+    let names: Vec<String> = (0..archive.len()).filter_map(|i| archive.name_for_index(i).map(|n| n.to_string())).collect();
     Ok(names)
 }
 
 fn list_soc_files_7z(soc_path: &str) -> Result<Vec<String>> {
-    let mut file =
-        std::fs::File::open(soc_path).with_context(|| format!("Cannot open: {soc_path}"))?;
+    let mut file = std::fs::File::open(soc_path).with_context(|| format!("Cannot open: {soc_path}"))?;
     let password = sevenz_rust2::Password::empty();
-    let archive =
-        sevenz_rust2::Archive::read(&mut file, &password).context("Failed to read 7z archive")?;
-    let names: Vec<String> = archive
-        .files
-        .iter()
-        .filter(|f| !f.is_directory())
-        .map(|f| f.name().to_string())
-        .collect();
+    let archive = sevenz_rust2::Archive::read(&mut file, &password).context("Failed to read 7z archive")?;
+    let names: Vec<String> = archive.files.iter().filter(|f| !f.is_directory()).map(|f| f.name().to_string()).collect();
     Ok(names)
 }
 

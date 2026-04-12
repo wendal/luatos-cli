@@ -33,12 +33,7 @@ pub fn cmd_log_view(port: &str, baud: u32, format: &OutputFormat) -> anyhow::Res
     Ok(())
 }
 
-pub fn cmd_log_view_binary(
-    port: &str,
-    baud: u32,
-    probe: bool,
-    format: &OutputFormat,
-) -> anyhow::Result<()> {
+pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, format: &OutputFormat) -> anyhow::Result<()> {
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
     let _ = ctrlc::set_handler(move || {
@@ -65,9 +60,7 @@ pub fn cmd_log_view_binary(
                 }
             }
         } else {
-            anyhow::bail!(
-                "No supported log device found. Try specifying the port manually with --port COMx"
-            );
+            anyhow::bail!("No supported log device found. Try specifying the port manually with --port COMx");
         }
     } else {
         port.to_string()
@@ -148,13 +141,7 @@ fn print_log_entry(entry: &luatos_log::LogEntry, format: &OutputFormat) {
     }
 }
 
-pub fn cmd_log_record(
-    port: &str,
-    baud: u32,
-    output_dir: &str,
-    save_json: bool,
-    format: &OutputFormat,
-) -> anyhow::Result<()> {
+pub fn cmd_log_record(port: &str, baud: u32, output_dir: &str, save_json: bool, format: &OutputFormat) -> anyhow::Result<()> {
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
     let _ = ctrlc::set_handler(move || {
@@ -166,18 +153,11 @@ pub fn cmd_log_record(
 
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
     let text_path = out_path.join(format!("log_{timestamp}.txt"));
-    let json_path = if save_json {
-        Some(out_path.join(format!("log_{timestamp}.jsonl")))
-    } else {
-        None
-    };
+    let json_path = if save_json { Some(out_path.join(format!("log_{timestamp}.jsonl"))) } else { None };
 
     let writer = luatos_log::LogWriter::new(Some(&text_path), json_path.as_deref())?;
 
-    eprintln!(
-        "Recording log on {port} @ {baud} bps → {}",
-        text_path.display()
-    );
+    eprintln!("Recording log on {port} @ {baud} bps → {}", text_path.display());
     if let Some(ref jp) = json_path {
         eprintln!("  JSON log: {}", jp.display());
     }

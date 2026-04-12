@@ -29,11 +29,7 @@ const SECTORS_PER_BLOCK: usize = 16; // 64 KiB / 4 KiB
 // ─── Low-level serial helpers ─────────────────────────────────────────────────
 
 /// Read exactly `buf.len()` bytes within `timeout`.
-fn read_exact_timeout(
-    port: &mut dyn serialport::SerialPort,
-    buf: &mut [u8],
-    timeout: Duration,
-) -> Result<()> {
+fn read_exact_timeout(port: &mut dyn serialport::SerialPort, buf: &mut [u8], timeout: Duration) -> Result<()> {
     let deadline = Instant::now() + timeout;
     let mut n = 0;
     while n < buf.len() {
@@ -142,8 +138,7 @@ fn set_baud_rate(port: &mut dyn serialport::SerialPort, baud: u32, delay_ms: u64
     port.flush()?;
     std::thread::sleep(Duration::from_millis(10));
     std::thread::sleep(Duration::from_millis(delay_ms / 2));
-    port.set_baud_rate(baud)
-        .context("Failed to change host baud rate")?;
+    port.set_baud_rate(baud).context("Failed to change host baud rate")?;
 
     let mut buf = [0u8; 8];
     if read_exact_timeout(port, &mut buf, Duration::from_millis(600)).is_err() {
@@ -155,9 +150,7 @@ fn set_baud_rate(port: &mut dyn serialport::SerialPort, baud: u32, delay_ms: u64
 
 /// Read flash JEDEC ID (Manufacturer, Memory Type, Capacity).
 fn get_flash_mid(port: &mut dyn serialport::SerialPort) -> Result<u32> {
-    let tx = [
-        0x01u8, 0xE0, 0xFC, 0xFF, 0xF4, 0x05, 0x00, 0x0E, 0x9F, 0x00, 0x00, 0x00,
-    ];
+    let tx = [0x01u8, 0xE0, 0xFC, 0xFF, 0xF4, 0x05, 0x00, 0x0E, 0x9F, 0x00, 0x00, 0x00];
     let _ = port.clear(serialport::ClearBuffer::Input);
     port.write_all(&tx)?;
     port.flush()?;
@@ -186,9 +179,7 @@ fn read_flash_sr(port: &mut dyn serialport::SerialPort, sr_cmd: u8) -> Result<u8
 
 /// Write 1-byte flash Status Register.
 fn write_flash_sr_1(port: &mut dyn serialport::SerialPort, wr_cmd: u8, val: u8) -> Result<()> {
-    let tx = [
-        0x01u8, 0xE0, 0xFC, 0xFF, 0xF4, 0x03, 0x00, 0x0D, wr_cmd, val,
-    ];
+    let tx = [0x01u8, 0xE0, 0xFC, 0xFF, 0xF4, 0x03, 0x00, 0x0D, wr_cmd, val];
     let _ = port.clear(serialport::ClearBuffer::Input);
     port.write_all(&tx)?;
     port.flush()?;
@@ -203,9 +194,7 @@ fn write_flash_sr_1(port: &mut dyn serialport::SerialPort, wr_cmd: u8, val: u8) 
 /// Write 2-byte flash Status Register (SR1+SR2 simultaneously).
 fn write_flash_sr_2(port: &mut dyn serialport::SerialPort, wr_cmd: u8, val: u16) -> Result<()> {
     let [v0, v1] = val.to_le_bytes();
-    let tx = [
-        0x01u8, 0xE0, 0xFC, 0xFF, 0xF4, 0x04, 0x00, 0x0D, wr_cmd, v0, v1,
-    ];
+    let tx = [0x01u8, 0xE0, 0xFC, 0xFF, 0xF4, 0x04, 0x00, 0x0D, wr_cmd, v0, v1];
     let _ = port.clear(serialport::ClearBuffer::Input);
     port.write_all(&tx)?;
     port.flush()?;
@@ -220,27 +209,16 @@ fn write_flash_sr_2(port: &mut dyn serialport::SerialPort, wr_cmd: u8, val: u16)
 /// Erase one sector/block. `sz_cmd`: 0x20 = 4K sector, 0xD8 = 64K block.
 fn erase_sector(port: &mut dyn serialport::SerialPort, addr: u32, sz_cmd: u8) -> Result<bool> {
     let [a0, a1, a2, a3] = addr.to_le_bytes();
-    let tx = [
-        0x01u8, 0xE0, 0xFC, 0xFF, 0xF4, 0x06, 0x00, 0x0F, sz_cmd, a0, a1, a2, a3,
-    ];
+    let tx = [0x01u8, 0xE0, 0xFC, 0xFF, 0xF4, 0x06, 0x00, 0x0F, sz_cmd, a0, a1, a2, a3];
     let _ = port.clear(serialport::ClearBuffer::Input);
     port.write_all(&tx)?;
     port.flush()?;
-    let timeout = if sz_cmd == 0xD8 {
-        Duration::from_secs(8)
-    } else {
-        Duration::from_secs(3)
-    };
+    let timeout = if sz_cmd == 0xD8 { Duration::from_secs(8) } else { Duration::from_secs(3) };
     let mut buf = [0u8; 16];
     match read_exact_timeout(port, &mut buf, timeout) {
         Ok(_) => {}
         Err(e) => {
-            log::warn!(
-                "Erase timeout at 0x{:08x} (sz=0x{:02x}): {}",
-                addr,
-                sz_cmd,
-                e
-            );
+            log::warn!("Erase timeout at 0x{:08x} (sz=0x{:02x}): {}", addr, sz_cmd, e);
             return Ok(false);
         }
     }
@@ -252,11 +230,7 @@ fn erase_sector(port: &mut dyn serialport::SerialPort, addr: u32, sz_cmd: u8) ->
 }
 
 /// Write one 4096-byte sector.
-fn write_sector_4k(
-    port: &mut dyn serialport::SerialPort,
-    addr: u32,
-    data: &[u8; SECTOR_SIZE],
-) -> Result<bool> {
+fn write_sector_4k(port: &mut dyn serialport::SerialPort, addr: u32, data: &[u8; SECTOR_SIZE]) -> Result<bool> {
     let [a0, a1, a2, a3] = addr.to_le_bytes();
     let [l0, l1] = 4101u16.to_le_bytes();
     let mut tx = Vec::with_capacity(4108);
@@ -281,11 +255,7 @@ fn write_sector_4k(
     }
     let echo = u32::from_le_bytes([buf[11], buf[12], buf[13], buf[14]]);
     if echo != addr {
-        log::warn!(
-            "Write addr mismatch: sent 0x{:08x} got echo 0x{:08x}",
-            addr,
-            echo
-        );
+        log::warn!("Write addr mismatch: sent 0x{:08x} got echo 0x{:08x}", addr, echo);
         return Ok(false);
     }
     Ok(true)
@@ -296,9 +266,7 @@ fn write_sector_4k(
 fn check_crc(port: &mut dyn serialport::SerialPort, start_addr: u32, end_addr: u32) -> Result<u32> {
     let [s0, s1, s2, s3] = start_addr.to_le_bytes();
     let [e0, e1, e2, e3] = end_addr.to_le_bytes();
-    let tx = [
-        0x01u8, 0xE0, 0xFC, 0x09, 0x10, s0, s1, s2, s3, e0, e1, e2, e3,
-    ];
+    let tx = [0x01u8, 0xE0, 0xFC, 0x09, 0x10, s0, s1, s2, s3, e0, e1, e2, e3];
     let _ = port.clear(serialport::ClearBuffer::Input);
     port.write_all(&tx)?;
     port.flush()?;
@@ -363,12 +331,7 @@ fn unprotect_flash(port: &mut dyn serialport::SerialPort, mid: u32) -> Result<()
 
 /// Erase `num_sectors` × 4K sectors starting at `start_addr`.
 /// Uses 64K block erases where possible for speed.
-fn erase_range<F>(
-    port: &mut dyn serialport::SerialPort,
-    start_addr: u32,
-    num_sectors: usize,
-    mut progress_cb: F,
-) -> Result<()>
+fn erase_range<F>(port: &mut dyn serialport::SerialPort, start_addr: u32, num_sectors: usize, mut progress_cb: F) -> Result<()>
 where
     F: FnMut(usize, usize) -> bool,
 {
@@ -450,22 +413,14 @@ fn flash_data(
             return false;
         }
         let pct = pct_start + (erase_end - pct_start) * (done as f32 / total as f32);
-        on_progress(&FlashProgress::info(
-            "Erasing",
-            pct,
-            &format!("{label} – erasing {done}/{total}"),
-        ));
+        on_progress(&FlashProgress::info("Erasing", pct, &format!("{label} – erasing {done}/{total}")));
         true
     })?;
 
     if cancel.load(Ordering::Relaxed) {
         bail!("Flash cancelled by user");
     }
-    on_progress(&FlashProgress::info(
-        "Writing",
-        erase_end,
-        &format!("{label} – erase done, writing…"),
-    ));
+    on_progress(&FlashProgress::info("Writing", erase_end, &format!("{label} – erase done, writing…")));
 
     // Write phase
     for i in 0..num_sectors {
@@ -497,11 +452,7 @@ fn flash_data(
         }
 
         let pct = erase_end + (pct_end - erase_end) * ((i + 1) as f32 / num_sectors as f32);
-        on_progress(&FlashProgress::info(
-            "Writing",
-            pct,
-            &format!("{label} – writing {}/{num_sectors}", i + 1),
-        ));
+        on_progress(&FlashProgress::info("Writing", pct, &format!("{label} – writing {}/{num_sectors}", i + 1)));
     }
     Ok(())
 }
@@ -513,30 +464,17 @@ const LOG_CAPTURE_SECS: u64 = 20;
 
 /// Flash via air602_flash.exe subprocess (BK7258 preferred path).
 /// Returns captured boot log lines.
-fn flash_via_subprocess(
-    exe_path: &Path,
-    rom_path: &Path,
-    port: &str,
-    log_br: u32,
-    cancel: &AtomicBool,
-    on_progress: &ProgressCallback,
-) -> Result<Vec<String>> {
+fn flash_via_subprocess(exe_path: &Path, rom_path: &Path, port: &str, log_br: u32, cancel: &AtomicBool, on_progress: &ProgressCallback) -> Result<Vec<String>> {
     // Strip "COM" prefix — air602_flash.exe wants a bare number
     let port_num: String = port.chars().filter(|c| c.is_ascii_digit()).collect();
     if port_num.is_empty() {
         bail!("Invalid port name: {port}");
     }
 
-    on_progress(&FlashProgress::info(
-        "Flashing",
-        5.0,
-        &format!("Starting air602_flash.exe on {port} (~37s)…"),
-    ));
+    on_progress(&FlashProgress::info("Flashing", 5.0, &format!("Starting air602_flash.exe on {port} (~37s)…")));
 
     let mut child = std::process::Command::new(exe_path)
-        .args([
-            "download", "-p", &port_num, "-b", "2000000", "-s", "0", "-i",
-        ])
+        .args(["download", "-p", &port_num, "-b", "2000000", "-s", "0", "-i"])
         .arg(rom_path)
         .current_dir(exe_path.parent().unwrap_or(Path::new(".")))
         .stdout(std::process::Stdio::piped())
@@ -585,21 +523,14 @@ fn flash_via_subprocess(
     };
     let _ = on_progress_clone; // silence unused warning
 
-    on_progress(&FlashProgress::info(
-        "Booting",
-        94.0,
-        &format!("Firmware sent! Opening {port} @ {log_br} for boot log…"),
-    ));
+    on_progress(&FlashProgress::info("Booting", 94.0, &format!("Firmware sent! Opening {port} @ {log_br} for boot log…")));
 
     // Open log port immediately
     let mut log_port = {
         let mut last_err = String::new();
         let mut port_opt = None;
         for _ in 0..10 {
-            match serialport::new(port, log_br)
-                .timeout(Duration::from_millis(200))
-                .open()
-            {
+            match serialport::new(port, log_br).timeout(Duration::from_millis(200)).open() {
                 Ok(p) => {
                     port_opt = Some(p);
                     break;
@@ -613,9 +544,7 @@ fn flash_via_subprocess(
         match port_opt {
             Some(p) => p,
             None => {
-                on_progress(&FlashProgress::done_err(&format!(
-                    "Cannot open log port {port}: {last_err}"
-                )));
+                on_progress(&FlashProgress::done_err(&format!("Cannot open log port {port}: {last_err}")));
                 bail!("Cannot open log port {port}: {last_err}");
             }
         }
@@ -638,11 +567,7 @@ fn flash_via_subprocess(
     drop(log_port);
 
     let log_text = String::from_utf8_lossy(&log_bytes);
-    let lines: Vec<String> = log_text
-        .lines()
-        .map(|l| l.trim_end_matches('\r').to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
+    let lines: Vec<String> = log_text.lines().map(|l| l.trim_end_matches('\r').to_string()).filter(|l| !l.is_empty()).collect();
 
     let boot_kw = ["luat:", "ap0:", "ap1:", "LuatOS", "EasyFlash"];
     let passed = boot_kw.iter().any(|kw| log_text.contains(kw));
@@ -654,10 +579,7 @@ fn flash_via_subprocess(
             log_bytes.len()
         )));
     } else {
-        on_progress(&FlashProgress::done_err(&format!(
-            "FAIL — no boot keywords in {} bytes of log",
-            log_bytes.len()
-        )));
+        on_progress(&FlashProgress::done_err(&format!("FAIL — no boot keywords in {} bytes of log", log_bytes.len())));
     }
 
     Ok(lines)
@@ -684,19 +606,13 @@ pub fn flash_bk7258(
     // 1. Extract .soc
     let tempdir = tempfile::tempdir().context("Failed to create temp dir")?;
     {
-        let file =
-            std::fs::File::open(soc_path).with_context(|| format!("Cannot open {soc_path}"))?;
+        let file = std::fs::File::open(soc_path).with_context(|| format!("Cannot open {soc_path}"))?;
         let mut archive = zip::ZipArchive::new(file)?;
-        archive
-            .extract(tempdir.path())
-            .context("Extraction failed")?;
+        archive.extract(tempdir.path()).context("Extraction failed")?;
     }
 
     // 2. Parse info.json
-    let info: SocInfo = serde_json::from_reader(
-        std::fs::File::open(tempdir.path().join("info.json")).context("info.json missing")?,
-    )
-    .context("Parse info.json")?;
+    let info: SocInfo = serde_json::from_reader(std::fs::File::open(tempdir.path().join("info.json")).context("info.json missing")?).context("Parse info.json")?;
 
     let log_br = info.log_baud_rate();
     let rom_path = tempdir.path().join(&info.rom.file);
@@ -714,11 +630,7 @@ pub fn flash_bk7258(
                 "[WARN] Script flashing not supported in subprocess mode; firmware only.",
             ));
         }
-        on_progress(&FlashProgress::info(
-            "Preparing",
-            3.0,
-            &format!("Firmware: {} (subprocess mode)", info.rom.file),
-        ));
+        on_progress(&FlashProgress::info("Preparing", 3.0, &format!("Firmware: {} (subprocess mode)", info.rom.file)));
         return flash_via_subprocess(&exe_path, &rom_path, port, log_br, &cancel, &on_progress);
     }
 
@@ -727,17 +639,12 @@ pub fn flash_bk7258(
     let flash_br = baud_rate.unwrap_or(flash_br);
 
     let bl_addr = parse_addr(info.download.bl_addr.as_deref().unwrap_or("0")).unwrap_or(0) as u32;
-    let rom_data =
-        std::fs::read(&rom_path).with_context(|| format!("Cannot read {}", info.rom.file))?;
+    let rom_data = std::fs::read(&rom_path).with_context(|| format!("Cannot read {}", info.rom.file))?;
 
     on_progress(&FlashProgress::info(
         "Preparing",
         2.0,
-        &format!(
-            "Firmware: {} bytes @ 0x{:x} (native mode)",
-            rom_data.len(),
-            bl_addr
-        ),
+        &format!("Firmware: {} bytes @ 0x{:x} (native mode)", rom_data.len(), bl_addr),
     ));
 
     // Optionally build script.bin
@@ -745,29 +652,16 @@ pub fn flash_bk7258(
         let paths: Vec<&Path> = folders.iter().map(|f| Path::new(*f)).collect();
         let any_valid = paths.iter().any(|p| p.is_dir());
         if any_valid {
-            on_progress(&FlashProgress::info(
-                "Building",
-                3.0,
-                "Building script.bin from Lua files…",
-            ));
+            on_progress(&FlashProgress::info("Building", 3.0, "Building script.bin from Lua files…"));
             let valid_paths: Vec<&Path> = paths.into_iter().filter(|p| p.is_dir()).collect();
             match build_script_bin(&valid_paths, &info) {
                 Ok(data) => {
-                    let sa = parse_addr(info.download.script_addr.as_deref().unwrap_or("0x200000"))
-                        .unwrap_or(0x200000) as u32;
-                    on_progress(&FlashProgress::info(
-                        "Building",
-                        5.0,
-                        &format!("Script: {} bytes @ 0x{:x}", data.len(), sa),
-                    ));
+                    let sa = parse_addr(info.download.script_addr.as_deref().unwrap_or("0x200000")).unwrap_or(0x200000) as u32;
+                    on_progress(&FlashProgress::info("Building", 5.0, &format!("Script: {} bytes @ 0x{:x}", data.len(), sa)));
                     Some((data, sa))
                 }
                 Err(e) => {
-                    on_progress(&FlashProgress::info(
-                        "Building",
-                        5.0,
-                        &format!("[WARN] Script build failed: {e} — firmware only"),
-                    ));
+                    on_progress(&FlashProgress::info("Building", 5.0, &format!("[WARN] Script build failed: {e} — firmware only")));
                     None
                 }
             }
@@ -782,57 +676,29 @@ pub fn flash_bk7258(
         bail!("Flash cancelled by user");
     }
 
-    on_progress(&FlashProgress::info(
-        "Connecting",
-        6.0,
-        &format!("Opening {port} @ 115200…"),
-    ));
+    on_progress(&FlashProgress::info("Connecting", 6.0, &format!("Opening {port} @ 115200…")));
     let mut serial = serialport::new(port, 115_200)
         .timeout(Duration::from_millis(200))
         .open()
         .with_context(|| format!("Cannot open serial port {port}"))?;
 
-    on_progress(&FlashProgress::info(
-        "Connecting",
-        8.0,
-        "Resetting device into bootloader…",
-    ));
+    on_progress(&FlashProgress::info("Connecting", 8.0, "Resetting device into bootloader…"));
     if !get_bus(&mut *serial)? {
         bail!("Cannot enter bootloader mode on {port}. Check cable and DTR/RTS wiring.");
     }
-    on_progress(&FlashProgress::info(
-        "Connecting",
-        10.0,
-        "Bootloader link established!",
-    ));
+    on_progress(&FlashProgress::info("Connecting", 10.0, "Bootloader link established!"));
 
     if flash_br != 115_200 {
-        on_progress(&FlashProgress::info(
-            "Connecting",
-            11.0,
-            &format!("Switching to {flash_br} bps…"),
-        ));
+        on_progress(&FlashProgress::info("Connecting", 11.0, &format!("Switching to {flash_br} bps…")));
         match set_baud_rate(&mut *serial, flash_br, 200) {
             Ok(true) => {
-                on_progress(&FlashProgress::info(
-                    "Connecting",
-                    12.0,
-                    &format!("Baud rate set to {flash_br}"),
-                ));
+                on_progress(&FlashProgress::info("Connecting", 12.0, &format!("Baud rate set to {flash_br}")));
             }
             Ok(false) => {
-                on_progress(&FlashProgress::info(
-                    "Connecting",
-                    12.0,
-                    "[WARN] Baud rate switch ACK failed — continuing at 115200",
-                ));
+                on_progress(&FlashProgress::info("Connecting", 12.0, "[WARN] Baud rate switch ACK failed — continuing at 115200"));
             }
             Err(e) => {
-                on_progress(&FlashProgress::info(
-                    "Connecting",
-                    12.0,
-                    &format!("[WARN] set_baud_rate error: {e}"),
-                ));
+                on_progress(&FlashProgress::info("Connecting", 12.0, &format!("[WARN] set_baud_rate error: {e}")));
             }
         }
     }
@@ -843,83 +709,39 @@ pub fn flash_bk7258(
 
     let mid = match get_flash_mid(&mut *serial) {
         Ok(m) => {
-            on_progress(&FlashProgress::info(
-                "Connecting",
-                13.0,
-                &format!("Flash MID: 0x{m:06x}"),
-            ));
+            on_progress(&FlashProgress::info("Connecting", 13.0, &format!("Flash MID: 0x{m:06x}")));
             m
         }
         Err(e) => {
-            on_progress(&FlashProgress::info(
-                "Connecting",
-                13.0,
-                &format!("[WARN] GetFlashMID: {e}"),
-            ));
+            on_progress(&FlashProgress::info("Connecting", 13.0, &format!("[WARN] GetFlashMID: {e}")));
             0
         }
     };
 
-    on_progress(&FlashProgress::info(
-        "Connecting",
-        14.0,
-        "Unprotecting flash…",
-    ));
+    on_progress(&FlashProgress::info("Connecting", 14.0, "Unprotecting flash…"));
     if let Err(e) = unprotect_flash(&mut *serial, mid) {
-        on_progress(&FlashProgress::info(
-            "Connecting",
-            14.0,
-            &format!("[WARN] Unprotect: {e}"),
-        ));
+        on_progress(&FlashProgress::info("Connecting", 14.0, &format!("[WARN] Unprotect: {e}")));
     } else {
-        on_progress(&FlashProgress::info(
-            "Connecting",
-            15.0,
-            "Flash unprotected",
-        ));
+        on_progress(&FlashProgress::info("Connecting", 15.0, "Flash unprotected"));
     }
 
     if cancel.load(Ordering::Relaxed) {
         bail!("Flash cancelled by user");
     }
 
-    let fw_end_pct = if script_payload.is_some() {
-        80.0f32
-    } else {
-        98.0f32
-    };
-    flash_data(
-        &mut *serial,
-        &rom_data,
-        bl_addr,
-        15.0,
-        fw_end_pct,
-        "Firmware",
-        &cancel,
-        &on_progress,
-    )?;
+    let fw_end_pct = if script_payload.is_some() { 80.0f32 } else { 98.0f32 };
+    flash_data(&mut *serial, &rom_data, bl_addr, 15.0, fw_end_pct, "Firmware", &cancel, &on_progress)?;
 
     if cancel.load(Ordering::Relaxed) {
         bail!("Flash cancelled by user");
     }
 
     if let Some((script_data, script_addr)) = script_payload {
-        flash_data(
-            &mut *serial,
-            &script_data,
-            script_addr,
-            80.0,
-            98.0,
-            "Script",
-            &cancel,
-            &on_progress,
-        )?;
+        flash_data(&mut *serial, &script_data, script_addr, 80.0, 98.0, "Script", &cancel, &on_progress)?;
     }
 
     drop(serial);
-    on_progress(&FlashProgress::done_ok(
-        "Flash complete! Device is rebooting.",
-    ));
+    on_progress(&FlashProgress::done_ok("Flash complete! Device is rebooting."));
     Ok(vec![])
 }
 
@@ -935,31 +757,25 @@ fn build_script_bin(folders: &[&Path], info: &SocInfo) -> Result<Vec<u8>> {
     let mut entries: Vec<luatos_luadb::LuadbEntry> = Vec::new();
 
     for folder in folders {
-        for entry in std::fs::read_dir(folder)
-            .with_context(|| format!("Cannot read script folder: {}", folder.display()))?
-        {
+        for entry in std::fs::read_dir(folder).with_context(|| format!("Cannot read script folder: {}", folder.display()))? {
             let entry = entry?;
             let path = entry.path();
             if !path.is_file() {
                 continue;
             }
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            let data =
-                std::fs::read(&path).with_context(|| format!("Cannot read {}", path.display()))?;
+            let data = std::fs::read(&path).with_context(|| format!("Cannot read {}", path.display()))?;
 
             // Compile .lua files if use_luac is enabled
-            let (final_name, final_data) =
-                if use_luac && name.ends_with(".lua") && !name.ends_with(".luac") {
-                    let chunk_name = format!("@{}", name);
-                    let bytecode =
-                        luatos_luadb::build::compile_lua_bytes(&data, &chunk_name, strip, bitw)
-                            .with_context(|| format!("Failed to compile {}", path.display()))?;
-                    let luac_name = format!("{}c", name); // .lua → .luac
-                    log::info!("compiled {} (bitw={}, strip={})", name, bitw, strip);
-                    (luac_name, bytecode)
-                } else {
-                    (name, data)
-                };
+            let (final_name, final_data) = if use_luac && name.ends_with(".lua") && !name.ends_with(".luac") {
+                let chunk_name = format!("@{}", name);
+                let bytecode = luatos_luadb::build::compile_lua_bytes(&data, &chunk_name, strip, bitw).with_context(|| format!("Failed to compile {}", path.display()))?;
+                let luac_name = format!("{}c", name); // .lua → .luac
+                log::info!("compiled {} (bitw={}, strip={})", name, bitw, strip);
+                (luac_name, bytecode)
+            } else {
+                (name, data)
+            };
 
             entries.push(luatos_luadb::LuadbEntry {
                 filename: final_name,
@@ -977,13 +793,7 @@ fn build_script_bin(folders: &[&Path], info: &SocInfo) -> Result<Vec<u8>> {
         data = luatos_luadb::add_bk_crc(&data);
     }
 
-    log::info!(
-        "script.bin: {} bytes (bkcrc={}, luac={}, bitw={})",
-        data.len(),
-        use_bkcrc,
-        use_luac,
-        bitw
-    );
+    log::info!("script.bin: {} bytes (bkcrc={}, luac={}, bitw={})", data.len(), use_bkcrc, use_luac, bitw);
     Ok(data)
 }
 
@@ -992,63 +802,30 @@ fn build_script_bin(folders: &[&Path], info: &SocInfo) -> Result<Vec<u8>> {
 /// Connect to BK7258 bootloader and prepare for flash operations.
 ///
 /// Returns an open serial port that has completed handshake, baud switch, and SR unprotect.
-fn connect_bootloader(
-    port: &str,
-    flash_br: u32,
-    cancel: &AtomicBool,
-    on_progress: &ProgressCallback,
-) -> Result<Box<dyn serialport::SerialPort>> {
-    on_progress(&FlashProgress::info(
-        "Connecting",
-        5.0,
-        &format!("Opening {port} @ 115200…"),
-    ));
+fn connect_bootloader(port: &str, flash_br: u32, cancel: &AtomicBool, on_progress: &ProgressCallback) -> Result<Box<dyn serialport::SerialPort>> {
+    on_progress(&FlashProgress::info("Connecting", 5.0, &format!("Opening {port} @ 115200…")));
     let mut serial = serialport::new(port, 115_200)
         .timeout(Duration::from_millis(200))
         .open()
         .with_context(|| format!("Cannot open serial port {port}"))?;
 
-    on_progress(&FlashProgress::info(
-        "Connecting",
-        10.0,
-        "Resetting device into bootloader…",
-    ));
+    on_progress(&FlashProgress::info("Connecting", 10.0, "Resetting device into bootloader…"));
     if !get_bus(&mut *serial)? {
         bail!("Cannot enter bootloader mode on {port}. Check cable and DTR/RTS wiring.");
     }
-    on_progress(&FlashProgress::info(
-        "Connecting",
-        15.0,
-        "Bootloader link established!",
-    ));
+    on_progress(&FlashProgress::info("Connecting", 15.0, "Bootloader link established!"));
 
     if flash_br != 115_200 {
-        on_progress(&FlashProgress::info(
-            "Connecting",
-            18.0,
-            &format!("Switching to {flash_br} bps…"),
-        ));
+        on_progress(&FlashProgress::info("Connecting", 18.0, &format!("Switching to {flash_br} bps…")));
         match set_baud_rate(&mut *serial, flash_br, 200) {
             Ok(true) => {
-                on_progress(&FlashProgress::info(
-                    "Connecting",
-                    20.0,
-                    &format!("Baud rate set to {flash_br}"),
-                ));
+                on_progress(&FlashProgress::info("Connecting", 20.0, &format!("Baud rate set to {flash_br}")));
             }
             Ok(false) => {
-                on_progress(&FlashProgress::info(
-                    "Connecting",
-                    20.0,
-                    "[WARN] Baud rate switch ACK failed — continuing at 115200",
-                ));
+                on_progress(&FlashProgress::info("Connecting", 20.0, "[WARN] Baud rate switch ACK failed — continuing at 115200"));
             }
             Err(e) => {
-                on_progress(&FlashProgress::info(
-                    "Connecting",
-                    20.0,
-                    &format!("[WARN] set_baud_rate error: {e}"),
-                ));
+                on_progress(&FlashProgress::info("Connecting", 20.0, &format!("[WARN] set_baud_rate error: {e}")));
             }
         }
     }
@@ -1059,24 +836,12 @@ fn connect_bootloader(
 
     match get_flash_mid(&mut *serial) {
         Ok(m) => {
-            on_progress(&FlashProgress::info(
-                "Connecting",
-                22.0,
-                &format!("Flash MID: 0x{m:06x}"),
-            ));
+            on_progress(&FlashProgress::info("Connecting", 22.0, &format!("Flash MID: 0x{m:06x}")));
             unprotect_flash(&mut *serial, m)?;
-            on_progress(&FlashProgress::info(
-                "Connecting",
-                25.0,
-                "Flash SR unprotected",
-            ));
+            on_progress(&FlashProgress::info("Connecting", 25.0, "Flash SR unprotected"));
         }
         Err(e) => {
-            on_progress(&FlashProgress::info(
-                "Connecting",
-                22.0,
-                &format!("[WARN] GetFlashMID: {e}"),
-            ));
+            on_progress(&FlashProgress::info("Connecting", 22.0, &format!("[WARN] GetFlashMID: {e}")));
         }
     }
 
@@ -1089,13 +854,7 @@ fn connect_bootloader(
 ///
 /// This is the most common operation during development:
 ///   get_bus → set_baud → unprotect → build LuaDB → erase+write at script_addr
-pub fn flash_script_only(
-    soc_path: &str,
-    script_folders: &[&str],
-    port: &str,
-    cancel: Arc<AtomicBool>,
-    on_progress: ProgressCallback,
-) -> Result<()> {
+pub fn flash_script_only(soc_path: &str, script_folders: &[&str], port: &str, cancel: Arc<AtomicBool>, on_progress: ProgressCallback) -> Result<()> {
     cancel.store(false, Ordering::Relaxed);
     on_progress(&FlashProgress::info("Preparing", 1.0, "Parsing SOC info…"));
 
@@ -1110,29 +869,17 @@ pub fn flash_script_only(
     let flash_br = info.flash_baud_rate();
     let script_addr = info.script_addr();
 
-    on_progress(&FlashProgress::info(
-        "Preparing",
-        3.0,
-        &format!("Script addr: 0x{script_addr:06x}, baud: {flash_br}"),
-    ));
+    on_progress(&FlashProgress::info("Preparing", 3.0, &format!("Script addr: 0x{script_addr:06x}, baud: {flash_br}")));
 
     // Build LuaDB script
-    on_progress(&FlashProgress::info(
-        "Building",
-        5.0,
-        "Packing script LuaDB…",
-    ));
+    on_progress(&FlashProgress::info("Building", 5.0, "Packing script LuaDB…"));
     let script_data = {
         let paths: Vec<&Path> = script_folders.iter().map(|f| Path::new(*f)).collect();
         build_script_bin(&paths, &info)?
     };
     let script_size = info.script_size();
     if script_data.len() > script_size {
-        bail!(
-            "Script data ({} bytes) exceeds partition size ({} bytes)",
-            script_data.len(),
-            script_size
-        );
+        bail!("Script data ({} bytes) exceeds partition size ({} bytes)", script_data.len(), script_size);
     }
 
     // Connect bootloader
@@ -1143,31 +890,15 @@ pub fn flash_script_only(
     }
 
     // Flash script
-    flash_data(
-        &mut *serial,
-        &script_data,
-        script_addr,
-        30.0,
-        95.0,
-        "Script",
-        &cancel,
-        &on_progress,
-    )?;
+    flash_data(&mut *serial, &script_data, script_addr, 30.0, 95.0, "Script", &cancel, &on_progress)?;
 
     drop(serial);
-    on_progress(&FlashProgress::done_ok(
-        "Script flash complete! Device is rebooting.",
-    ));
+    on_progress(&FlashProgress::done_ok("Script flash complete! Device is rebooting."));
     Ok(())
 }
 
 /// Erase the filesystem partition (fill with 0xFF).
-pub fn clear_filesystem(
-    soc_path: &str,
-    port: &str,
-    cancel: Arc<AtomicBool>,
-    on_progress: ProgressCallback,
-) -> Result<()> {
+pub fn clear_filesystem(soc_path: &str, port: &str, cancel: Arc<AtomicBool>, on_progress: ProgressCallback) -> Result<()> {
     cancel.store(false, Ordering::Relaxed);
     on_progress(&FlashProgress::info("Preparing", 1.0, "Parsing SOC info…"));
 
@@ -1178,16 +909,10 @@ pub fn clear_filesystem(
         serde_json::from_reader(info_file)?
     };
 
-    let (fs_addr, fs_size) = info
-        .filesystem_partition()
-        .context("Filesystem partition not found in info.json")?;
+    let (fs_addr, fs_size) = info.filesystem_partition().context("Filesystem partition not found in info.json")?;
     let flash_br = info.flash_baud_rate();
 
-    on_progress(&FlashProgress::info(
-        "Preparing",
-        3.0,
-        &format!("FS partition: 0x{fs_addr:06x}, {fs_size} bytes"),
-    ));
+    on_progress(&FlashProgress::info("Preparing", 3.0, &format!("FS partition: 0x{fs_addr:06x}, {fs_size} bytes")));
 
     let mut serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
 
@@ -1196,40 +921,24 @@ pub fn clear_filesystem(
     }
 
     let num_sectors = fs_size.div_ceil(SECTOR_SIZE);
-    on_progress(&FlashProgress::info(
-        "Erasing",
-        30.0,
-        &format!("Erasing {num_sectors} sectors at 0x{fs_addr:06x}…"),
-    ));
+    on_progress(&FlashProgress::info("Erasing", 30.0, &format!("Erasing {num_sectors} sectors at 0x{fs_addr:06x}…")));
 
     erase_range(&mut *serial, fs_addr, num_sectors, |done, total| {
         if cancel.load(Ordering::Relaxed) {
             return false;
         }
         let pct = 30.0 + 65.0 * (done as f32 / total as f32);
-        on_progress(&FlashProgress::info(
-            "Erasing",
-            pct,
-            &format!("Filesystem erase {done}/{total}"),
-        ));
+        on_progress(&FlashProgress::info("Erasing", pct, &format!("Filesystem erase {done}/{total}")));
         true
     })?;
 
     drop(serial);
-    on_progress(&FlashProgress::done_ok(
-        "Filesystem cleared! Device is rebooting.",
-    ));
+    on_progress(&FlashProgress::done_ok("Filesystem cleared! Device is rebooting."));
     Ok(())
 }
 
 /// Build LuaDB from script folders and flash to filesystem partition.
-pub fn flash_filesystem(
-    soc_path: &str,
-    script_folders: &[&str],
-    port: &str,
-    cancel: Arc<AtomicBool>,
-    on_progress: ProgressCallback,
-) -> Result<()> {
+pub fn flash_filesystem(soc_path: &str, script_folders: &[&str], port: &str, cancel: Arc<AtomicBool>, on_progress: ProgressCallback) -> Result<()> {
     cancel.store(false, Ordering::Relaxed);
     on_progress(&FlashProgress::info("Preparing", 1.0, "Parsing SOC info…"));
 
@@ -1240,26 +949,16 @@ pub fn flash_filesystem(
         serde_json::from_reader(info_file)?
     };
 
-    let (fs_addr, fs_size) = info
-        .filesystem_partition()
-        .context("Filesystem partition not found in info.json")?;
+    let (fs_addr, fs_size) = info.filesystem_partition().context("Filesystem partition not found in info.json")?;
     let flash_br = info.flash_baud_rate();
 
-    on_progress(&FlashProgress::info(
-        "Building",
-        3.0,
-        "Packing filesystem LuaDB…",
-    ));
+    on_progress(&FlashProgress::info("Building", 3.0, "Packing filesystem LuaDB…"));
     let fs_data = {
         let paths: Vec<&Path> = script_folders.iter().map(|f| Path::new(*f)).collect();
         build_script_bin(&paths, &info)?
     };
     if fs_data.len() > fs_size {
-        bail!(
-            "Filesystem data ({} bytes) exceeds partition ({} bytes)",
-            fs_data.len(),
-            fs_size
-        );
+        bail!("Filesystem data ({} bytes) exceeds partition ({} bytes)", fs_data.len(), fs_size);
     }
 
     let mut serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
@@ -1268,31 +967,15 @@ pub fn flash_filesystem(
         bail!("Flash cancelled by user");
     }
 
-    flash_data(
-        &mut *serial,
-        &fs_data,
-        fs_addr,
-        30.0,
-        95.0,
-        "Filesystem",
-        &cancel,
-        &on_progress,
-    )?;
+    flash_data(&mut *serial, &fs_data, fs_addr, 30.0, 95.0, "Filesystem", &cancel, &on_progress)?;
 
     drop(serial);
-    on_progress(&FlashProgress::done_ok(
-        "Filesystem flash complete! Device is rebooting.",
-    ));
+    on_progress(&FlashProgress::done_ok("Filesystem flash complete! Device is rebooting."));
     Ok(())
 }
 
 /// Erase the FSKV (key-value) partition.
-pub fn clear_fskv(
-    soc_path: &str,
-    port: &str,
-    cancel: Arc<AtomicBool>,
-    on_progress: ProgressCallback,
-) -> Result<()> {
+pub fn clear_fskv(soc_path: &str, port: &str, cancel: Arc<AtomicBool>, on_progress: ProgressCallback) -> Result<()> {
     cancel.store(false, Ordering::Relaxed);
     on_progress(&FlashProgress::info("Preparing", 1.0, "Parsing SOC info…"));
 
@@ -1303,16 +986,10 @@ pub fn clear_fskv(
         serde_json::from_reader(info_file)?
     };
 
-    let (kv_addr, kv_size) = info
-        .kv_partition()
-        .context("FSKV partition not found in info.json")?;
+    let (kv_addr, kv_size) = info.kv_partition().context("FSKV partition not found in info.json")?;
     let flash_br = info.flash_baud_rate();
 
-    on_progress(&FlashProgress::info(
-        "Preparing",
-        3.0,
-        &format!("FSKV partition: 0x{kv_addr:06x}, {kv_size} bytes"),
-    ));
+    on_progress(&FlashProgress::info("Preparing", 3.0, &format!("FSKV partition: 0x{kv_addr:06x}, {kv_size} bytes")));
 
     let mut serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
 
@@ -1321,29 +998,19 @@ pub fn clear_fskv(
     }
 
     let num_sectors = kv_size.div_ceil(SECTOR_SIZE);
-    on_progress(&FlashProgress::info(
-        "Erasing",
-        30.0,
-        &format!("Erasing {num_sectors} sectors at 0x{kv_addr:06x}…"),
-    ));
+    on_progress(&FlashProgress::info("Erasing", 30.0, &format!("Erasing {num_sectors} sectors at 0x{kv_addr:06x}…")));
 
     erase_range(&mut *serial, kv_addr, num_sectors, |done, total| {
         if cancel.load(Ordering::Relaxed) {
             return false;
         }
         let pct = 30.0 + 65.0 * (done as f32 / total as f32);
-        on_progress(&FlashProgress::info(
-            "Erasing",
-            pct,
-            &format!("FSKV erase {done}/{total}"),
-        ));
+        on_progress(&FlashProgress::info("Erasing", pct, &format!("FSKV erase {done}/{total}")));
         true
     })?;
 
     drop(serial);
-    on_progress(&FlashProgress::done_ok(
-        "FSKV cleared! Device is rebooting.",
-    ));
+    on_progress(&FlashProgress::done_ok("FSKV cleared! Device is rebooting."));
     Ok(())
 }
 #[cfg(test)]
@@ -1374,10 +1041,7 @@ mod tests {
         let port = "COM6";
         println!("\n=== BK7231 live handshake test on {port} ===");
 
-        let mut serial = serialport::new(port, 115_200)
-            .timeout(Duration::from_millis(200))
-            .open()
-            .expect("open COM6");
+        let mut serial = serialport::new(port, 115_200).timeout(Duration::from_millis(200)).open().expect("open COM6");
 
         println!("[1] get_bus …");
         let ok = get_bus(&mut *serial).expect("get_bus");

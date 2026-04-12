@@ -112,10 +112,7 @@ pub fn parse_luatools_ini(content: &str) -> Result<LuatoolsProject> {
         }
     }
 
-    Ok(LuatoolsProject {
-        info,
-        script_sections,
-    })
+    Ok(LuatoolsProject { info, script_sections })
 }
 
 /// Detect chip identifier from a SOC filename.
@@ -126,10 +123,7 @@ pub fn parse_luatools_ini(content: &str) -> Result<LuatoolsProject> {
 /// - `LuatOS-SoC_V2031_Air8000_101.soc` → `"air8000"`
 fn detect_chip_from_soc_path(soc_path: &str) -> String {
     let lower = soc_path.to_lowercase();
-    let filename = Path::new(&lower)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| lower.clone());
+    let filename = Path::new(&lower).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| lower.clone());
 
     if filename.contains("air8101") || filename.contains("bk72") || filename.contains("bk7258") {
         "bk72xx".to_string()
@@ -144,9 +138,8 @@ fn detect_chip_from_soc_path(soc_path: &str) -> String {
         || filename.contains("ec718")
         || filename.contains("ec618")
         || filename.contains("air1601")
+        || filename.contains("air201")
     {
-        "ec7xx".to_string()
-    } else if filename.contains("air201") {
         "ec7xx".to_string()
     } else if filename.contains("esp32") {
         "esp32".to_string()
@@ -168,8 +161,7 @@ fn project_name_from_path(ini_path: &Path) -> String {
 /// The resulting project will reference the original script directories.
 /// `project_dir` is the target directory where `luatos-project.toml` will be saved.
 pub fn import_luatools_ini(ini_path: &Path) -> Result<(Project, LuatoolsProject)> {
-    let content = fs::read_to_string(ini_path)
-        .with_context(|| format!("failed to read {}", ini_path.display()))?;
+    let content = fs::read_to_string(ini_path).with_context(|| format!("failed to read {}", ini_path.display()))?;
 
     import_luatools_ini_str(&content, ini_path)
 }
@@ -180,30 +172,19 @@ pub fn import_luatools_ini_str(content: &str, ini_path: &Path) -> Result<(Projec
 
     // Extract SOC path
     let soc_path = lt_project.info.get("core_path").cloned();
-    let chip = soc_path
-        .as_deref()
-        .map(detect_chip_from_soc_path)
-        .unwrap_or_else(|| "unknown".to_string());
+    let chip = soc_path.as_deref().map(detect_chip_from_soc_path).unwrap_or_else(|| "unknown".to_string());
 
     let name = project_name_from_path(ini_path);
 
     // Collect script directories
-    let script_dirs: Vec<String> = lt_project
-        .script_sections
-        .iter()
-        .map(|s| s.dir_path.clone())
-        .collect();
+    let script_dirs: Vec<String> = lt_project.script_sections.iter().map(|s| s.dir_path.clone()).collect();
 
     if script_dirs.is_empty() {
         bail!("No script sections found in INI file");
     }
 
     // Check luac_debug setting
-    let luac_debug = lt_project
-        .info
-        .get("luac_debug")
-        .map(|v| v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+    let luac_debug = lt_project.info.get("luac_debug").map(|v| v.eq_ignore_ascii_case("true")).unwrap_or(false);
 
     let project = Project {
         project: ProjectMeta {
@@ -221,11 +202,7 @@ pub fn import_luatools_ini_str(content: &str, ini_path: &Path) -> Result<(Projec
                 .filter(|s| !s.is_empty())
                 .cloned()
                 .unwrap_or_else(|| "build/".to_string()),
-            use_luac: !lt_project
-                .info
-                .get("only_luac_code")
-                .map(|v| v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false),
+            use_luac: !lt_project.info.get("only_luac_code").map(|v| v.eq_ignore_ascii_case("true")).unwrap_or(false),
             bitw: default_bitw(&chip),
             luac_debug,
             ignore_deps: false,
@@ -278,18 +255,9 @@ sys.lua =
         );
         assert_eq!(project.info.get("type").unwrap(), ".soc");
         assert_eq!(project.script_sections.len(), 2);
-        assert_eq!(
-            project.script_sections[0].dir_path,
-            r"D:\github\LuatOS\demo\gpio\gpio"
-        );
-        assert_eq!(
-            project.script_sections[0].files,
-            vec!["main.lua", "readme.md"]
-        );
-        assert_eq!(
-            project.script_sections[1].dir_path,
-            r"D:\github\LuatOS\demo\common\libs"
-        );
+        assert_eq!(project.script_sections[0].dir_path, r"D:\github\LuatOS\demo\gpio\gpio");
+        assert_eq!(project.script_sections[0].files, vec!["main.lua", "readme.md"]);
+        assert_eq!(project.script_sections[1].dir_path, r"D:\github\LuatOS\demo\common\libs");
         assert_eq!(project.script_sections[1].files, vec!["sys.lua"]);
     }
 
@@ -308,26 +276,11 @@ sys.lua =
 
     #[test]
     fn detect_chip_variants() {
-        assert_eq!(
-            detect_chip_from_soc_path("LuatOS-SoC_V2001_Air8101.soc"),
-            "bk72xx"
-        );
-        assert_eq!(
-            detect_chip_from_soc_path("LuatOS-SoC_V2004_Air780EPM.soc"),
-            "ec7xx"
-        );
-        assert_eq!(
-            detect_chip_from_soc_path("LuatOS-SoC_V2031_Air8000_101.soc"),
-            "air8000"
-        );
-        assert_eq!(
-            detect_chip_from_soc_path("LuatOS-SoC_V1001_Air6208.soc"),
-            "air6208"
-        );
-        assert_eq!(
-            detect_chip_from_soc_path("D:\\path\\to\\LuatOS-SoC_Air101.soc"),
-            "air101"
-        );
+        assert_eq!(detect_chip_from_soc_path("LuatOS-SoC_V2001_Air8101.soc"), "bk72xx");
+        assert_eq!(detect_chip_from_soc_path("LuatOS-SoC_V2004_Air780EPM.soc"), "ec7xx");
+        assert_eq!(detect_chip_from_soc_path("LuatOS-SoC_V2031_Air8000_101.soc"), "air8000");
+        assert_eq!(detect_chip_from_soc_path("LuatOS-SoC_V1001_Air6208.soc"), "air6208");
+        assert_eq!(detect_chip_from_soc_path("D:\\path\\to\\LuatOS-SoC_Air101.soc"), "air101");
     }
 
     #[test]

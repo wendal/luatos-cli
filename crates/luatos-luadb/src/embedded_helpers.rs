@@ -97,18 +97,10 @@ fn ensure_helper(kind: HelperKind) -> Result<PathBuf, String> {
         HelperKind::Luac64 => LUAC64_LOCK.get_or_init(|| Mutex::new(())),
         HelperKind::Mklfs => MKLFS_LOCK.get_or_init(|| Mutex::new(())),
     };
-    let _guard = lock
-        .lock()
-        .map_err(|e| format!("helper lock poisoned: {e}"))?;
+    let _guard = lock.lock().map_err(|e| format!("helper lock poisoned: {e}"))?;
 
     let cache_dir = helper_cache_dir()?;
-    ensure_private_cache_dir(&cache_dir).map_err(|e| {
-        format!(
-            "failed to prepare helper cache at {}: {}",
-            cache_dir.display(),
-            e
-        )
-    })?;
+    ensure_private_cache_dir(&cache_dir).map_err(|e| format!("failed to prepare helper cache at {}: {}", cache_dir.display(), e))?;
     run_cleanup_once(&cache_dir);
 
     let helper = helper_for_kind(kind);
@@ -129,31 +121,16 @@ fn ensure_helper(kind: HelperKind) -> Result<PathBuf, String> {
 /// Pre-initialize the helper cache directory (optional, for eager setup).
 pub fn init_helper_cache() -> Result<(), String> {
     let cache_dir = helper_cache_dir()?;
-    ensure_private_cache_dir(&cache_dir).map_err(|e| {
-        format!(
-            "failed to prepare helper cache at {}: {}",
-            cache_dir.display(),
-            e
-        )
-    })?;
+    ensure_private_cache_dir(&cache_dir).map_err(|e| format!("failed to prepare helper cache at {}: {}", cache_dir.display(), e))?;
     run_cleanup_once(&cache_dir);
     Ok(())
 }
 
 fn helper_for_kind(kind: HelperKind) -> EmbeddedHelper {
     match kind {
-        HelperKind::Luac32 => EmbeddedHelper {
-            kind,
-            payload: HELPER_32_BYTES,
-        },
-        HelperKind::Luac64 => EmbeddedHelper {
-            kind,
-            payload: HELPER_64_BYTES,
-        },
-        HelperKind::Mklfs => EmbeddedHelper {
-            kind,
-            payload: MKLFS_BYTES,
-        },
+        HelperKind::Luac32 => EmbeddedHelper { kind, payload: HELPER_32_BYTES },
+        HelperKind::Luac64 => EmbeddedHelper { kind, payload: HELPER_64_BYTES },
+        HelperKind::Mklfs => EmbeddedHelper { kind, payload: MKLFS_BYTES },
     }
 }
 
@@ -193,13 +170,7 @@ fn ensure_private_cache_dir(path: &Path) -> io::Result<()> {
 }
 
 fn helper_target_path(cache_dir: &Path, helper: EmbeddedHelper) -> PathBuf {
-    cache_dir.join(format!(
-        "{}-{}-{}{}",
-        helper.file_prefix(),
-        APP_VERSION,
-        helper_short_hash(helper),
-        env::consts::EXE_SUFFIX
-    ))
+    cache_dir.join(format!("{}-{}-{}{}", helper.file_prefix(), APP_VERSION, helper_short_hash(helper), env::consts::EXE_SUFFIX))
 }
 
 fn metadata_path_for(helper_path: &Path) -> PathBuf {
@@ -232,11 +203,7 @@ fn run_cleanup_once(cache_dir: &Path) {
     CLEANUP_ONCE.call_once(|| {
         let keep = current_helper_paths(cache_dir);
         if let Err(err) = cleanup_stale_helpers(cache_dir, &keep) {
-            log::debug!(
-                "failed to clean stale Lua helpers in {}: {}",
-                cache_dir.display(),
-                err
-            );
+            log::debug!("failed to clean stale Lua helpers in {}: {}", cache_dir.display(), err);
         }
     });
 }
@@ -254,33 +221,21 @@ fn cleanup_stale_helpers(cache_dir: &Path, keep: &[PathBuf]) -> io::Result<()> {
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if !name.starts_with("luac32_helper-")
-            && !name.starts_with("luac64_helper-")
-            && !name.starts_with("mklfs_helper-")
-        {
+        if !name.starts_with("luac32_helper-") && !name.starts_with("luac64_helper-") && !name.starts_with("mklfs_helper-") {
             continue;
         }
         if keep.iter().any(|keep_path| keep_path == &path) {
             continue;
         }
         if let Err(err) = fs::remove_file(&path) {
-            log::debug!(
-                "failed to remove stale Lua helper {}: {}",
-                path.display(),
-                err
-            );
+            log::debug!("failed to remove stale Lua helper {}: {}", path.display(), err);
         }
     }
 
     Ok(())
 }
 
-fn helper_file_is_current(
-    helper_path: &Path,
-    metadata_path: &Path,
-    helper: EmbeddedHelper,
-    expected_sha: &str,
-) -> Result<bool, String> {
+fn helper_file_is_current(helper_path: &Path, metadata_path: &Path, helper: EmbeddedHelper, expected_sha: &str) -> Result<bool, String> {
     if !helper_path.is_file() || !metadata_path.is_file() {
         return Ok(false);
     }
@@ -294,42 +249,17 @@ fn helper_file_is_current(
         return Ok(false);
     }
 
-    let bytes = fs::read(helper_path).map_err(|e| {
-        format!(
-            "failed to read cached {} helper at {}: {}",
-            helper.name(),
-            helper_path.display(),
-            e
-        )
-    })?;
+    let bytes = fs::read(helper_path).map_err(|e| format!("failed to read cached {} helper at {}: {}", helper.name(), helper_path.display(), e))?;
     let actual_sha = format!("{:x}", Sha256::digest(&bytes));
     Ok(actual_sha == expected_sha)
 }
 
 fn read_metadata(path: &Path) -> Result<HelperMetadata, String> {
-    let raw = fs::read(path).map_err(|e| {
-        format!(
-            "failed to read helper metadata at {}: {}",
-            path.display(),
-            e
-        )
-    })?;
-    serde_json::from_slice(&raw).map_err(|e| {
-        format!(
-            "failed to parse helper metadata at {}: {}",
-            path.display(),
-            e
-        )
-    })
+    let raw = fs::read(path).map_err(|e| format!("failed to read helper metadata at {}: {}", path.display(), e))?;
+    serde_json::from_slice(&raw).map_err(|e| format!("failed to parse helper metadata at {}: {}", path.display(), e))
 }
 
-fn write_helper_files(
-    cache_dir: &Path,
-    helper_path: &Path,
-    metadata_path: &Path,
-    helper: EmbeddedHelper,
-    expected_sha: &str,
-) -> Result<(), String> {
+fn write_helper_files(cache_dir: &Path, helper_path: &Path, metadata_path: &Path, helper: EmbeddedHelper, expected_sha: &str) -> Result<(), String> {
     let temp_helper = cache_dir.join(format!(
         ".{}-{}-{}.tmp{}",
         helper.file_prefix(),
@@ -339,22 +269,8 @@ fn write_helper_files(
     ));
     let temp_metadata = metadata_path_for(&temp_helper);
 
-    fs::write(&temp_helper, helper.payload).map_err(|e| {
-        format!(
-            "failed to write {} helper to {}: {}",
-            helper.name(),
-            temp_helper.display(),
-            e
-        )
-    })?;
-    set_helper_permissions(&temp_helper).map_err(|e| {
-        format!(
-            "failed to set permissions on {} helper at {}: {}",
-            helper.name(),
-            temp_helper.display(),
-            e
-        )
-    })?;
+    fs::write(&temp_helper, helper.payload).map_err(|e| format!("failed to write {} helper to {}: {}", helper.name(), temp_helper.display(), e))?;
+    set_helper_permissions(&temp_helper).map_err(|e| format!("failed to set permissions on {} helper at {}: {}", helper.name(), temp_helper.display(), e))?;
 
     let metadata = HelperMetadata {
         app_version: APP_VERSION.to_string(),
@@ -362,31 +278,11 @@ fn write_helper_files(
         sha256: expected_sha.to_string(),
         helper_bitness: 0,
     };
-    let metadata_bytes = serde_json::to_vec_pretty(&metadata)
-        .map_err(|e| format!("failed to serialize helper metadata: {}", e))?;
-    fs::write(&temp_metadata, metadata_bytes).map_err(|e| {
-        format!(
-            "failed to write helper metadata to {}: {}",
-            temp_metadata.display(),
-            e
-        )
-    })?;
+    let metadata_bytes = serde_json::to_vec_pretty(&metadata).map_err(|e| format!("failed to serialize helper metadata: {}", e))?;
+    fs::write(&temp_metadata, metadata_bytes).map_err(|e| format!("failed to write helper metadata to {}: {}", temp_metadata.display(), e))?;
 
-    persist_if_missing(&temp_helper, helper_path).map_err(|e| {
-        format!(
-            "failed to persist {} helper to {}: {}",
-            helper.name(),
-            helper_path.display(),
-            e
-        )
-    })?;
-    persist_if_missing(&temp_metadata, metadata_path).map_err(|e| {
-        format!(
-            "failed to persist helper metadata to {}: {}",
-            metadata_path.display(),
-            e
-        )
-    })?;
+    persist_if_missing(&temp_helper, helper_path).map_err(|e| format!("failed to persist {} helper to {}: {}", helper.name(), helper_path.display(), e))?;
+    persist_if_missing(&temp_metadata, metadata_path).map_err(|e| format!("failed to persist helper metadata to {}: {}", metadata_path.display(), e))?;
 
     Ok(())
 }

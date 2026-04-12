@@ -1,9 +1,6 @@
 use crate::OutputFormat;
 
-const RESOURCE_MANIFEST_URLS: &[&str] = &[
-    "http://bj02.air32.cn:10888/files/files.json",
-    "http://sh.air32.cn:10888/files/files.json",
-];
+const RESOURCE_MANIFEST_URLS: &[&str] = &["http://bj02.air32.cn:10888/files/files.json", "http://sh.air32.cn:10888/files/files.json"];
 
 #[derive(serde::Deserialize, Debug)]
 struct ResourceManifest {
@@ -92,9 +89,7 @@ fn fetch_manifest() -> anyhow::Result<ResourceManifest> {
     }
     anyhow::bail!(
         "Failed to fetch resource manifest from all mirrors: {}",
-        last_err
-            .map(|e| e.to_string())
-            .unwrap_or_else(|| "no URLs".into())
+        last_err.map(|e| e.to_string()).unwrap_or_else(|| "no URLs".into())
     );
 }
 
@@ -152,21 +147,12 @@ pub fn cmd_resource_list(module: Option<&str>, format: &OutputFormat) -> anyhow:
                 OutputFormat::Text => {
                     println!("{} — {}", cat.name, cat.desc.as_deref().unwrap_or(""));
                     for child in &cat.childrens {
-                        println!(
-                            "\n  {} — {}",
-                            child.name,
-                            child.desc.as_deref().unwrap_or("")
-                        );
+                        println!("\n  {} — {}", child.name, child.desc.as_deref().unwrap_or(""));
                         for ver in &child.versions {
                             println!("    {} — {}", ver.name, ver.desc.as_deref().unwrap_or(""));
                             for raw in &ver.files {
                                 if let Some(entry) = parse_file_entry(raw) {
-                                    println!(
-                                        "      {}  {}  {}",
-                                        entry.desc,
-                                        entry.filename,
-                                        format_size(entry.size)
-                                    );
+                                    println!("      {}  {}  {}", entry.desc, entry.filename, format_size(entry.size));
                                 }
                             }
                         }
@@ -227,12 +213,7 @@ pub fn cmd_resource_list(module: Option<&str>, format: &OutputFormat) -> anyhow:
     Ok(())
 }
 
-pub fn cmd_resource_download(
-    module: &str,
-    version_filter: Option<&str>,
-    output: &str,
-    format: &OutputFormat,
-) -> anyhow::Result<()> {
+pub fn cmd_resource_download(module: &str, version_filter: Option<&str>, output: &str, format: &OutputFormat) -> anyhow::Result<()> {
     use sha2::Digest;
 
     let manifest = fetch_manifest()?;
@@ -266,11 +247,7 @@ pub fn cmd_resource_download(
     }
 
     if files_to_download.is_empty() {
-        anyhow::bail!(
-            "No files found for module '{}' with version filter {:?}",
-            module,
-            version_filter
-        );
+        anyhow::bail!("No files found for module '{}' with version filter {:?}", module, version_filter);
     }
 
     // Sort mirrors by speed (descending)
@@ -290,11 +267,7 @@ pub fn cmd_resource_download(
         }
 
         if format == &OutputFormat::Text {
-            eprintln!(
-                "Downloading {} ({})...",
-                entry.filename,
-                format_size(entry.size)
-            );
+            eprintln!("Downloading {} ({})...", entry.filename, format_size(entry.size));
         }
 
         let mut success = false;
@@ -314,10 +287,7 @@ pub fn cmd_resource_download(
                         success = true;
                         break;
                     } else {
-                        eprintln!(
-                            "  ✗ SHA256 mismatch for {} (expected {}, got {})",
-                            entry.filename, entry.sha256, hex
-                        );
+                        eprintln!("  ✗ SHA256 mismatch for {} (expected {}, got {})", entry.filename, entry.sha256, hex);
                         let _ = std::fs::remove_file(&dest);
                     }
                 }
@@ -334,10 +304,7 @@ pub fn cmd_resource_download(
 
     match format {
         OutputFormat::Text => {
-            println!(
-                "\nDownload complete: {} succeeded, {} failed",
-                downloaded, failed
-            );
+            println!("\nDownload complete: {} succeeded, {} failed", downloaded, failed);
         }
         OutputFormat::Json => {
             let json = serde_json::json!({

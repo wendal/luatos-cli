@@ -1,11 +1,6 @@
 use crate::OutputFormat;
 
-pub fn cmd_build_luac(
-    src_dirs: &[String],
-    output: &str,
-    bitw: u32,
-    format: &OutputFormat,
-) -> anyhow::Result<()> {
+pub fn cmd_build_luac(src_dirs: &[String], output: &str, bitw: u32, format: &OutputFormat) -> anyhow::Result<()> {
     let out_path = std::path::Path::new(output);
     let mut total_files = Vec::new();
 
@@ -38,14 +33,7 @@ pub fn cmd_build_luac(
     Ok(())
 }
 
-pub fn cmd_build_filesystem(
-    src_dirs: &[String],
-    output: &str,
-    use_luac: bool,
-    bitw: u32,
-    bkcrc: bool,
-    format: &OutputFormat,
-) -> anyhow::Result<()> {
+pub fn cmd_build_filesystem(src_dirs: &[String], output: &str, use_luac: bool, bitw: u32, bkcrc: bool, format: &OutputFormat) -> anyhow::Result<()> {
     let paths: Vec<std::path::PathBuf> = src_dirs.iter().map(std::path::PathBuf::from).collect();
     let path_refs: Vec<&std::path::Path> = paths.iter().map(|p| p.as_path()).collect();
 
@@ -64,11 +52,7 @@ pub fn cmd_build_filesystem(
     match format {
         OutputFormat::Text => {
             println!("Built filesystem image: {output}");
-            println!(
-                "  Size:   {} bytes ({:.1} KB)",
-                image.len(),
-                image.len() as f64 / 1024.0
-            );
+            println!("  Size:   {} bytes ({:.1} KB)", image.len(), image.len() as f64 / 1024.0);
             println!("  Luac:   {use_luac}");
             println!("  BK CRC: {bkcrc}");
         }

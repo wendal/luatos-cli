@@ -15,14 +15,8 @@ use crate::{add_bk_crc, pack_luadb, LuadbEntry};
 ///
 /// `chunk_name` is the name shown in error messages (typically `@filename.lua`).
 /// When `strip` is true, debug info is removed for smaller output.
-pub fn compile_lua_bytes(
-    source: &[u8],
-    chunk_name: &str,
-    strip: bool,
-    bitw: u32,
-) -> Result<Vec<u8>> {
-    let helper = ensure_embedded_helper(bitw)
-        .map_err(|e| anyhow::anyhow!("failed to prepare Lua {bitw}-bit compiler: {e}"))?;
+pub fn compile_lua_bytes(source: &[u8], chunk_name: &str, strip: bool, bitw: u32) -> Result<Vec<u8>> {
+    let helper = ensure_embedded_helper(bitw).map_err(|e| anyhow::anyhow!("failed to prepare Lua {bitw}-bit compiler: {e}"))?;
 
     let mut child = Command::new(&helper)
         .arg(chunk_name)
@@ -31,23 +25,13 @@ pub fn compile_lua_bytes(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .with_context(|| {
-            format!(
-                "failed to spawn Lua {}-bit compiler from {}",
-                bitw,
-                helper.display()
-            )
-        })?;
+        .with_context(|| format!("failed to spawn Lua {}-bit compiler from {}", bitw, helper.display()))?;
 
     if let Some(stdin) = child.stdin.as_mut() {
-        stdin
-            .write_all(source)
-            .context("failed to write source to Lua compiler")?;
+        stdin.write_all(source).context("failed to write source to Lua compiler")?;
     }
 
-    let output = child
-        .wait_with_output()
-        .context("failed to wait for Lua compiler")?;
+    let output = child.wait_with_output().context("failed to wait for Lua compiler")?;
 
     if output.status.success() {
         Ok(output.stdout)
@@ -68,9 +52,7 @@ pub fn compile_lua(src: &Path, dst: &Path, bitw: u32, strip: bool) -> Result<()>
     let source = fs::read(src).with_context(|| format!("failed to read {}", src.display()))?;
     let chunk_name = format!(
         "@{}",
-        src.file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| src.display().to_string())
+        src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| src.display().to_string())
     );
     log::info!("compiling {} -> {}", src.display(), dst.display());
 
@@ -99,10 +81,7 @@ pub fn compile_lua_dir(src_dir: &Path, out_dir: &Path, bitw: u32, strip: bool) -
             continue;
         }
 
-        let rel = entry
-            .path()
-            .strip_prefix(src_dir)
-            .context("failed to strip source prefix")?;
+        let rel = entry.path().strip_prefix(src_dir).context("failed to strip source prefix")?;
         let dst_parent = out_dir.join(rel).parent().map(Path::to_path_buf);
         if let Some(ref p) = dst_parent {
             fs::create_dir_all(p)?;
@@ -116,8 +95,7 @@ pub fn compile_lua_dir(src_dir: &Path, out_dir: &Path, bitw: u32, strip: bool) -
             outputs.push(dst_path);
         } else {
             let dst_path = out_dir.join(rel);
-            fs::copy(src_path, &dst_path)
-                .with_context(|| format!("failed to copy {}", src_path.display()))?;
+            fs::copy(src_path, &dst_path).with_context(|| format!("failed to copy {}", src_path.display()))?;
             outputs.push(dst_path);
         }
     }
@@ -141,32 +119,21 @@ pub fn collect_script_entries(dirs: &[&Path]) -> Result<Vec<LuadbEntry>> {
                 continue;
             }
 
-            let filename = entry
-                .path()
-                .file_name()
-                .context("entry has no filename")?
-                .to_string_lossy()
-                .into_owned();
+            let filename = entry.path().file_name().context("entry has no filename")?.to_string_lossy().into_owned();
 
-            let data = fs::read(entry.path())
-                .with_context(|| format!("failed to read {}", entry.path().display()))?;
+            let data = fs::read(entry.path()).with_context(|| format!("failed to read {}", entry.path().display()))?;
 
             map.insert(filename, data);
         }
     }
 
-    let mut entries: Vec<LuadbEntry> = map
-        .into_iter()
-        .map(|(filename, data)| LuadbEntry { filename, data })
-        .collect();
+    let mut entries: Vec<LuadbEntry> = map.into_iter().map(|(filename, data)| LuadbEntry { filename, data }).collect();
 
     // Sort: main.lua / main.luac first, then alphabetical.
     entries.sort_by(|a, b| {
         let a_main = is_main(&a.filename);
         let b_main = is_main(&b.filename);
-        b_main
-            .cmp(&a_main)
-            .then_with(|| a.filename.cmp(&b.filename))
+        b_main.cmp(&a_main).then_with(|| a.filename.cmp(&b.filename))
     });
 
     Ok(entries)
@@ -183,13 +150,7 @@ fn is_main(name: &str) -> bool {
 /// directory before packing. When `strip` is true, debug info is removed.
 /// Later directories override earlier ones when filenames collide.
 /// Returns the final binary image.
-pub fn build_script_image(
-    script_dirs: &[&Path],
-    use_luac: bool,
-    bitw: u32,
-    use_bkcrc: bool,
-    strip: bool,
-) -> Result<Vec<u8>> {
+pub fn build_script_image(script_dirs: &[&Path], use_luac: bool, bitw: u32, use_bkcrc: bool, strip: bool) -> Result<Vec<u8>> {
     let (collect_dirs, _tmp_guard): (Vec<PathBuf>, Option<PathBuf>) = if use_luac {
         let tmp = tempfile::tempdir().context("failed to create temp directory")?;
         for dir in script_dirs {
@@ -224,13 +185,8 @@ pub fn build_script_image(
 /// * `block_size` — erase block size (default 4096).
 ///
 /// Returns the raw LFS image bytes (exactly `fs_size` bytes).
-pub fn build_littlefs_image(
-    source_dir: &Path,
-    fs_size: usize,
-    block_size: usize,
-) -> Result<Vec<u8>> {
-    let helper = ensure_mklfs_helper()
-        .map_err(|e| anyhow::anyhow!("failed to prepare mklfs helper: {e}"))?;
+pub fn build_littlefs_image(source_dir: &Path, fs_size: usize, block_size: usize) -> Result<Vec<u8>> {
+    let helper = ensure_mklfs_helper().map_err(|e| anyhow::anyhow!("failed to prepare mklfs helper: {e}"))?;
 
     let output = Command::new(&helper)
         .arg(source_dir.to_str().context("non-UTF8 path")?)
@@ -243,23 +199,12 @@ pub fn build_littlefs_image(
 
     if output.status.success() {
         if output.stdout.len() != fs_size {
-            bail!(
-                "mklfs produced {} bytes, expected {}",
-                output.stdout.len(),
-                fs_size
-            );
+            bail!("mklfs produced {} bytes, expected {}", output.stdout.len(), fs_size);
         }
         Ok(output.stdout)
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        bail!(
-            "mklfs failed: {}",
-            if stderr.is_empty() {
-                "unknown error".to_string()
-            } else {
-                stderr
-            }
-        );
+        bail!("mklfs failed: {}", if stderr.is_empty() { "unknown error".to_string() } else { stderr });
     }
 }
 

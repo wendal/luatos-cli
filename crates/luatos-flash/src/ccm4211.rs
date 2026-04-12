@@ -256,12 +256,7 @@ impl SocFrameParser {
         } else {
             Vec::new()
         };
-        Some(SocResponse {
-            cmd,
-            address,
-            sn,
-            data: body,
-        })
+        Some(SocResponse { cmd, address, sn, data: body })
     }
 }
 
@@ -270,15 +265,7 @@ impl SocFrameParser {
 /// Send an ISP command and wait for ACK.
 /// Frame: 0x52 + cmd + param1 + param2 + data_len(u16 BE) + data
 /// ACK:   0x72 + cmd + ack_data_len(u16 BE) + ack_data
-fn isp_send_cmd(
-    port: &mut Box<dyn SerialPort>,
-    cmd: u8,
-    param1: u8,
-    param2: u8,
-    data_len: u16,
-    data: Option<&[u8]>,
-    timeout: Duration,
-) -> Result<Vec<u8>> {
+fn isp_send_cmd(port: &mut Box<dyn SerialPort>, cmd: u8, param1: u8, param2: u8, data_len: u16, data: Option<&[u8]>, timeout: Duration) -> Result<Vec<u8>> {
     let mut frame = vec![ISP_CMD_HEADER, cmd, param1, param2];
     frame.extend_from_slice(&data_len.to_be_bytes());
     if let Some(d) = data {
@@ -299,8 +286,7 @@ fn isp_send_cmd(
                 while read_buf.len() >= 4 {
                     if read_buf[0] == ISP_ACK_HEADER {
                         if read_buf[1] == cmd {
-                            let ack_len =
-                                u16::from_be_bytes([read_buf[2], read_buf[3]]) as usize + 4;
+                            let ack_len = u16::from_be_bytes([read_buf[2], read_buf[3]]) as usize + 4;
                             if read_buf.len() >= ack_len {
                                 return Ok(read_buf[4..ack_len].to_vec());
                             }
@@ -348,15 +334,7 @@ fn isp_handshake(port: &mut Box<dyn SerialPort>, timeout: Duration) -> Result<Ve
         std::thread::sleep(Duration::from_millis(10));
 
         // Try sync — cmd 0x14, param1=0, param2=0, data_len=0x24 (per Python)
-        match isp_send_cmd(
-            port,
-            ISP_CMD_SYNC,
-            0,
-            0,
-            0x24,
-            None,
-            Duration::from_millis(500),
-        ) {
+        match isp_send_cmd(port, ISP_CMD_SYNC, 0, 0, 0x24, None, Duration::from_millis(500)) {
             Ok(data) => {
                 log::info!("ISP handshake OK: {:?}", String::from_utf8_lossy(&data));
                 return Ok(data);
@@ -371,16 +349,8 @@ fn isp_handshake(port: &mut Box<dyn SerialPort>, timeout: Duration) -> Result<Ve
 }
 
 /// Load ramrun binary into device RAM via ISP.
-fn isp_load_ramrun(
-    port_name: &str,
-    ramrun_data: &[u8],
-    on_progress: &ProgressCallback,
-) -> Result<()> {
-    on_progress(&FlashProgress::info(
-        "Connect",
-        0.0,
-        "Opening serial port (ISP)",
-    ));
+fn isp_load_ramrun(port_name: &str, ramrun_data: &[u8], on_progress: &ProgressCallback) -> Result<()> {
+    on_progress(&FlashProgress::info("Connect", 0.0, "Opening serial port (ISP)"));
 
     let mut port: Box<dyn SerialPort> = serialport::new(port_name, ISP_INITIAL_BAUD)
         .parity(Parity::Even)
@@ -388,28 +358,14 @@ fn isp_load_ramrun(
         .open()
         .with_context(|| format!("Cannot open {port_name}"))?;
 
-    on_progress(&FlashProgress::info(
-        "Reset",
-        2.0,
-        "Handshaking with ISP bootrom",
-    ));
+    on_progress(&FlashProgress::info("Reset", 2.0, "Handshaking with ISP bootrom"));
 
-    let _sync_data =
-        isp_handshake(&mut port, Duration::from_secs(15)).context("ISP handshake failed")?;
+    let _sync_data = isp_handshake(&mut port, Duration::from_secs(15)).context("ISP handshake failed")?;
 
     on_progress(&FlashProgress::info("Baud", 5.0, "Switching to 1Mbps"));
 
     // Switch baud rate to 1Mbps: cmd 0x10, data = [0x00, 0x01, 0x24]
-    isp_send_cmd(
-        &mut port,
-        ISP_CMD_SET_BAUD,
-        0,
-        0,
-        3,
-        Some(&[0x00, 0x01, 0x24]),
-        Duration::from_millis(50),
-    )
-    .context("ISP baud rate change failed")?;
+    isp_send_cmd(&mut port, ISP_CMD_SET_BAUD, 0, 0, 3, Some(&[0x00, 0x01, 0x24]), Duration::from_millis(50)).context("ISP baud rate change failed")?;
 
     // Reopen at 1Mbps
     drop(port);
@@ -420,36 +376,14 @@ fn isp_load_ramrun(
         .with_context(|| format!("Cannot reopen {port_name} at 1Mbps"))?;
 
     // Verify sync at new baud rate
-    isp_send_cmd(
-        &mut port,
-        ISP_CMD_SYNC,
-        0,
-        0,
-        0x10,
-        None,
-        Duration::from_millis(50),
-    )
-    .context("ISP sync at 1Mbps failed")?;
+    isp_send_cmd(&mut port, ISP_CMD_SYNC, 0, 0, 0x10, None, Duration::from_millis(50)).context("ISP sync at 1Mbps failed")?;
 
     on_progress(&FlashProgress::info("Baud", 7.0, "ISP baud rate 1Mbps OK"));
 
     // Set RAM base address: cmd 0x20, param1=0x20, param2=0x00
-    isp_send_cmd(
-        &mut port,
-        ISP_CMD_SET_RAM_BASE,
-        0x20,
-        0x00,
-        4,
-        None,
-        Duration::from_millis(50),
-    )
-    .context("ISP set RAM base address failed")?;
+    isp_send_cmd(&mut port, ISP_CMD_SET_RAM_BASE, 0x20, 0x00, 4, None, Duration::from_millis(50)).context("ISP set RAM base address failed")?;
 
-    on_progress(&FlashProgress::info(
-        "Write",
-        8.0,
-        "Loading ramrun into RAM",
-    ));
+    on_progress(&FlashProgress::info("Write", 8.0, "Loading ramrun into RAM"));
 
     // Write ramrun in 512-byte chunks, address auto-increments by 2
     let mut base_address: u8 = 0x30;
@@ -460,33 +394,17 @@ fn isp_load_ramrun(
         let chunk_len = std::cmp::min(512, total_len - done);
         let chunk = &ramrun_data[done..done + chunk_len];
 
-        isp_send_cmd(
-            &mut port,
-            ISP_CMD_WRITE_RAM,
-            base_address,
-            0x00,
-            chunk_len as u16,
-            Some(chunk),
-            Duration::from_millis(500),
-        )
-        .with_context(|| format!("ISP RAM write failed at offset {done}"))?;
+        isp_send_cmd(&mut port, ISP_CMD_WRITE_RAM, base_address, 0x00, chunk_len as u16, Some(chunk), Duration::from_millis(500))
+            .with_context(|| format!("ISP RAM write failed at offset {done}"))?;
 
         done += chunk_len;
         base_address = base_address.wrapping_add(2);
 
         let pct = 8.0 + (done as f32 / total_len as f32) * 7.0; // 8% - 15%
-        on_progress(&FlashProgress::info(
-            "Write",
-            pct,
-            &format!("Ramrun {done}/{total_len}"),
-        ));
+        on_progress(&FlashProgress::info("Write", pct, &format!("Ramrun {done}/{total_len}")));
     }
 
-    on_progress(&FlashProgress::info(
-        "Write",
-        15.0,
-        "Ramrun loaded, executing",
-    ));
+    on_progress(&FlashProgress::info("Write", 15.0, "Ramrun loaded, executing"));
 
     // Execute ramrun: cmd 0x81
     // Jump address from ramrun binary bytes 4-5
@@ -494,15 +412,7 @@ fn isp_load_ramrun(
     let go_addr2 = ramrun_data[4];
 
     // Execute may not ACK (ramrun starts and takes over UART)
-    let _ = isp_send_cmd(
-        &mut port,
-        ISP_CMD_EXECUTE,
-        go_addr1,
-        go_addr2,
-        0,
-        None,
-        Duration::from_millis(100),
-    );
+    let _ = isp_send_cmd(&mut port, ISP_CMD_EXECUTE, go_addr1, go_addr2, 0, None, Duration::from_millis(100));
 
     drop(port);
     Ok(())
@@ -511,15 +421,7 @@ fn isp_load_ramrun(
 // ─── SOC Protocol Operations ────────────────────────────────────────────────
 
 /// Send a SOC command and wait for matching response.
-fn soc_send_cmd(
-    port: &mut Box<dyn SerialPort>,
-    parser: &mut SocFrameParser,
-    cmd: u32,
-    address: u32,
-    payload: &[u8],
-    sn: &mut u16,
-    timeout: Duration,
-) -> Result<SocResponse> {
+fn soc_send_cmd(port: &mut Box<dyn SerialPort>, parser: &mut SocFrameParser, cmd: u32, address: u32, payload: &[u8], sn: &mut u16, timeout: Duration) -> Result<SocResponse> {
     *sn = sn.wrapping_add(1);
     if *sn == 0 {
         *sn = 1;
@@ -544,13 +446,7 @@ fn soc_send_cmd(
             Ok(n) if n > 0 => {
                 let responses = parser.feed(&tmp[..n]);
                 for resp in responses {
-                    log::debug!(
-                        "SOC response: cmd={}, addr=0x{:08X}, sn={}, data_len={}",
-                        resp.cmd,
-                        resp.address,
-                        resp.sn,
-                        resp.data.len()
-                    );
+                    log::debug!("SOC response: cmd={}, addr=0x{:08X}, sn={}, data_len={}", resp.cmd, resp.address, resp.sn, resp.data.len());
                     if resp.cmd == cmd {
                         return Ok(resp);
                     }
@@ -589,16 +485,7 @@ fn soc_download_file(
 
         // CMD 0x0A: set download address + original length
         let orig_len_bytes = (send_len as u32).to_le_bytes();
-        soc_send_cmd(
-            port,
-            parser,
-            SOC_CMD_SET_CODE_DATA_START,
-            cur_addr,
-            &orig_len_bytes,
-            sn,
-            Duration::from_secs(1),
-        )
-        .context("SOC set code data start failed")?;
+        soc_send_cmd(port, parser, SOC_CMD_SET_CODE_DATA_START, cur_addr, &orig_len_bytes, sn, Duration::from_secs(1)).context("SOC set code data start failed")?;
 
         // CMD 0x0B: send data in sub-chunks (no compression)
         let sect_len = 3 * 1024; // 3KB chunks like Python reference
@@ -610,27 +497,13 @@ fn soc_download_file(
             // Retry up to 10 times (CMD 11 can fail with synchronous I/O)
             let mut last_err = None;
             for retry in 0..10 {
-                match soc_send_cmd(
-                    port,
-                    parser,
-                    SOC_CMD_SET_CODE_DATA,
-                    0,
-                    sub_chunk,
-                    sn,
-                    Duration::from_millis(500),
-                ) {
+                match soc_send_cmd(port, parser, SOC_CMD_SET_CODE_DATA, 0, sub_chunk, sn, Duration::from_millis(500)) {
                     Ok(_) => {
                         last_err = None;
                         break;
                     }
                     Err(e) => {
-                        log::debug!(
-                            "CMD 11 retry {}/{} at {} offset {}",
-                            retry + 1,
-                            10,
-                            stage_name,
-                            done + s_len
-                        );
+                        log::debug!("CMD 11 retry {}/{} at {} offset {}", retry + 1, 10, stage_name, done + s_len);
                         last_err = Some(e);
                         std::thread::sleep(Duration::from_millis(10));
                     }
@@ -643,48 +516,22 @@ fn soc_download_file(
         }
 
         // CMD 0x0C: finalize block (is_lzma = 0, no compression)
-        soc_send_cmd(
-            port,
-            parser,
-            SOC_CMD_SET_CODE_END,
-            0,
-            &[0x00],
-            sn,
-            Duration::from_secs(3),
-        )
-        .context("SOC set code end failed")?;
+        soc_send_cmd(port, parser, SOC_CMD_SET_CODE_END, 0, &[0x00], sn, Duration::from_secs(3)).context("SOC set code end failed")?;
 
         done += send_len;
         cur_addr += send_len as u32;
 
         let pct = pct_start + (done as f32 / total_len as f32) * (pct_end - pct_start);
-        on_progress(&FlashProgress::info(
-            stage_name,
-            pct,
-            &format!("{done}/{total_len} bytes"),
-        ));
+        on_progress(&FlashProgress::info(stage_name, pct, &format!("{done}/{total_len} bytes")));
     }
 
     // CMD 0x0D: MD5 verify (10s timeout for large files)
     let total_len_bytes = (data.len() as u32).to_le_bytes();
-    let resp = soc_send_cmd(
-        port,
-        parser,
-        SOC_CMD_CHECK_CODE,
-        address,
-        &total_len_bytes,
-        sn,
-        Duration::from_secs(10),
-    )
-    .context("SOC MD5 check failed")?;
+    let resp = soc_send_cmd(port, parser, SOC_CMD_CHECK_CODE, address, &total_len_bytes, sn, Duration::from_secs(10)).context("SOC MD5 check failed")?;
 
     // Verify MD5
     let expected_md5 = md5::compute(data);
-    let device_md5_hex = resp
-        .data
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
+    let device_md5_hex = resp.data.iter().map(|b| format!("{b:02x}")).collect::<String>();
     let expected_md5_hex = format!("{:x}", expected_md5);
 
     if device_md5_hex != expected_md5_hex {
@@ -709,12 +556,7 @@ fn soc_reset_device(port: &mut Box<dyn SerialPort>) -> Result<()> {
 /// Flash full firmware for CCM4211/Air1601.
 ///
 /// Downloads bootloader + core + script (if present) via ISP+SOC protocol.
-pub fn flash_ccm4211(
-    soc_path: &str,
-    port_name: &str,
-    on_progress: &ProgressCallback,
-    cancel: Arc<AtomicBool>,
-) -> Result<()> {
+pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
     // Extract .soc
     on_progress(&FlashProgress::info("Extract", 0.0, "Unpacking .soc file"));
     let tmpdir = tempfile::tempdir().context("Create temp dir")?;
@@ -757,11 +599,7 @@ pub fn flash_ccm4211(
 
     // Stage 2: SOC protocol — open at download baud rate
     let dl_baud = info.flash_baud_rate();
-    on_progress(&FlashProgress::info(
-        "Connect",
-        16.0,
-        &format!("Connecting SOC protocol at {dl_baud}"),
-    ));
+    on_progress(&FlashProgress::info("Connect", 16.0, &format!("Connecting SOC protocol at {dl_baud}")));
 
     std::thread::sleep(Duration::from_millis(10));
     let mut port: Box<dyn SerialPort> = serialport::new(port_name, dl_baud)
@@ -776,15 +614,7 @@ pub fn flash_ccm4211(
     // Query download block size
     let mut block_len: u32 = 0;
     for _ in 0..3 {
-        match soc_send_cmd(
-            &mut port,
-            &mut parser,
-            SOC_CMD_GET_DOWNLOAD_INFO,
-            0,
-            &[],
-            &mut sn,
-            Duration::from_millis(100),
-        ) {
+        match soc_send_cmd(&mut port, &mut parser, SOC_CMD_GET_DOWNLOAD_INFO, 0, &[], &mut sn, Duration::from_millis(100)) {
             Ok(resp) => {
                 if resp.data.len() >= 4 {
                     block_len = u32::from_le_bytes(resp.data[0..4].try_into().unwrap());
@@ -799,11 +629,7 @@ pub fn flash_ccm4211(
     }
 
     log::info!("Download block size: {} (0x{:X})", block_len, block_len);
-    on_progress(&FlashProgress::info(
-        "Connect",
-        18.0,
-        &format!("Block size: {block_len} bytes"),
-    ));
+    on_progress(&FlashProgress::info("Connect", 18.0, &format!("Block size: {block_len} bytes")));
 
     // Load files from SOC directory
     let bl_path = soc_dir.join("bootloader.bin");
@@ -817,23 +643,8 @@ pub fn flash_ccm4211(
     // Download bootloader
     if bl_path.exists() {
         let bl_data = std::fs::read(&bl_path).context("Failed to read bootloader.bin")?;
-        on_progress(&FlashProgress::info(
-            "Bootloader",
-            20.0,
-            "Downloading bootloader",
-        ));
-        soc_download_file(
-            &mut port,
-            &mut parser,
-            &mut sn,
-            bl_addr,
-            &bl_data,
-            block_len,
-            on_progress,
-            "Bootloader",
-            20.0,
-            40.0,
-        )?;
+        on_progress(&FlashProgress::info("Bootloader", 20.0, "Downloading bootloader"));
+        soc_download_file(&mut port, &mut parser, &mut sn, bl_addr, &bl_data, block_len, on_progress, "Bootloader", 20.0, 40.0)?;
         on_progress(&FlashProgress::info("Bootloader", 40.0, "Bootloader OK"));
     }
 
@@ -843,25 +654,9 @@ pub fn flash_ccm4211(
 
     // Download core firmware
     if core_path.exists() {
-        let core_data = std::fs::read(&core_path)
-            .with_context(|| format!("Failed to read {}", info.rom.file))?;
-        on_progress(&FlashProgress::info(
-            "Core",
-            40.0,
-            "Downloading core firmware",
-        ));
-        soc_download_file(
-            &mut port,
-            &mut parser,
-            &mut sn,
-            core_addr,
-            &core_data,
-            block_len,
-            on_progress,
-            "Core",
-            40.0,
-            80.0,
-        )?;
+        let core_data = std::fs::read(&core_path).with_context(|| format!("Failed to read {}", info.rom.file))?;
+        on_progress(&FlashProgress::info("Core", 40.0, "Downloading core firmware"));
+        soc_download_file(&mut port, &mut parser, &mut sn, core_addr, &core_data, block_len, on_progress, "Core", 40.0, 80.0)?;
         on_progress(&FlashProgress::info("Core", 80.0, "Core firmware OK"));
     }
 
@@ -873,18 +668,7 @@ pub fn flash_ccm4211(
     if script_path.exists() {
         let script_data = std::fs::read(&script_path).context("Failed to read script")?;
         on_progress(&FlashProgress::info("Script", 80.0, "Downloading script"));
-        soc_download_file(
-            &mut port,
-            &mut parser,
-            &mut sn,
-            script_addr,
-            &script_data,
-            block_len,
-            on_progress,
-            "Script",
-            80.0,
-            95.0,
-        )?;
+        soc_download_file(&mut port, &mut parser, &mut sn, script_addr, &script_data, block_len, on_progress, "Script", 80.0, 95.0)?;
         on_progress(&FlashProgress::info("Script", 95.0, "Script OK"));
     }
 
@@ -898,13 +682,7 @@ pub fn flash_ccm4211(
 }
 
 /// Flash only the script partition for CCM4211/Air1601.
-pub fn flash_script_ccm4211(
-    soc_path: &str,
-    port_name: &str,
-    script_data: &[u8],
-    on_progress: &ProgressCallback,
-    cancel: Arc<AtomicBool>,
-) -> Result<()> {
+pub fn flash_script_ccm4211(soc_path: &str, port_name: &str, script_data: &[u8], on_progress: &ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
     on_progress(&FlashProgress::info("Extract", 0.0, "Unpacking .soc file"));
     let tmpdir = tempfile::tempdir().context("Create temp dir")?;
     let unpacked = luatos_soc::unpack_soc(soc_path, tmpdir.path())?;
@@ -940,10 +718,7 @@ pub fn flash_script_ccm4211(
 
     let dl_baud = info.flash_baud_rate();
     std::thread::sleep(Duration::from_millis(10));
-    let mut port: Box<dyn SerialPort> = serialport::new(port_name, dl_baud)
-        .parity(Parity::None)
-        .timeout(Duration::from_millis(50))
-        .open()?;
+    let mut port: Box<dyn SerialPort> = serialport::new(port_name, dl_baud).parity(Parity::None).timeout(Duration::from_millis(50)).open()?;
 
     let mut parser = SocFrameParser::new();
     let mut sn: u16 = 0;
@@ -951,15 +726,7 @@ pub fn flash_script_ccm4211(
     // Get block size
     let mut block_len: u32 = 0;
     for _ in 0..3 {
-        if let Ok(resp) = soc_send_cmd(
-            &mut port,
-            &mut parser,
-            SOC_CMD_GET_DOWNLOAD_INFO,
-            0,
-            &[],
-            &mut sn,
-            Duration::from_millis(100),
-        ) {
+        if let Ok(resp) = soc_send_cmd(&mut port, &mut parser, SOC_CMD_GET_DOWNLOAD_INFO, 0, &[], &mut sn, Duration::from_millis(100)) {
             if resp.data.len() >= 4 {
                 block_len = u32::from_le_bytes(resp.data[0..4].try_into().unwrap());
             }
@@ -972,18 +739,7 @@ pub fn flash_script_ccm4211(
 
     let script_addr = info.script_addr();
     on_progress(&FlashProgress::info("Script", 20.0, "Downloading script"));
-    soc_download_file(
-        &mut port,
-        &mut parser,
-        &mut sn,
-        script_addr,
-        script_data,
-        block_len,
-        on_progress,
-        "Script",
-        20.0,
-        90.0,
-    )?;
+    soc_download_file(&mut port, &mut parser, &mut sn, script_addr, script_data, block_len, on_progress, "Script", 20.0, 90.0)?;
 
     on_progress(&FlashProgress::info("Reset", 95.0, "Resetting device"));
     soc_reset_device(&mut port)?;
@@ -994,14 +750,7 @@ pub fn flash_script_ccm4211(
 }
 
 /// Erase a flash partition (FSKV or filesystem).
-pub fn erase_partition_ccm4211(
-    soc_path: &str,
-    port_name: &str,
-    partition_addr: u32,
-    partition_name: &str,
-    on_progress: &ProgressCallback,
-    cancel: Arc<AtomicBool>,
-) -> Result<()> {
+pub fn erase_partition_ccm4211(soc_path: &str, port_name: &str, partition_addr: u32, partition_name: &str, on_progress: &ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
     on_progress(&FlashProgress::info("Extract", 0.0, "Unpacking .soc file"));
     let tmpdir = tempfile::tempdir().context("Create temp dir")?;
     let unpacked = luatos_soc::unpack_soc(soc_path, tmpdir.path())?;
@@ -1037,55 +786,26 @@ pub fn erase_partition_ccm4211(
 
     let dl_baud = info.flash_baud_rate();
     std::thread::sleep(Duration::from_millis(10));
-    let mut port: Box<dyn SerialPort> = serialport::new(port_name, dl_baud)
-        .parity(Parity::None)
-        .timeout(Duration::from_millis(50))
-        .open()?;
+    let mut port: Box<dyn SerialPort> = serialport::new(port_name, dl_baud).parity(Parity::None).timeout(Duration::from_millis(50)).open()?;
 
     let mut parser = SocFrameParser::new();
     let mut sn: u16 = 0;
 
     // Verify ramrun is running
     for _ in 0..3 {
-        if soc_send_cmd(
-            &mut port,
-            &mut parser,
-            SOC_CMD_GET_DOWNLOAD_INFO,
-            0,
-            &[],
-            &mut sn,
-            Duration::from_millis(100),
-        )
-        .is_ok()
-        {
+        if soc_send_cmd(&mut port, &mut parser, SOC_CMD_GET_DOWNLOAD_INFO, 0, &[], &mut sn, Duration::from_millis(100)).is_ok() {
             break;
         }
     }
 
-    on_progress(&FlashProgress::info(
-        "Erase",
-        50.0,
-        &format!("Erasing {partition_name} at 0x{partition_addr:08X}"),
-    ));
+    on_progress(&FlashProgress::info("Erase", 50.0, &format!("Erasing {partition_name} at 0x{partition_addr:08X}")));
 
     for _ in 0..3 {
-        if soc_send_cmd(
-            &mut port,
-            &mut parser,
-            SOC_CMD_FLASH_ERASE_BLOCK,
-            partition_addr,
-            &[],
-            &mut sn,
-            Duration::from_secs(10),
-        )
-        .is_ok()
-        {
+        if soc_send_cmd(&mut port, &mut parser, SOC_CMD_FLASH_ERASE_BLOCK, partition_addr, &[], &mut sn, Duration::from_secs(10)).is_ok() {
             on_progress(&FlashProgress::info("Reset", 90.0, "Resetting device"));
             soc_reset_device(&mut port)?;
             drop(port);
-            on_progress(&FlashProgress::done_ok(&format!(
-                "{partition_name} erased successfully"
-            )));
+            on_progress(&FlashProgress::done_ok(&format!("{partition_name} erased successfully")));
             return Ok(());
         }
     }
@@ -1093,30 +813,16 @@ pub fn erase_partition_ccm4211(
 }
 
 /// Clear the filesystem partition for CCM4211/Air1601.
-pub fn clear_filesystem(
-    soc_path: &str,
-    port_name: &str,
-    on_progress: &ProgressCallback,
-    cancel: Arc<AtomicBool>,
-) -> Result<()> {
+pub fn clear_filesystem(soc_path: &str, port_name: &str, on_progress: &ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
     let info = luatos_soc::read_soc_info(soc_path)?;
-    let addr = info
-        .fs_addr()
-        .context("Air1601 SOC has no fs_addr defined")?;
+    let addr = info.fs_addr().context("Air1601 SOC has no fs_addr defined")?;
     erase_partition_ccm4211(soc_path, port_name, addr, "filesystem", on_progress, cancel)
 }
 
 /// Clear the FSKV (key-value) partition for CCM4211/Air1601.
-pub fn clear_fskv(
-    soc_path: &str,
-    port_name: &str,
-    on_progress: &ProgressCallback,
-    cancel: Arc<AtomicBool>,
-) -> Result<()> {
+pub fn clear_fskv(soc_path: &str, port_name: &str, on_progress: &ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
     let info = luatos_soc::read_soc_info(soc_path)?;
-    let addr = info
-        .nvm_addr()
-        .context("Air1601 SOC has no nvm_addr defined")?;
+    let addr = info.nvm_addr().context("Air1601 SOC has no nvm_addr defined")?;
     erase_partition_ccm4211(soc_path, port_name, addr, "fskv", on_progress, cancel)
 }
 
@@ -1144,10 +850,7 @@ mod tests {
         assert_eq!(soc_escape(&[0x01, 0x02, 0x03]), vec![0x01, 0x02, 0x03]);
         assert_eq!(soc_escape(&[0xA5]), vec![0xA6, 0x01]);
         assert_eq!(soc_escape(&[0xA6]), vec![0xA6, 0x02]);
-        assert_eq!(
-            soc_escape(&[0x00, 0xA5, 0xA6, 0xFF]),
-            vec![0x00, 0xA6, 0x01, 0xA6, 0x02, 0xFF]
-        );
+        assert_eq!(soc_escape(&[0x00, 0xA5, 0xA6, 0xFF]), vec![0x00, 0xA6, 0x01, 0xA6, 0x02, 0xFF]);
     }
 
     #[test]
@@ -1171,8 +874,7 @@ mod tests {
 
         // Verify CRC bytes match captured data
         let expected = vec![
-            0xA5, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0xC1, 0x96, 0xA5,
+            0xA5, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0xC1, 0x96, 0xA5,
         ];
         assert_eq!(frame, expected, "Frame should match captured packet");
     }
@@ -1195,14 +897,10 @@ mod tests {
 
         let frame = build_soc_frame(0x0A, 0x14700000, &0x14700000_u32.to_le_bytes(), 2);
         let expected = vec![
-            0xA5, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x70, 0x14, 0x04,
-            0x00, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x70,
+            0xA5, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x70, 0x14, 0x04, 0x00, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x70,
             0x14, 0xEB, 0x12, 0xA5,
         ];
-        assert_eq!(
-            frame, expected,
-            "Frame should match captured CMD 0x0A packet"
-        );
+        assert_eq!(frame, expected, "Frame should match captured CMD 0x0A packet");
     }
 
     #[test]
@@ -1212,14 +910,10 @@ mod tests {
         // Note: 0xA6 appears in CRC → escaped to 0xA6 0x02
         let frame = build_soc_frame(0x0C, 0, &[0x00], 4);
         let expected = vec![
-            0xA5, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
-            0x00, 0x00, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0xA6, 0x02,
+            0xA5, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0xA6, 0x02,
             0x41, 0xA5,
         ];
-        assert_eq!(
-            frame, expected,
-            "Frame should match captured CMD 0x0C with escape"
-        );
+        assert_eq!(frame, expected, "Frame should match captured CMD 0x0C with escape");
     }
 
     #[test]

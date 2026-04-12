@@ -1,12 +1,6 @@
 use crate::OutputFormat;
 
-pub fn cmd_flash_run(
-    soc: &str,
-    port: &str,
-    baud: Option<u32>,
-    script_folders: Option<&[String]>,
-    format: &OutputFormat,
-) -> anyhow::Result<()> {
+pub fn cmd_flash_run(soc: &str, port: &str, baud: Option<u32>, script_folders: Option<&[String]>, format: &OutputFormat) -> anyhow::Result<()> {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Set up Ctrl+C handler
@@ -24,16 +18,8 @@ pub fn cmd_flash_run(
 
     match chip {
         "bk72xx" | "air8101" => {
-            let folders_refs: Option<Vec<&str>> =
-                script_folders.map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
-            let lines = luatos_flash::bk7258::flash_bk7258(
-                soc,
-                folders_refs.as_deref(),
-                port,
-                baud,
-                cancel,
-                on_progress,
-            )?;
+            let folders_refs: Option<Vec<&str>> = script_folders.map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
+            let lines = luatos_flash::bk7258::flash_bk7258(soc, folders_refs.as_deref(), port, baud, cancel, on_progress)?;
             match format {
                 OutputFormat::Text => {
                     if !lines.is_empty() {
@@ -87,10 +73,7 @@ pub fn cmd_flash_run(
         }
         "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" => {
             // EC718 series: auto-detect boot mode, reboot if needed
-            let boot_port = luatos_flash::ec718::auto_enter_boot_mode(
-                Some(port),
-                &on_progress,
-            )?;
+            let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress)?;
             luatos_flash::ec718::flash_ec718(soc, &boot_port, &on_progress, cancel)?;
             match format {
                 OutputFormat::Text => {
@@ -107,9 +90,7 @@ pub fn cmd_flash_run(
             }
         }
         _ => {
-            anyhow::bail!(
-                "Unsupported chip type: {chip}. Supported: bk72xx, air6208, air101, air1601, ec7xx"
-            );
+            anyhow::bail!("Unsupported chip type: {chip}. Supported: bk72xx, air6208, air101, air1601, ec7xx");
         }
     }
 
@@ -132,13 +113,7 @@ pub fn make_progress_callback(format: &OutputFormat) -> luatos_flash::ProgressCa
     })
 }
 
-pub fn cmd_flash_partition(
-    op: &str,
-    soc: &str,
-    port: &str,
-    script_folders: Option<&[String]>,
-    format: &OutputFormat,
-) -> anyhow::Result<()> {
+pub fn cmd_flash_partition(op: &str, soc: &str, port: &str, script_folders: Option<&[String]>, format: &OutputFormat) -> anyhow::Result<()> {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let cancel_clone = cancel.clone();
@@ -185,13 +160,7 @@ pub fn cmd_flash_partition(
             "flash-fs" => {
                 let folders = script_folders.expect("fs folder required");
                 let dir_strings: Vec<String> = folders.to_vec();
-                luatos_flash::xt804::flash_filesystem(
-                    soc,
-                    port,
-                    &dir_strings,
-                    on_progress,
-                    cancel,
-                )?;
+                luatos_flash::xt804::flash_filesystem(soc, port, &dir_strings, on_progress, cancel)?;
             }
             "clear-kv" => {
                 luatos_flash::xt804::clear_kv(soc, port, on_progress, cancel)?;
@@ -201,10 +170,8 @@ pub fn cmd_flash_partition(
         "air1601" | "ccm4211" => match op {
             "script" => {
                 let folders = script_folders.expect("script folder required");
-                let folder_paths: Vec<std::path::PathBuf> =
-                    folders.iter().map(std::path::PathBuf::from).collect();
-                let path_refs: Vec<&std::path::Path> =
-                    folder_paths.iter().map(|p| p.as_path()).collect();
+                let folder_paths: Vec<std::path::PathBuf> = folders.iter().map(std::path::PathBuf::from).collect();
+                let path_refs: Vec<&std::path::Path> = folder_paths.iter().map(|p| p.as_path()).collect();
                 let script_data = luatos_luadb::build::build_script_image(
                     &path_refs,
                     info.script_use_luac(),
@@ -212,13 +179,7 @@ pub fn cmd_flash_partition(
                     info.use_bkcrc(),
                     true, // strip debug info
                 )?;
-                luatos_flash::ccm4211::flash_script_ccm4211(
-                    soc,
-                    port,
-                    &script_data,
-                    &on_progress,
-                    cancel,
-                )?;
+                luatos_flash::ccm4211::flash_script_ccm4211(soc, port, &script_data, &on_progress, cancel)?;
             }
             "clear-fs" => {
                 luatos_flash::ccm4211::clear_filesystem(soc, port, &on_progress, cancel)?;
@@ -231,10 +192,8 @@ pub fn cmd_flash_partition(
         "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" => match op {
             "script" => {
                 let folders = script_folders.expect("script folder required");
-                let folder_paths: Vec<std::path::PathBuf> =
-                    folders.iter().map(std::path::PathBuf::from).collect();
-                let path_refs: Vec<&std::path::Path> =
-                    folder_paths.iter().map(|p| p.as_path()).collect();
+                let folder_paths: Vec<std::path::PathBuf> = folders.iter().map(std::path::PathBuf::from).collect();
+                let path_refs: Vec<&std::path::Path> = folder_paths.iter().map(|p| p.as_path()).collect();
                 let script_data = luatos_luadb::build::build_script_image(
                     &path_refs,
                     info.script_use_luac(),
@@ -242,17 +201,8 @@ pub fn cmd_flash_partition(
                     info.use_bkcrc(),
                     true, // strip debug info
                 )?;
-                let boot_port = luatos_flash::ec718::auto_enter_boot_mode(
-                    Some(port),
-                    &on_progress,
-                )?;
-                luatos_flash::ec718::flash_script_ec718(
-                    soc,
-                    &boot_port,
-                    &script_data,
-                    &on_progress,
-                    cancel,
-                )?;
+                let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress)?;
+                luatos_flash::ec718::flash_script_ec718(soc, &boot_port, &script_data, &on_progress, cancel)?;
             }
             _ => {
                 anyhow::bail!(
@@ -329,9 +279,7 @@ pub fn cmd_flash_test(
     let chip = info.chip.chip_type.clone();
     let log_br = info.log_baud_rate();
     // For EC718 USB CDC, 2000000 baud is not supported; use 921600
-    let log_br = if matches!(chip.as_str(), "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg")
-        && log_br == 2000000
-    {
+    let log_br = if matches!(chip.as_str(), "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg") && log_br == 2000000 {
         921600
     } else {
         log_br
@@ -339,16 +287,8 @@ pub fn cmd_flash_test(
 
     let boot_lines_from_flash: Vec<String> = match chip.as_str() {
         "bk72xx" | "air8101" => {
-            let folders_refs: Option<Vec<&str>> =
-                script_folders.map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
-            luatos_flash::bk7258::flash_bk7258(
-                soc,
-                folders_refs.as_deref(),
-                port,
-                baud,
-                cancel.clone(),
-                on_progress,
-            )?
+            let folders_refs: Option<Vec<&str>> = script_folders.map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
+            luatos_flash::bk7258::flash_bk7258(soc, folders_refs.as_deref(), port, baud, cancel.clone(), on_progress)?
         }
         "air6208" | "air101" | "air103" | "air601" => {
             let on_progress2 = make_progress_callback(format);
@@ -362,10 +302,7 @@ pub fn cmd_flash_test(
         }
         "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" => {
             let on_progress2 = make_progress_callback(format);
-            let boot_port = luatos_flash::ec718::auto_enter_boot_mode(
-                Some(port),
-                &on_progress2,
-            )?;
+            let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress2)?;
             luatos_flash::ec718::flash_ec718(soc, &boot_port, &on_progress2, cancel.clone())?;
             Vec::new()
         }
@@ -418,9 +355,7 @@ pub fn cmd_flash_test(
     }
 
     // Open serial port and capture lines for the timeout period
-    let serial = serialport::new(&log_port, log_br)
-        .timeout(Duration::from_millis(500))
-        .open();
+    let serial = serialport::new(&log_port, log_br).timeout(Duration::from_millis(500)).open();
 
     if let Ok(mut serial) = serial {
         use std::io::{Read, Write};
@@ -452,18 +387,10 @@ pub fn cmd_flash_test(
                             let entries = decoder.feed(&buf[..n]);
                             for entry in &entries {
                                 let module = entry.module.as_deref().unwrap_or("-");
-                                let msg = format!(
-                                    "[{}] {}/{} {}",
-                                    entry.device_time.as_deref().unwrap_or("?"),
-                                    entry.level,
-                                    module,
-                                    entry.message
-                                );
+                                let msg = format!("[{}] {}/{} {}", entry.device_time.as_deref().unwrap_or("?"), entry.level, module, entry.message);
                                 all_lines.push(msg);
                             }
-                            let found_all = keywords
-                                .iter()
-                                .all(|kw| all_lines.iter().any(|line| line.contains(kw.as_str())));
+                            let found_all = keywords.iter().all(|kw| all_lines.iter().any(|line| line.contains(kw.as_str())));
                             if found_all {
                                 break;
                             }
@@ -485,18 +412,10 @@ pub fn cmd_flash_test(
                             let entries = decoder.feed(&buf[..n]);
                             for entry in &entries {
                                 let module = entry.module.as_deref().unwrap_or("-");
-                                let msg = format!(
-                                    "[{}] {}/{} {}",
-                                    entry.device_time.as_deref().unwrap_or("?"),
-                                    entry.level,
-                                    module,
-                                    entry.message
-                                );
+                                let msg = format!("[{}] {}/{} {}", entry.device_time.as_deref().unwrap_or("?"), entry.level, module, entry.message);
                                 all_lines.push(msg);
                             }
-                            let found_all = keywords
-                                .iter()
-                                .all(|kw| all_lines.iter().any(|line| line.contains(kw.as_str())));
+                            let found_all = keywords.iter().all(|kw| all_lines.iter().any(|line| line.contains(kw.as_str())));
                             if found_all {
                                 break;
                             }
@@ -530,9 +449,7 @@ pub fn cmd_flash_test(
                         }
 
                         // Early exit if we already found all keywords
-                        let found_all = keywords
-                            .iter()
-                            .all(|kw| all_lines.iter().any(|line| line.contains(kw.as_str())));
+                        let found_all = keywords.iter().all(|kw| all_lines.iter().any(|line| line.contains(kw.as_str())));
                         if found_all {
                             break;
                         }
@@ -575,10 +492,7 @@ pub fn cmd_flash_test(
             println!("  Log lines: {}", all_lines.len());
             for (kw, found) in &keyword_results {
                 let icon = if *found { "✓" } else { "✗" };
-                println!(
-                    "  [{icon}] Keyword \"{kw}\": {}",
-                    if *found { "FOUND" } else { "NOT FOUND" }
-                );
+                println!("  [{icon}] Keyword \"{kw}\": {}", if *found { "FOUND" } else { "NOT FOUND" });
             }
             if !all_lines.is_empty() {
                 println!("\n--- Boot Log ({} lines) ---", all_lines.len());

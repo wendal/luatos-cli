@@ -39,14 +39,7 @@ pub fn pack_luadb(entries: &[LuadbEntry]) -> Vec<u8> {
         out.push(e.filename.len() as u8);
         out.extend_from_slice(e.filename.as_bytes());
         let sz = e.data.len() as u32;
-        out.extend_from_slice(&[
-            0x03,
-            0x04,
-            sz as u8,
-            (sz >> 8) as u8,
-            (sz >> 16) as u8,
-            (sz >> 24) as u8,
-        ]);
+        out.extend_from_slice(&[0x03, 0x04, sz as u8, (sz >> 8) as u8, (sz >> 16) as u8, (sz >> 24) as u8]);
         out.extend_from_slice(&[0xFE, 0x02, 0xFF, 0xFF]); // CRC (unused)
         out.extend_from_slice(&e.data);
     }
@@ -81,11 +74,7 @@ fn bk_crc16(block: &[u8; 32]) -> u16 {
     for &b in block {
         crc ^= (b as u32) << 8;
         for _ in 0..8 {
-            crc = if crc & 0x8000 != 0 {
-                (crc << 1) ^ 0x8005
-            } else {
-                crc << 1
-            };
+            crc = if crc & 0x8000 != 0 { (crc << 1) ^ 0x8005 } else { crc << 1 };
         }
     }
     (crc & 0xFFFF) as u16

@@ -41,31 +41,102 @@ pub struct DependencyGraph {
 /// These are provided by the C runtime, not as `.lua` files.
 const BUILTIN_MODULES: &[&str] = &[
     // Lua 标准库
-    "os", "io", "string", "table", "math", "coroutine", "debug", "bit32", "utf8",
+    "os",
+    "io",
+    "string",
+    "table",
+    "math",
+    "coroutine",
+    "debug",
+    "bit32",
+    "utf8",
     // LuatOS 核心
-    "sys", "log", "rtos", "pack", "zbuff", "hmeta",
+    "sys",
+    "log",
+    "rtos",
+    "pack",
+    "zbuff",
+    "hmeta",
     // 外设
-    "uart", "gpio", "spi", "i2c", "adc", "pwm", "timer", "wdt", "rtc",
-    "pin", "pins", "touchkey", "keyboard", "ir", "tp",
+    "uart",
+    "gpio",
+    "spi",
+    "i2c",
+    "adc",
+    "pwm",
+    "timer",
+    "wdt",
+    "rtc",
+    "pin",
+    "pins",
+    "touchkey",
+    "keyboard",
+    "ir",
+    "tp",
     // 网络
-    "wlan", "socket", "http", "mqtt", "websocket", "ftp", "ntp", "httpsrv",
-    "mobile", "sms", "netdrv", "bluetooth", "ble", "nimble",
-    "lora", "lora2", "airlink", "voip",
+    "wlan",
+    "socket",
+    "http",
+    "mqtt",
+    "websocket",
+    "ftp",
+    "ntp",
+    "httpsrv",
+    "mobile",
+    "sms",
+    "netdrv",
+    "bluetooth",
+    "ble",
+    "nimble",
+    "lora",
+    "lora2",
+    "airlink",
+    "voip",
     // 安全
-    "crypto", "iotauth", "gmssl", "xxtea",
+    "crypto",
+    "iotauth",
+    "gmssl",
+    "xxtea",
     // 存储
-    "fskv", "fs", "fatfs", "sdio", "otp",
+    "fskv",
+    "fs",
+    "fatfs",
+    "sdio",
+    "otp",
     // 显示
-    "disp", "u8g2", "lvgl", "lcd", "eink", "lcdseg", "ht1621", "airui",
+    "disp",
+    "u8g2",
+    "lvgl",
+    "lcd",
+    "eink",
+    "lcdseg",
+    "ht1621",
+    "airui",
     // 多媒体
-    "audio", "codec", "record", "multimedia", "camera",
+    "audio",
+    "codec",
+    "record",
+    "multimedia",
+    "camera",
     // 编解码 & 压缩
-    "json", "protobuf", "iconv", "miniz", "fastlz", "ymodem",
+    "json",
+    "protobuf",
+    "iconv",
+    "miniz",
+    "fastlz",
+    "ymodem",
     // 传感器 & 电源
-    "sensor", "max30102", "pm",
+    "sensor",
+    "max30102",
+    "pm",
     // 其他
-    "w5500", "libcoap", "ercoap", "libgnss", "statem",
-    "bit64", "errDump",
+    "w5500",
+    "libcoap",
+    "ercoap",
+    "libgnss",
+    "statem",
+    "bit64",
+    "errDump",
 ];
 
 fn is_builtin_module(name: &str) -> bool {
@@ -87,11 +158,7 @@ pub fn extract_requires(source: &str) -> Vec<String> {
         }
 
         // Remove inline comments before processing
-        let code = if let Some(pos) = find_comment_start(trimmed) {
-            &trimmed[..pos]
-        } else {
-            trimmed
-        };
+        let code = if let Some(pos) = find_comment_start(trimmed) { &trimmed[..pos] } else { trimmed };
 
         // Find all require calls in the line
         let mut search_from = 0;
@@ -145,9 +212,9 @@ fn find_comment_start(line: &str) -> Option<usize> {
 /// Handles: `("module")`, `('module')`, `"module"`, `'module'`
 fn extract_module_name(after: &str) -> Option<String> {
     let after = after.trim_start();
-    if after.starts_with('(') {
+    if let Some(inner) = after.strip_prefix('(') {
         // require("module") or require('module')
-        let inner = after[1..].trim_start();
+        let inner = inner.trim_start();
         extract_quoted_string(inner)
     } else if after.starts_with('"') || after.starts_with('\'') {
         // require "module" or require 'module'
@@ -171,10 +238,7 @@ fn extract_quoted_string(s: &str) -> Option<String> {
 ///
 /// Returns a map of filename → full path. For directories, all `.lua` files
 /// are collected recursively. For individual files, they are added directly.
-pub fn collect_script_files(
-    script_dirs: &[String],
-    script_files: &[String],
-) -> Result<HashMap<String, PathBuf>> {
+pub fn collect_script_files(script_dirs: &[String], script_files: &[String]) -> Result<HashMap<String, PathBuf>> {
     let mut files = HashMap::new();
 
     // Collect from directories
@@ -196,12 +260,7 @@ pub fn collect_script_files(
             if !entry.file_type().is_file() {
                 continue;
             }
-            let filename = entry
-                .path()
-                .file_name()
-                .context("entry has no filename")?
-                .to_string_lossy()
-                .into_owned();
+            let filename = entry.path().file_name().context("entry has no filename")?.to_string_lossy().into_owned();
             files.insert(filename, entry.path().to_path_buf());
         }
     }
@@ -226,10 +285,7 @@ pub fn collect_script_files(
 /// Walks the dependency tree from the entry point, resolving `require()` calls
 /// to local files. Modules that don't resolve to local files are recorded as
 /// external (assumed to be firmware builtins).
-pub fn analyze_deps(
-    script_dirs: &[String],
-    script_files: &[String],
-) -> Result<DependencyGraph> {
+pub fn analyze_deps(script_dirs: &[String], script_files: &[String]) -> Result<DependencyGraph> {
     let files = collect_script_files(script_dirs, script_files)?;
 
     // Build a module-name → filename lookup
@@ -249,8 +305,7 @@ pub fn analyze_deps(
     for (filename, path) in &files {
         if filename.ends_with(".lua") || filename.ends_with(".luac") {
             if filename.ends_with(".lua") {
-                let source = fs::read_to_string(path)
-                    .with_context(|| format!("failed to read {}", path.display()))?;
+                let source = fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
                 let requires = extract_requires(&source);
                 deps.insert(filename.clone(), requires);
             } else {
@@ -274,7 +329,7 @@ pub fn analyze_deps(
         log::warn!("No main.lua found; all files treated as reachable");
         let all_files: BTreeSet<String> = files.keys().cloned().collect();
         return Ok(DependencyGraph {
-            files: files.into_iter().map(|(k, v)| (k, v)).collect(),
+            files: files.into_iter().collect(),
             deps,
             reachable: all_files,
             external_modules,
@@ -297,11 +352,7 @@ pub fn analyze_deps(
                 } else {
                     // Unknown module — could be a dynamic require or typo
                     external_modules.insert(module.clone());
-                    log::debug!(
-                        "Module '{}' required by '{}' not found locally",
-                        module,
-                        current
-                    );
+                    log::debug!("Module '{}' required by '{}' not found locally", module, current);
                 }
             }
         }
@@ -315,7 +366,7 @@ pub fn analyze_deps(
     }
 
     Ok(DependencyGraph {
-        files: files.into_iter().map(|(k, v)| (k, v)).collect(),
+        files: files.into_iter().collect(),
         deps,
         reachable,
         external_modules,
@@ -325,10 +376,7 @@ pub fn analyze_deps(
 /// Filter a list of files to only include those reachable from main.lua.
 ///
 /// When `ignore_deps` is true, all files are returned unchanged.
-pub fn filter_by_deps(
-    graph: &DependencyGraph,
-    ignore_deps: bool,
-) -> Vec<String> {
+pub fn filter_by_deps(graph: &DependencyGraph, ignore_deps: bool) -> Vec<String> {
     if ignore_deps {
         graph.files.keys().cloned().collect()
     } else {
@@ -430,16 +478,8 @@ print("unused")
     #[test]
     fn analyze_transitive_deps() {
         let dir = TempDir::new().unwrap();
-        fs::write(
-            dir.path().join("main.lua"),
-            r#"local a = require("a")"#,
-        )
-        .unwrap();
-        fs::write(
-            dir.path().join("a.lua"),
-            r#"local b = require("b"); return {}"#,
-        )
-        .unwrap();
+        fs::write(dir.path().join("main.lua"), r#"local a = require("a")"#).unwrap();
+        fs::write(dir.path().join("a.lua"), r#"local b = require("b"); return {}"#).unwrap();
         fs::write(dir.path().join("b.lua"), r#"return {}"#).unwrap();
         fs::write(dir.path().join("c.lua"), r#"return {}"#).unwrap();
 
@@ -502,11 +542,7 @@ print("unused")
         fs::write(extra_dir.path().join("single.lua"), b"return 1").unwrap();
 
         let dirs = vec![dir.path().to_string_lossy().into_owned()];
-        let files_list = vec![extra_dir
-            .path()
-            .join("single.lua")
-            .to_string_lossy()
-            .into_owned()];
+        let files_list = vec![extra_dir.path().join("single.lua").to_string_lossy().into_owned()];
 
         let collected = collect_script_files(&dirs, &files_list).unwrap();
         assert!(collected.contains_key("main.lua"));

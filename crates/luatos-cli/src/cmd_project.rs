@@ -1,11 +1,6 @@
 use crate::OutputFormat;
 
-pub fn cmd_project_new(
-    dir: &str,
-    name: &str,
-    chip: &str,
-    format: &OutputFormat,
-) -> anyhow::Result<()> {
+pub fn cmd_project_new(dir: &str, name: &str, chip: &str, format: &OutputFormat) -> anyhow::Result<()> {
     let dir_path = std::path::Path::new(dir);
     luatos_project::scaffold_project(dir_path, name, chip)?;
 
@@ -69,12 +64,7 @@ pub fn cmd_project_info(dir: &str, format: &OutputFormat) -> anyhow::Result<()> 
     Ok(())
 }
 
-pub fn cmd_project_config(
-    dir: &str,
-    key: Option<&str>,
-    value: Option<&str>,
-    format: &OutputFormat,
-) -> anyhow::Result<()> {
+pub fn cmd_project_config(dir: &str, key: Option<&str>, value: Option<&str>, format: &OutputFormat) -> anyhow::Result<()> {
     let dir_path = std::path::Path::new(dir);
     let mut project = luatos_project::Project::load(dir_path)?;
 
@@ -146,20 +136,12 @@ fn get_config_value(project: &luatos_project::Project, key: &str) -> anyhow::Res
         "build.ignore_deps" => project.build.ignore_deps.to_string(),
         "flash.soc_file" => project.flash.soc_file.clone().unwrap_or_default(),
         "flash.port" => project.flash.port.clone().unwrap_or_default(),
-        "flash.baud" => project
-            .flash
-            .baud
-            .map(|b| b.to_string())
-            .unwrap_or_default(),
+        "flash.baud" => project.flash.baud.map(|b| b.to_string()).unwrap_or_default(),
         _ => anyhow::bail!("Unknown config key: {key}"),
     })
 }
 
-fn set_config_value(
-    project: &mut luatos_project::Project,
-    key: &str,
-    value: &str,
-) -> anyhow::Result<()> {
+fn set_config_value(project: &mut luatos_project::Project, key: &str, value: &str) -> anyhow::Result<()> {
     match key {
         "project.name" => project.project.name = value.to_string(),
         "project.chip" => project.project.chip = value.to_string(),
@@ -169,8 +151,7 @@ fn set_config_value(
             project.build.script_dirs = value.split(',').map(|s| s.trim().to_string()).collect();
         }
         "build.script_files" => {
-            project.build.script_files =
-                value.split(',').map(|s| s.trim().to_string()).collect();
+            project.build.script_files = value.split(',').map(|s| s.trim().to_string()).collect();
         }
         "build.output_dir" => project.build.output_dir = value.to_string(),
         "build.use_luac" => project.build.use_luac = value.parse()?,
@@ -233,12 +214,7 @@ pub fn cmd_project_import(ini: &str, dir: &str, format: &OutputFormat) -> anyhow
     Ok(())
 }
 
-pub fn cmd_project_deps(
-    dir: &str,
-    show_reachable: bool,
-    show_unreachable: bool,
-    format: &OutputFormat,
-) -> anyhow::Result<()> {
+pub fn cmd_project_deps(dir: &str, show_reachable: bool, show_unreachable: bool, format: &OutputFormat) -> anyhow::Result<()> {
     let dir_path = std::path::Path::new(dir);
     let project = luatos_project::Project::load(dir_path)?;
 
@@ -265,11 +241,7 @@ pub fn cmd_project_deps(
     let graph = luatos_project::lua_deps::analyze_deps(&script_dirs, &script_files)?;
 
     let all_files: Vec<&String> = graph.files.keys().collect();
-    let unreachable: Vec<&String> = all_files
-        .iter()
-        .filter(|f| !graph.reachable.contains(**f))
-        .copied()
-        .collect();
+    let unreachable: Vec<&String> = all_files.iter().filter(|f| !graph.reachable.contains(**f)).copied().collect();
 
     match format {
         OutputFormat::Text => {
@@ -286,10 +258,7 @@ pub fn cmd_project_deps(
             } else {
                 // Show full dependency analysis
                 println!("Dependency analysis for '{}'", project.project.name);
-                println!(
-                    "  Total files:      {}",
-                    graph.files.len()
-                );
+                println!("  Total files:      {}", graph.files.len());
                 println!("  Reachable:        {}", graph.reachable.len());
                 println!("  Unreachable:      {}", unreachable.len());
                 println!("  External modules: {}", graph.external_modules.len());
@@ -299,11 +268,7 @@ pub fn cmd_project_deps(
                     println!("\nDependencies:");
                     for (file, deps) in &graph.deps {
                         if !deps.is_empty() {
-                            let marker = if graph.reachable.contains(file) {
-                                "✓"
-                            } else {
-                                "✗"
-                            };
+                            let marker = if graph.reachable.contains(file) { "✓" } else { "✗" };
                             println!("  {marker} {file} → {}", deps.join(", "));
                         }
                     }
@@ -325,11 +290,7 @@ pub fn cmd_project_deps(
             }
         }
         OutputFormat::Json => {
-            let deps_map: serde_json::Map<String, serde_json::Value> = graph
-                .deps
-                .iter()
-                .map(|(k, v)| (k.clone(), serde_json::json!(v)))
-                .collect();
+            let deps_map: serde_json::Map<String, serde_json::Value> = graph.deps.iter().map(|(k, v)| (k.clone(), serde_json::json!(v))).collect();
             let json = serde_json::json!({
                 "status": "ok",
                 "command": "project.deps",

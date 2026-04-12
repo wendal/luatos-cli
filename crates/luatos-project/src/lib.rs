@@ -95,18 +95,11 @@ fn default_script_dirs() -> Vec<String> {
 pub struct BuildConfig {
     /// Script source directories. Accepts a single string or array in TOML.
     /// Backward compatible with `script_dir = "lua/"`.
-    #[serde(
-        alias = "script_dir",
-        deserialize_with = "deserialize_string_or_vec",
-        default = "default_script_dirs"
-    )]
+    #[serde(alias = "script_dir", deserialize_with = "deserialize_string_or_vec", default = "default_script_dirs")]
     pub script_dirs: Vec<String>,
     /// Individual script file paths to include.
     /// Useful when you need specific files from different locations.
-    #[serde(
-        deserialize_with = "deserialize_string_or_vec",
-        default
-    )]
+    #[serde(deserialize_with = "deserialize_string_or_vec", default)]
     pub script_files: Vec<String>,
     /// Directory where build artifacts are written.
     pub output_dir: String,
@@ -173,10 +166,8 @@ impl Project {
     /// Load a project configuration from `{dir}/luatos-project.toml`.
     pub fn load(dir: &Path) -> Result<Self> {
         let path = Self::config_file(dir);
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        let project: Project = toml::from_str(&content)
-            .with_context(|| format!("failed to parse {}", path.display()))?;
+        let content = fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+        let project: Project = toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
         Ok(project)
     }
 
@@ -207,8 +198,7 @@ pub fn scaffold_project(dir: &Path, name: &str, chip: &str) -> Result<()> {
     }
 
     // Ensure the target directory exists.
-    fs::create_dir_all(dir)
-        .with_context(|| format!("failed to create directory {}", dir.display()))?;
+    fs::create_dir_all(dir).with_context(|| format!("failed to create directory {}", dir.display()))?;
 
     // Write project config.
     let project = Project::new(name, chip);
@@ -216,19 +206,12 @@ pub fn scaffold_project(dir: &Path, name: &str, chip: &str) -> Result<()> {
 
     // Create lua/ directory and main.lua template.
     let lua_dir = dir.join("lua");
-    fs::create_dir_all(&lua_dir)
-        .with_context(|| format!("failed to create {}", lua_dir.display()))?;
+    fs::create_dir_all(&lua_dir).with_context(|| format!("failed to create {}", lua_dir.display()))?;
 
     let main_lua = lua_dir.join("main.lua");
-    fs::write(&main_lua, "print(\"Hello from \" .. _VERSION)\n")
-        .with_context(|| format!("failed to write {}", main_lua.display()))?;
+    fs::write(&main_lua, "print(\"Hello from \" .. _VERSION)\n").with_context(|| format!("failed to write {}", main_lua.display()))?;
 
-    log::info!(
-        "scaffolded project '{}' for chip '{}' in {}",
-        name,
-        chip,
-        dir.display()
-    );
+    log::info!("scaffolded project '{}' for chip '{}' in {}", name, chip, dir.display());
     Ok(())
 }
 
@@ -399,10 +382,7 @@ ignore_deps = true
 soc_file = "firmware.soc"
 "#;
         let project: Project = toml::from_str(toml_str).unwrap();
-        assert_eq!(
-            project.build.script_files,
-            vec!["extra/helper.lua", "lib/utils.lua"]
-        );
+        assert_eq!(project.build.script_files, vec!["extra/helper.lua", "lib/utils.lua"]);
         assert!(project.build.luac_debug);
         assert!(project.build.ignore_deps);
     }

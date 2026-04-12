@@ -27,10 +27,8 @@ use crate::{FlashProgress, ProgressCallback};
 
 // ─── Embedded AgentBoot Binaries ─────────────────────────────────────────────
 
-const AGENTBOOT_EC718M_USB: &[u8] =
-    include_bytes!("../../../refs/origin_tools/ec_download/agentboot/ec718m_usb.bin");
-const AGENTBOOT_EC718M_UART: &[u8] =
-    include_bytes!("../../../refs/origin_tools/ec_download/agentboot/ec718m_uart.bin");
+const AGENTBOOT_EC718M_USB: &[u8] = include_bytes!("../../../refs/origin_tools/ec_download/agentboot/ec718m_usb.bin");
+const AGENTBOOT_EC718M_UART: &[u8] = include_bytes!("../../../refs/origin_tools/ec_download/agentboot/ec718m_uart.bin");
 
 // ─── Protocol Constants ─────────────────────────────────────────────────────
 
@@ -175,14 +173,7 @@ fn crc8_maxim(stream: &[u8]) -> u8 {
 
 /// Self-defined checksum for DLBOOT DOWNLOAD_DATA commands.
 fn self_def_check1(cmd: u8, index: u8, order_id: u8, norder_id: u8, len: u32, data: &[u8]) -> [u8; 4] {
-    let mut ck_val: u32 = cmd as u32
-        + index as u32
-        + order_id as u32
-        + norder_id as u32
-        + (len & 0xFF)
-        + ((len >> 8) & 0xFF)
-        + ((len >> 16) & 0xFF)
-        + ((len >> 24) & 0xFF);
+    let mut ck_val: u32 = cmd as u32 + index as u32 + order_id as u32 + norder_id as u32 + (len & 0xFF) + ((len >> 8) & 0xFF) + ((len >> 16) & 0xFF) + ((len >> 24) & 0xFF);
 
     for &b in data {
         ck_val = ck_val.wrapping_add(b as u32);
@@ -343,11 +334,9 @@ impl ImgHead {
         // ctlinfo.hashtype = 0xee
         data[Self::CTLINFO_OFFSET] = 0xee;
         // ImgBody.id = AGBT_IDENTIFIER
-        data[Self::BODY_OFFSET..Self::BODY_OFFSET + 4]
-            .copy_from_slice(&AGBT_IDENTIFIER.to_le_bytes());
+        data[Self::BODY_OFFSET..Self::BODY_OFFSET + 4].copy_from_slice(&AGBT_IDENTIFIER.to_le_bytes());
         // ImgBody.ldloc = 0x04010000
-        data[Self::BODY_OFFSET + 8..Self::BODY_OFFSET + 12]
-            .copy_from_slice(&0x04010000u32.to_le_bytes());
+        data[Self::BODY_OFFSET + 8..Self::BODY_OFFSET + 12].copy_from_slice(&0x04010000u32.to_le_bytes());
 
         ImgHead { data }
     }
@@ -372,11 +361,7 @@ impl ImgHead {
     }
 
     fn set_baudrate_ctrl(&mut self, baud: u32) {
-        let ctrl = if baud != 0 {
-            ((baud / 100) + 0x8000) as u16
-        } else {
-            0
-        };
+        let ctrl = if baud != 0 { ((baud / 100) + 0x8000) as u16 } else { 0 };
         let off = Self::CTLINFO_OFFSET + 2;
         self.data[off..off + 2].copy_from_slice(&ctrl.to_le_bytes());
     }
@@ -459,11 +444,7 @@ pub fn parse_binpkg(fdata: &[u8]) -> Result<BinpkgResult> {
         let meta = &fdata[cursor..cursor + ENTRY_META_SIZE];
 
         let name_raw = &meta[0..64];
-        let name = name_raw
-            .split(|&b| b == 0)
-            .next()
-            .map(|s| String::from_utf8_lossy(s).to_string())
-            .unwrap_or_default();
+        let name = name_raw.split(|&b| b == 0).next().map(|s| String::from_utf8_lossy(s).to_string()).unwrap_or_default();
 
         let addr = u32::from_le_bytes(meta[64..68].try_into().unwrap());
         let flash_size = u32::from_le_bytes(meta[68..72].try_into().unwrap());
@@ -478,11 +459,7 @@ pub fn parse_binpkg(fdata: &[u8]) -> Result<BinpkgResult> {
             .unwrap_or_default();
 
         let img_type_raw = &meta[336..352];
-        let image_type = img_type_raw
-            .split(|&b| b == 0)
-            .next()
-            .map(|s| String::from_utf8_lossy(s).to_string())
-            .unwrap_or_default();
+        let image_type = img_type_raw.split(|&b| b == 0).next().map(|s| String::from_utf8_lossy(s).to_string()).unwrap_or_default();
 
         cursor += ENTRY_META_SIZE;
 
@@ -494,13 +471,7 @@ pub fn parse_binpkg(fdata: &[u8]) -> Result<BinpkgResult> {
             None
         };
 
-        log::debug!(
-            "binpkg entry: {} addr=0x{:08X} size={} type={}",
-            name,
-            addr,
-            img_size,
-            image_type
-        );
+        log::debug!("binpkg entry: {} addr=0x{:08X} size={} type={}", name, addr, img_size, image_type);
 
         entries.push(BinpkgEntry {
             name,
@@ -556,12 +527,7 @@ fn burn_sync(port: &mut dyn SerialPort, sync_type: SyncType, counter: u32) -> Re
 /// Send a DL command and receive response.
 /// dlboot=true: DLBOOT mode (self_def_check1 for DOWNLOAD_DATA)
 /// dlboot=false: AGBOOT mode (CRC32 + CRC8-Maxim length encoding)
-fn send_recv_cmd(
-    port: &mut dyn SerialPort,
-    cmd: &mut Cmd,
-    data: &[u8],
-    dlboot: bool,
-) -> Result<(i32, Option<Vec<u8>>)> {
+fn send_recv_cmd(port: &mut dyn SerialPort, cmd: &mut Cmd, data: &[u8], dlboot: bool) -> Result<(i32, Option<Vec<u8>>)> {
     let mut tmpdata = cmd.pack();
     tmpdata.extend_from_slice(data);
 
@@ -579,14 +545,7 @@ fn send_recv_cmd(
         tmpdata.extend_from_slice(&ck_val.to_le_bytes());
     } else if cmd.cmd == CMD_DOWNLOAD_DATA {
         // DLBOOT with DOWNLOAD_DATA: self_def_check1
-        let ck = self_def_check1(
-            cmd.cmd,
-            cmd.index,
-            cmd.order_id,
-            cmd.norder_id,
-            cmd.len,
-            data,
-        );
+        let ck = self_def_check1(cmd.cmd, cmd.index, cmd.order_id, cmd.norder_id, cmd.len, data);
         tmpdata.extend_from_slice(&ck);
     }
 
@@ -607,11 +566,7 @@ fn send_recv_cmd(
     };
 
     let rsp = Rsp::unpack(&recv_buf);
-    let rsp_data = if rsp.len > 0 {
-        com_read(port, rsp.len as usize)?
-    } else {
-        None
-    };
+    let rsp_data = if rsp.len > 0 { com_read(port, rsp.len as usize)? } else { None };
 
     // In AGBOOT mode, read trailing CRC32
     if !dlboot {
@@ -627,11 +582,7 @@ fn send_recv_cmd(
 }
 
 /// Send an LPC command and receive response.
-fn send_recv_lpc_cmd(
-    port: &mut dyn SerialPort,
-    cmd: &mut LpcCmd,
-    data: &[u8],
-) -> Result<(i32, Option<Vec<u8>>)> {
+fn send_recv_lpc_cmd(port: &mut dyn SerialPort, cmd: &mut LpcCmd, data: &[u8]) -> Result<(i32, Option<Vec<u8>>)> {
     // CRC32 of original cmd + data
     let mut orig = cmd.pack();
     orig.extend_from_slice(data);
@@ -659,11 +610,7 @@ fn send_recv_lpc_cmd(
         }
         let rsp = Rsp::unpack(&recv_buf);
 
-        let rsp_data = if rsp.len > 0 {
-            com_read(port, rsp.len as usize)?
-        } else {
-            None
-        };
+        let rsp_data = if rsp.len > 0 { com_read(port, rsp.len as usize)? } else { None };
 
         // Read trailing CRC32
         let _ = com_read(port, 4)?;
@@ -800,15 +747,7 @@ fn package_data(port: &mut dyn SerialPort, cmd: &mut Cmd, data: &[u8], dlboot: b
 }
 
 /// Build and send image header.
-fn package_image_head(
-    port: &mut dyn SerialPort,
-    fdata: &[u8],
-    img_type: BurnImageType,
-    addr: u32,
-    baud: u32,
-    dlboot: bool,
-    pullup_qspi: u32,
-) -> Result<i32> {
+fn package_image_head(port: &mut dyn SerialPort, fdata: &[u8], img_type: BurnImageType, addr: u32, baud: u32, dlboot: bool, pullup_qspi: u32) -> Result<i32> {
     let fhash: [u8; 32] = Sha256::digest(fdata).into();
 
     let mut img_hd = ImgHead::new();
@@ -919,6 +858,7 @@ fn burn_agboot(port: &mut dyn SerialPort, agent_data: &[u8], baud: u32) -> Resul
 }
 
 /// Burn a single image partition.
+#[allow(clippy::too_many_arguments)]
 fn burn_img(
     port: &mut dyn SerialPort,
     data: &[u8],
@@ -962,20 +902,11 @@ fn burn_img(
     while remain > 0 {
         burn_sync(port, SyncType::AgBoot, 2)?;
 
-        let data_len = if remain > MAX_DATA_BLOCK_SIZE {
-            MAX_DATA_BLOCK_SIZE
-        } else {
-            remain
-        };
+        let data_len = if remain > MAX_DATA_BLOCK_SIZE { MAX_DATA_BLOCK_SIZE } else { remain };
 
         let mut cmd = Cmd::new(CMD_DOWNLOAD_DATA);
         cmd.len = data_len as u32;
-        let ret = package_data(
-            port,
-            &mut cmd,
-            &data[data_offset..data_offset + data_len],
-            false,
-        )?;
+        let ret = package_data(port, &mut cmd, &data[data_offset..data_offset + data_len], false)?;
         if ret != 0 {
             bail!("package_data failed for {}", tag);
         }
@@ -984,11 +915,7 @@ fn burn_img(
         remain -= data_len;
 
         let pct = base_pct + pct_range * (data_offset as f32 / total as f32);
-        on_progress(&FlashProgress::info(
-            "Flashing",
-            pct,
-            &format!("{}: {}/{}KB", tag, data_offset / 1024, total / 1024),
-        ));
+        on_progress(&FlashProgress::info("Flashing", pct, &format!("{}: {}/{}KB", tag, data_offset / 1024, total / 1024)));
     }
 
     let ret = lpc_get_burn_status(port)?;
@@ -1021,10 +948,7 @@ fn extract_and_parse_soc(soc_path: &str) -> Result<(BinpkgResult, Option<Vec<u8>
 
     // Read info.json for script_addr
     let info_path = temppath.join("info.json");
-    let info: serde_json::Value = serde_json::from_reader(
-        std::fs::File::open(&info_path).context("info.json missing")?,
-    )
-    .context("Parse info.json")?;
+    let info: serde_json::Value = serde_json::from_reader(std::fs::File::open(&info_path).context("info.json missing")?).context("Parse info.json")?;
 
     let script_addr = info
         .pointer("/download/script_addr")
@@ -1032,11 +956,7 @@ fn extract_and_parse_soc(soc_path: &str) -> Result<(BinpkgResult, Option<Vec<u8>
         .and_then(|s| u32::from_str_radix(s, 16).ok())
         .unwrap_or(0);
 
-    let force_br = info
-        .pointer("/download/force_br")
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(0);
+    let force_br = info.pointer("/download/force_br").and_then(|v| v.as_str()).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
 
     // Find and parse binpkg
     let mut binpkg_result: Option<BinpkgResult> = None;
@@ -1076,8 +996,7 @@ fn extract_and_parse_soc(soc_path: &str) -> Result<(BinpkgResult, Option<Vec<u8>
 /// Helper to extract a 7z SOC file.
 fn extract_soc_7z(soc_path: &str, out_dir: &std::path::Path) -> Result<()> {
     std::fs::create_dir_all(out_dir)?;
-    sevenz_rust2::decompress_file(soc_path, out_dir)
-        .with_context(|| format!("7z extraction failed: {soc_path}"))?;
+    sevenz_rust2::decompress_file(soc_path, out_dir).with_context(|| format!("7z extraction failed: {soc_path}"))?;
     Ok(())
 }
 
@@ -1096,9 +1015,7 @@ fn entry_to_burn_type(entry: &BinpkgEntry) -> Option<(BurnImageType, u8, u32)> {
             addr -= 0x800000;
         }
         Some((BurnImageType::Cp, STYPE_AP_FLASH, addr))
-    } else if name == "script" {
-        Some((BurnImageType::Ap, STYPE_AP_FLASH, entry.addr))
-    } else if itype == "AP" || name.contains("ap") || name.contains("system") {
+    } else if name == "script" || itype == "AP" || name.contains("ap") || name.contains("system") {
         Some((BurnImageType::Ap, STYPE_AP_FLASH, entry.addr))
     } else if name.contains("flex") || name.contains("rf") {
         let stor = if entry.addr >= 0x800000 { STYPE_AP_FLASH } else { STYPE_CP_FLASH };
@@ -1141,16 +1058,10 @@ pub fn try_reboot_to_download(on_progress: &ProgressCallback) -> bool {
         }
     };
 
-    on_progress(&FlashProgress::info(
-        "Rebooting",
-        0.0,
-        &format!("发现运行中的模组 {}, 正在发送重启指令...", cmd_port),
-    ));
+    on_progress(&FlashProgress::info("Rebooting", 0.0, &format!("发现运行中的模组 {}, 正在发送重启指令...", cmd_port)));
     log::info!("Found EC718 command port {}, sending reboot-to-download sequence", cmd_port);
 
-    let port = serialport::new(&cmd_port, 115200)
-        .timeout(Duration::from_millis(500))
-        .open();
+    let port = serialport::new(&cmd_port, 115200).timeout(Duration::from_millis(500)).open();
 
     let mut port = match port {
         Ok(p) => p,
@@ -1196,10 +1107,8 @@ fn find_ec718_port_by_interface(target_interface: u8) -> Option<String> {
 
     for port in &ports {
         if let serialport::SerialPortType::UsbPort(usb_info) = &port.port_type {
-            if usb_info.vid == LOG_VID && usb_info.pid == LOG_PID {
-                if usb_info.interface == Some(target_interface) {
-                    return Some(port.port_name.clone());
-                }
+            if usb_info.vid == LOG_VID && usb_info.pid == LOG_PID && usb_info.interface == Some(target_interface) {
+                return Some(port.port_name.clone());
             }
         }
     }
@@ -1208,10 +1117,7 @@ fn find_ec718_port_by_interface(target_interface: u8) -> Option<String> {
     for port in &ports {
         if let serialport::SerialPortType::UsbPort(usb_info) = &port.port_type {
             if usb_info.vid == LOG_VID && usb_info.pid == LOG_PID {
-                log::warn!(
-                    "USB interface number unavailable, falling back to {} (may be wrong port)",
-                    port.port_name
-                );
+                log::warn!("USB interface number unavailable, falling back to {} (may be wrong port)", port.port_name);
                 return Some(port.port_name.clone());
             }
         }
@@ -1285,21 +1191,14 @@ pub fn wait_for_log_port(timeout_secs: u32) -> Option<String> {
 ///   4. If user-specified port is given, try it directly as UART fallback
 ///
 /// Returns the boot port name to use for flashing.
-pub fn auto_enter_boot_mode(
-    user_port: Option<&str>,
-    on_progress: &ProgressCallback,
-) -> Result<String> {
+pub fn auto_enter_boot_mode(user_port: Option<&str>, on_progress: &ProgressCallback) -> Result<String> {
     // If user specified a port, check if it's already a boot mode port
     if let Some(port) = user_port {
         if let Ok(ports) = serialport::available_ports() {
             for p in &ports {
-                if p.port_name == port {
-                    if let serialport::SerialPortType::UsbPort(usb) = &p.port_type {
-                        if usb.vid == BOOT_VID && usb.pid == BOOT_PID {
-                            log::info!("User-specified port {} is already in boot mode", port);
-                            return Ok(port.to_string());
-                        }
-                    }
+                if p.port_name == port && matches!(&p.port_type, serialport::SerialPortType::UsbPort(usb) if usb.vid == BOOT_VID && usb.pid == BOOT_PID) {
+                    log::info!("User-specified port {} is already in boot mode", port);
+                    return Ok(port.to_string());
                 }
             }
         }
@@ -1307,37 +1206,21 @@ pub fn auto_enter_boot_mode(
 
     // Step 1: Check if already in boot mode
     if let Some(boot_port) = find_port_by_vid_pid(BOOT_VID, BOOT_PID) {
-        on_progress(&FlashProgress::info(
-            "Detecting",
-            1.0,
-            &format!("模组已处于下载模式: {}", boot_port),
-        ));
+        on_progress(&FlashProgress::info("Detecting", 1.0, &format!("模组已处于下载模式: {}", boot_port)));
         log::info!("Module already in boot mode on {}", boot_port);
         return Ok(boot_port);
     }
 
     // Step 2: Check if running and try auto-reboot
     if find_ec718_cmd_port().is_some() {
-        on_progress(&FlashProgress::info(
-            "Detecting",
-            1.0,
-            "检测到运行中的模组, 正在自动重启进入下载模式...",
-        ));
+        on_progress(&FlashProgress::info("Detecting", 1.0, "检测到运行中的模组, 正在自动重启进入下载模式..."));
 
         if try_reboot_to_download(on_progress) {
             // Wait for boot port to appear (up to 30 seconds)
-            on_progress(&FlashProgress::info(
-                "Waiting",
-                2.0,
-                "等待模组重启进入下载模式 (最多30秒)...",
-            ));
+            on_progress(&FlashProgress::info("Waiting", 2.0, "等待模组重启进入下载模式 (最多30秒)..."));
 
             if let Some(boot_port) = wait_for_boot_port(30) {
-                on_progress(&FlashProgress::info(
-                    "Detecting",
-                    3.0,
-                    &format!("模组已进入下载模式: {}", boot_port),
-                ));
+                on_progress(&FlashProgress::info("Detecting", 3.0, &format!("模组已进入下载模式: {}", boot_port)));
                 log::info!("Module entered boot mode on {}", boot_port);
                 // Give the USB device a moment to fully initialize
                 std::thread::sleep(Duration::from_millis(500));
@@ -1367,22 +1250,14 @@ pub fn auto_enter_boot_mode(
 
     // Step 3: Wait for manual boot entry (60 seconds)
     if let Some(boot_port) = wait_for_boot_port(60) {
-        on_progress(&FlashProgress::info(
-            "Detecting",
-            3.0,
-            &format!("模组已进入下载模式: {}", boot_port),
-        ));
+        on_progress(&FlashProgress::info("Detecting", 3.0, &format!("模组已进入下载模式: {}", boot_port)));
         std::thread::sleep(Duration::from_millis(500));
         return Ok(boot_port);
     }
 
     // If user specified a port, try it as fallback (UART mode)
     if let Some(port) = user_port {
-        on_progress(&FlashProgress::info(
-            "Fallback",
-            2.0,
-            &format!("使用用户指定端口: {} (UART模式)", port),
-        ));
+        on_progress(&FlashProgress::info("Fallback", 2.0, &format!("使用用户指定端口: {} (UART模式)", port)));
         return Ok(port.to_string());
     }
 
@@ -1407,23 +1282,13 @@ pub fn build_log_probe() -> Vec<u8> {
 /// Flash EC718 firmware via native Rust protocol.
 ///
 /// Handles full flash: agentboot + all partitions from .soc file.
-pub fn flash_ec718(
-    soc_path: &str,
-    port: &str,
-    on_progress: &ProgressCallback,
-    cancel: Arc<AtomicBool>,
-) -> Result<()> {
+pub fn flash_ec718(soc_path: &str, port: &str, on_progress: &ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
     on_progress(&FlashProgress::info("Preparing", 0.0, "Parsing SOC file..."));
 
     // Parse SOC file
     let (binpkg, _script_data, force_br) = extract_and_parse_soc(soc_path)?;
 
-    log::info!(
-        "EC718 chip: {}, {} entries, force_br={}",
-        binpkg.chip,
-        binpkg.entries.len(),
-        force_br,
-    );
+    log::info!("EC718 chip: {}, {} entries, force_br={}", binpkg.chip, binpkg.entries.len(), force_br,);
 
     // Determine port type and agentboot binary
     let port_type = detect_port_type(port);
@@ -1432,11 +1297,7 @@ pub fn flash_ec718(
         Ec718PortType::Uart => AGENTBOOT_EC718M_UART,
     };
 
-    on_progress(&FlashProgress::info(
-        "Connecting",
-        1.0,
-        &format!("Opening {} ({:?} mode)...", port, port_type),
-    ));
+    on_progress(&FlashProgress::info("Connecting", 1.0, &format!("Opening {} ({:?} mode)...", port, port_type)));
 
     // Open serial port
     let baudrate = port_type.baudrate();
@@ -1445,9 +1306,7 @@ pub fn flash_ec718(
         .open()
         .with_context(|| format!("Failed to open serial port {}", port))?;
 
-    serial
-        .write_data_terminal_ready(true)
-        .context("Failed to set DTR")?;
+    serial.write_data_terminal_ready(true).context("Failed to set DTR")?;
 
     if cancel.load(Ordering::Relaxed) {
         bail!("Cancelled");
@@ -1480,11 +1339,7 @@ pub fn flash_ec718(
     }
 
     // Stage 2: Download agentboot
-    on_progress(&FlashProgress::info(
-        "AgentBoot",
-        6.0,
-        &format!("Downloading agentboot ({} bytes)...", agentboot.len()),
-    ));
+    on_progress(&FlashProgress::info("AgentBoot", 6.0, &format!("Downloading agentboot ({} bytes)...", agentboot.len())));
 
     burn_agboot(serial.as_mut(), agentboot, force_br)?;
 
@@ -1495,11 +1350,7 @@ pub fn flash_ec718(
     }
 
     // Stage 3: Burn each partition
-    let entries: Vec<_> = binpkg
-        .entries
-        .iter()
-        .filter(|e| e.data.is_some())
-        .collect();
+    let entries: Vec<_> = binpkg.entries.iter().filter(|e| e.data.is_some()).collect();
     let num_entries = entries.len();
 
     for (idx, entry) in entries.iter().enumerate() {
@@ -1522,27 +1373,10 @@ pub fn flash_ec718(
         on_progress(&FlashProgress::info(
             "Flashing",
             base_pct,
-            &format!(
-                "[{}/{}] {} ({}KB @ 0x{:X})",
-                idx + 1,
-                num_entries,
-                entry.name,
-                data.len() / 1024,
-                burn_addr,
-            ),
+            &format!("[{}/{}] {} ({}KB @ 0x{:X})", idx + 1, num_entries, entry.name, data.len() / 1024, burn_addr,),
         ));
 
-        burn_img(
-            serial.as_mut(),
-            data,
-            img_type,
-            stor_type,
-            burn_addr,
-            &entry.name,
-            on_progress,
-            base_pct,
-            pct_range,
-        )?;
+        burn_img(serial.as_mut(), data, img_type, stor_type, burn_addr, &entry.name, on_progress, base_pct, pct_range)?;
     }
 
     if cancel.load(Ordering::Relaxed) {
@@ -1558,13 +1392,7 @@ pub fn flash_ec718(
 }
 
 /// Flash only the script partition via native protocol.
-pub fn flash_script_ec718(
-    soc_path: &str,
-    port: &str,
-    script_data: &[u8],
-    on_progress: &ProgressCallback,
-    cancel: Arc<AtomicBool>,
-) -> Result<()> {
+pub fn flash_script_ec718(soc_path: &str, port: &str, script_data: &[u8], on_progress: &ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
     on_progress(&FlashProgress::info("Preparing", 0.0, "Parsing SOC for script addr..."));
 
     // Parse SOC to get script_addr and force_br
@@ -1573,12 +1401,7 @@ pub fn flash_script_ec718(
 
     // Re-read info.json for script_addr
     let info = luatos_soc::read_soc_info(soc_path)?;
-    let script_addr = info
-        .download
-        .script_addr
-        .as_deref()
-        .and_then(luatos_soc::parse_addr)
-        .unwrap_or(0) as u32;
+    let script_addr = info.download.script_addr.as_deref().and_then(luatos_soc::parse_addr).unwrap_or(0) as u32;
 
     if script_addr == 0 {
         bail!("No script_addr found in SOC info.json");
@@ -1586,11 +1409,7 @@ pub fn flash_script_ec718(
 
     // Script addr in info.json is relative (e.g. 0x48E000).
     // Hardware needs absolute addr with 0x800000 base for AP flash.
-    let burn_addr = if script_addr < 0x800000 {
-        script_addr + 0x800000
-    } else {
-        script_addr
-    };
+    let burn_addr = if script_addr < 0x800000 { script_addr + 0x800000 } else { script_addr };
 
     let port_type = detect_port_type(port);
     let agentboot = match port_type {
@@ -1665,11 +1484,7 @@ pub fn flash_script_ec718(
 /// This uses the vendor tool directly. The exe and config must be in
 /// refs/origin_tools/ec_download/.
 #[cfg(target_os = "windows")]
-pub fn flash_ec718_exe(
-    soc_path: &str,
-    port: &str,
-    on_progress: &ProgressCallback,
-) -> Result<()> {
+pub fn flash_ec718_exe(soc_path: &str, port: &str, on_progress: &ProgressCallback) -> Result<()> {
     use std::process::Command;
 
     on_progress(&FlashProgress::info("Preparing", 0.0, "Extracting SOC file..."));
@@ -1681,11 +1496,7 @@ pub fn flash_ec718_exe(
     // Find binpkg file
     let binpkg_path = std::fs::read_dir(temppath)?
         .filter_map(|e| e.ok())
-        .find(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .ends_with(".binpkg")
-        })
+        .find(|e| e.file_name().to_string_lossy().ends_with(".binpkg"))
         .map(|e| e.path())
         .ok_or_else(|| anyhow::anyhow!("No .binpkg in SOC"))?;
 
@@ -1701,15 +1512,9 @@ pub fn flash_ec718_exe(
     }
 
     // Extract COM port number
-    let port_num = port
-        .trim_start_matches("COM")
-        .trim_start_matches("com");
+    let port_num = port.trim_start_matches("COM").trim_start_matches("com");
 
-    on_progress(&FlashProgress::info(
-        "Flashing",
-        10.0,
-        &format!("Running FlashToolCLI.exe on COM{}...", port_num),
-    ));
+    on_progress(&FlashProgress::info("Flashing", 10.0, &format!("Running FlashToolCLI.exe on COM{}...", port_num)));
 
     let output = Command::new(&exe_path)
         .current_dir(exe_dir)
@@ -1729,16 +1534,8 @@ pub fn flash_ec718_exe(
     }
 
     if !output.status.success() {
-        on_progress(&FlashProgress::done_err(&format!(
-            "FlashToolCLI.exe failed (exit code: {:?})",
-            output.status.code()
-        )));
-        bail!(
-            "FlashToolCLI.exe failed with exit code {:?}\nstdout: {}\nstderr: {}",
-            output.status.code(),
-            stdout,
-            stderr
-        );
+        on_progress(&FlashProgress::done_err(&format!("FlashToolCLI.exe failed (exit code: {:?})", output.status.code())));
+        bail!("FlashToolCLI.exe failed with exit code {:?}\nstdout: {}\nstderr: {}", output.status.code(), stdout, stderr);
     }
 
     on_progress(&FlashProgress::done_ok("EC718 flash (exe) completed"));
@@ -1746,11 +1543,7 @@ pub fn flash_ec718_exe(
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn flash_ec718_exe(
-    _soc_path: &str,
-    _port: &str,
-    _on_progress: &ProgressCallback,
-) -> Result<()> {
+pub fn flash_ec718_exe(_soc_path: &str, _port: &str, _on_progress: &ProgressCallback) -> Result<()> {
     bail!("FlashToolCLI.exe fallback is only available on Windows");
 }
 
@@ -1782,10 +1575,7 @@ mod tests {
         println!("Chip: {}", result.chip);
         println!("Force BR: {}", force_br);
         for entry in &result.entries {
-            println!(
-                "  {} addr=0x{:08X} size={} type={}",
-                entry.name, entry.addr, entry.image_size, entry.image_type
-            );
+            println!("  {} addr=0x{:08X} size={} type={}", entry.name, entry.addr, entry.image_size, entry.image_type);
         }
         assert!(!result.entries.is_empty());
         assert!(result.chip.contains("EC718"));

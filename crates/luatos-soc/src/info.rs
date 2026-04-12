@@ -101,9 +101,7 @@ where
                 return Ok(Some(v));
             }
             let hex = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
-            u64::from_str_radix(hex, 16)
-                .map(Some)
-                .map_err(de::Error::custom)
+            u64::from_str_radix(hex, 16).map(Some).map_err(de::Error::custom)
         }
     }
 
@@ -153,48 +151,28 @@ pub struct SocUser {
 impl SocInfo {
     /// Get the log baud rate, defaulting to 921600.
     pub fn log_baud_rate(&self) -> u32 {
-        self.user
-            .as_ref()
-            .and_then(|u| u.log_br.as_deref())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(921_600)
+        self.user.as_ref().and_then(|u| u.log_br.as_deref()).and_then(|s| s.parse().ok()).unwrap_or(921_600)
     }
 
     /// Get the flash baud rate from download.force_br.
     /// Air6208 uses "2M" shorthand; Air8101 uses "2000000".
     pub fn flash_baud_rate(&self) -> u32 {
-        self.download
-            .force_br
-            .as_deref()
-            .and_then(parse_baud_rate)
-            .unwrap_or(2_000_000)
+        self.download.force_br.as_deref().and_then(parse_baud_rate).unwrap_or(2_000_000)
     }
 
     /// Whether script partition uses BK CRC16 framing.
     pub fn use_bkcrc(&self) -> bool {
-        self.rom
-            .fs
-            .as_ref()
-            .and_then(|fs| fs.script.as_ref())
-            .and_then(|s| s.bkcrc)
-            .unwrap_or(false)
+        self.rom.fs.as_ref().and_then(|fs| fs.script.as_ref()).and_then(|s| s.bkcrc).unwrap_or(false)
     }
 
     /// Get the script download address (ISP protocol address).
     pub fn script_addr(&self) -> u32 {
-        parse_addr(self.download.script_addr.as_deref().unwrap_or("0x200000")).unwrap_or(0x200000)
-            as u32
+        parse_addr(self.download.script_addr.as_deref().unwrap_or("0x200000")).unwrap_or(0x200000) as u32
     }
 
     /// Get the script partition size in bytes.
     pub fn script_size(&self) -> usize {
-        self.rom
-            .fs
-            .as_ref()
-            .and_then(|fs| fs.script.as_ref())
-            .and_then(|s| s.size)
-            .unwrap_or(512) as usize
-            * 1024
+        self.rom.fs.as_ref().and_then(|fs| fs.script.as_ref()).and_then(|s| s.size).unwrap_or(512) as usize * 1024
     }
 
     /// Get the filesystem partition address and size (bytes).
@@ -259,10 +237,7 @@ impl SocInfo {
 /// Parse a flash address from info.json ("0x…" hex or bare hex digits).
 pub fn parse_addr(s: &str) -> Option<u64> {
     let s = s.trim();
-    let hex = s
-        .strip_prefix("0x")
-        .or_else(|| s.strip_prefix("0X"))
-        .unwrap_or(s);
+    let hex = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
     u64::from_str_radix(hex, 16).ok()
 }
 

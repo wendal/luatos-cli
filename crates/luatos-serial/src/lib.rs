@@ -25,18 +25,17 @@ pub fn list_ports() -> Vec<PortInfo> {
 
     raw.into_iter()
         .map(|p| {
-            let (vid, pid, manufacturer, product, serial_number) =
-                if let serialport::SerialPortType::UsbPort(ref info) = p.port_type {
-                    (
-                        Some(format!("{:04x}", info.vid)),
-                        Some(format!("{:04x}", info.pid)),
-                        info.manufacturer.clone(),
-                        info.product.clone(),
-                        info.serial_number.clone(),
-                    )
-                } else {
-                    (None, None, None, None, None)
-                };
+            let (vid, pid, manufacturer, product, serial_number) = if let serialport::SerialPortType::UsbPort(ref info) = p.port_type {
+                (
+                    Some(format!("{:04x}", info.vid)),
+                    Some(format!("{:04x}", info.pid)),
+                    info.manufacturer.clone(),
+                    info.product.clone(),
+                    info.serial_number.clone(),
+                )
+            } else {
+                (None, None, None, None, None)
+            };
             PortInfo {
                 port_name: p.port_name,
                 vid,
@@ -95,12 +94,7 @@ pub type LineCallback = Box<dyn Fn(&str) + Send>;
 ///
 /// Reads bytes from the port, splits on `\n`, trims `\r`, and calls
 /// `on_line` for each complete line. Blocks the calling thread.
-pub fn stream_log_lines(
-    port_name: &str,
-    baud_rate: u32,
-    stop: Arc<AtomicBool>,
-    on_line: LineCallback,
-) -> anyhow::Result<()> {
+pub fn stream_log_lines(port_name: &str, baud_rate: u32, stop: Arc<AtomicBool>, on_line: LineCallback) -> anyhow::Result<()> {
     let mut serial = serialport::new(port_name, baud_rate)
         .timeout(Duration::from_millis(100))
         .open()
@@ -118,9 +112,7 @@ pub fn stream_log_lines(
             Ok(n) if n > 0 => {
                 for &b in &buf[..n] {
                     if b == b'\n' {
-                        let text = String::from_utf8_lossy(&line_buf)
-                            .trim_end_matches('\r')
-                            .to_string();
+                        let text = String::from_utf8_lossy(&line_buf).trim_end_matches('\r').to_string();
                         line_buf.clear();
                         if !text.is_empty() {
                             on_line(&text);
@@ -145,9 +137,7 @@ pub fn stream_log_lines(
 
     // Flush remaining partial line
     if !line_buf.is_empty() {
-        let text = String::from_utf8_lossy(&line_buf)
-            .trim_end_matches('\r')
-            .to_string();
+        let text = String::from_utf8_lossy(&line_buf).trim_end_matches('\r').to_string();
         if !text.is_empty() {
             on_line(&text);
         }
@@ -166,14 +156,7 @@ pub type BinaryCallback = Box<dyn Fn(&[u8]) + Send>;
 /// begins (e.g. a probe command to trigger log output on Air1601).
 /// When `dtr_rts_high` is true, DTR and RTS are set HIGH after opening
 /// (required for EC718 log port).
-pub fn stream_binary(
-    port_name: &str,
-    baud_rate: u32,
-    stop: Arc<AtomicBool>,
-    on_data: BinaryCallback,
-    init_data: Option<&[u8]>,
-    dtr_rts_high: bool,
-) -> anyhow::Result<()> {
+pub fn stream_binary(port_name: &str, baud_rate: u32, stop: Arc<AtomicBool>, on_data: BinaryCallback, init_data: Option<&[u8]>, dtr_rts_high: bool) -> anyhow::Result<()> {
     let mut serial = serialport::new(port_name, baud_rate)
         .timeout(Duration::from_millis(100))
         .open()
@@ -225,10 +208,7 @@ mod tests {
         let ports = list_ports();
         println!("Found {} ports:", ports.len());
         for p in &ports {
-            println!(
-                "  {} vid={:?} pid={:?} product={:?}",
-                p.port_name, p.vid, p.pid, p.product
-            );
+            println!("  {} vid={:?} pid={:?} product={:?}", p.port_name, p.vid, p.pid, p.product);
         }
     }
 

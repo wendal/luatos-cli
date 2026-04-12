@@ -32,11 +32,7 @@ pub fn cmd_soc_info(path: &str, format: &OutputFormat) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn cmd_soc_unpack(
-    path: &str,
-    output: Option<&str>,
-    format: &OutputFormat,
-) -> anyhow::Result<()> {
+pub fn cmd_soc_unpack(path: &str, output: Option<&str>, format: &OutputFormat) -> anyhow::Result<()> {
     let out_dir = output.unwrap_or(".");
     let out_path = std::path::Path::new(out_dir);
     std::fs::create_dir_all(out_path)?;
@@ -91,10 +87,7 @@ pub fn cmd_soc_files(path: &str, format: &OutputFormat) -> anyhow::Result<()> {
 pub fn cmd_soc_pack(dir: &str, output: &str, format: &OutputFormat) -> anyhow::Result<()> {
     let dir_path = std::path::Path::new(dir);
     anyhow::ensure!(dir_path.is_dir(), "Not a directory: {dir}");
-    anyhow::ensure!(
-        dir_path.join("info.json").exists(),
-        "info.json not found in {dir}"
-    );
+    anyhow::ensure!(dir_path.join("info.json").exists(), "info.json not found in {dir}");
 
     luatos_soc::pack_soc(dir_path, output)?;
 

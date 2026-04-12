@@ -98,11 +98,7 @@ fn build_lua_helper(lua_src: &str, out_dir: &Path, bitw: u32, target_os: &str) {
         panic!("Failed to build Lua {}-bit helper", bitw);
     }
 
-    println!(
-        "cargo:rustc-env=LUA53_HELPER_EMBED_{}={}",
-        bitw,
-        output.display()
-    );
+    println!("cargo:rustc-env=LUA53_HELPER_EMBED_{}={}", bitw, output.display());
 }
 
 fn build_mklfs_helper(lfs_src: &str, out_dir: &Path, target_os: &str) {
