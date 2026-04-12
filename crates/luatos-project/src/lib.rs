@@ -3,12 +3,19 @@
 //! This crate handles reading, writing, and scaffolding LuatOS project
 //! configuration files (`luatos-project.toml`). It supports chip-specific
 //! defaults and provides a convenient project initialization workflow.
+//!
+//! Additional modules:
+//! - [`import`] — Import LuaTools `.ini` project files
+//! - [`lua_deps`] — Lua script dependency analysis
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Deserializer, Serialize};
+
+pub mod import;
+pub mod lua_deps;
 
 /// Name of the project configuration file.
 pub const CONFIG_FILE_NAME: &str = "luatos-project.toml";
@@ -94,12 +101,27 @@ pub struct BuildConfig {
         default = "default_script_dirs"
     )]
     pub script_dirs: Vec<String>,
+    /// Individual script file paths to include.
+    /// Useful when you need specific files from different locations.
+    #[serde(
+        deserialize_with = "deserialize_string_or_vec",
+        default
+    )]
+    pub script_files: Vec<String>,
     /// Directory where build artifacts are written.
     pub output_dir: String,
     /// Whether to compile scripts with `luac` before packaging.
     pub use_luac: bool,
     /// Lua integer bit-width (`32` or `64`), typically determined by chip.
     pub bitw: u32,
+    /// Whether to keep debug info in compiled Lua bytecode.
+    /// When `false` (default), debug info is stripped for smaller output.
+    #[serde(default)]
+    pub luac_debug: bool,
+    /// Whether to ignore dependency analysis and include all scripts.
+    /// When `false` (default), only scripts reachable from `main.lua` are included.
+    #[serde(default)]
+    pub ignore_deps: bool,
 }
 
 /// Flash / download configuration.
@@ -128,9 +150,12 @@ impl Project {
             },
             build: BuildConfig {
                 script_dirs: vec![DEFAULT_SCRIPT_DIR.to_string()],
+                script_files: Vec::new(),
                 output_dir: DEFAULT_OUTPUT_DIR.to_string(),
                 use_luac: true,
                 bitw: default_bitw(chip),
+                luac_debug: false,
+                ignore_deps: false,
             },
             flash: FlashConfig {
                 soc_file: None,
@@ -278,9 +303,12 @@ mod tests {
         let p = Project::new("test_proj", "air6208");
         assert_eq!(p.project.version, "0.1.0");
         assert_eq!(p.build.script_dirs, vec!["lua/"]);
+        assert!(p.build.script_files.is_empty());
         assert_eq!(p.build.output_dir, "build/");
         assert!(p.build.use_luac);
         assert_eq!(p.build.bitw, 64);
+        assert!(!p.build.luac_debug);
+        assert!(!p.build.ignore_deps);
         assert!(p.flash.port.is_none());
     }
 
@@ -324,5 +352,58 @@ bitw = 32
 "#;
         let project: Project = toml::from_str(toml_str).unwrap();
         assert_eq!(project.build.script_dirs, vec!["lua/", "lib/", "assets/"]);
+    }
+
+    /// New fields have proper defaults when omitted.
+    #[test]
+    fn new_fields_default_values() {
+        let toml_str = r#"
+[project]
+name = "compat"
+chip = "bk72xx"
+version = "0.1.0"
+
+[build]
+script_dirs = ["lua/"]
+output_dir = "build/"
+use_luac = true
+bitw = 32
+
+[flash]
+"#;
+        let project: Project = toml::from_str(toml_str).unwrap();
+        assert!(project.build.script_files.is_empty());
+        assert!(!project.build.luac_debug);
+        assert!(!project.build.ignore_deps);
+    }
+
+    /// Config with script_files and new flags.
+    #[test]
+    fn config_with_script_files_and_flags() {
+        let toml_str = r#"
+[project]
+name = "full"
+chip = "air6208"
+version = "1.0.0"
+
+[build]
+script_dirs = ["lua/"]
+script_files = ["extra/helper.lua", "lib/utils.lua"]
+output_dir = "out/"
+use_luac = true
+bitw = 64
+luac_debug = true
+ignore_deps = true
+
+[flash]
+soc_file = "firmware.soc"
+"#;
+        let project: Project = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            project.build.script_files,
+            vec!["extra/helper.lua", "lib/utils.lua"]
+        );
+        assert!(project.build.luac_debug);
+        assert!(project.build.ignore_deps);
     }
 }

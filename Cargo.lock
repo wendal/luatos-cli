@@ -987,7 +987,9 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "tempfile",
  "toml",
+ "walkdir",
 ]
 
 [[package]]

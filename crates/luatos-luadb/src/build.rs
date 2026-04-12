@@ -62,7 +62,9 @@ pub fn compile_lua_bytes(
 }
 
 /// Compile a single `.lua` file to `.luac` using the embedded compiler.
-pub fn compile_lua(src: &Path, dst: &Path, bitw: u32) -> Result<()> {
+///
+/// When `strip` is true, debug info is removed from the output.
+pub fn compile_lua(src: &Path, dst: &Path, bitw: u32, strip: bool) -> Result<()> {
     let source = fs::read(src).with_context(|| format!("failed to read {}", src.display()))?;
     let chunk_name = format!(
         "@{}",
@@ -72,7 +74,7 @@ pub fn compile_lua(src: &Path, dst: &Path, bitw: u32) -> Result<()> {
     );
     log::info!("compiling {} -> {}", src.display(), dst.display());
 
-    let bytecode = compile_lua_bytes(&source, &chunk_name, false, bitw)?;
+    let bytecode = compile_lua_bytes(&source, &chunk_name, strip, bitw)?;
 
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent)?;
@@ -84,8 +86,9 @@ pub fn compile_lua(src: &Path, dst: &Path, bitw: u32) -> Result<()> {
 /// Compile all `.lua` files in `src_dir` to `.luac` in `out_dir`.
 ///
 /// Non-`.lua` files are copied as-is. The relative directory structure is
-/// preserved. Returns a list of all output file paths.
-pub fn compile_lua_dir(src_dir: &Path, out_dir: &Path, bitw: u32) -> Result<Vec<PathBuf>> {
+/// preserved. When `strip` is true, debug info is removed from compiled output.
+/// Returns a list of all output file paths.
+pub fn compile_lua_dir(src_dir: &Path, out_dir: &Path, bitw: u32, strip: bool) -> Result<Vec<PathBuf>> {
     fs::create_dir_all(out_dir).context("failed to create output directory")?;
 
     let mut outputs = Vec::new();
@@ -109,7 +112,7 @@ pub fn compile_lua_dir(src_dir: &Path, out_dir: &Path, bitw: u32) -> Result<Vec<
         if src_path.extension().and_then(|e| e.to_str()) == Some("lua") {
             let mut dst_path = out_dir.join(rel);
             dst_path.set_extension("luac");
-            compile_lua(src_path, &dst_path, bitw)?;
+            compile_lua(src_path, &dst_path, bitw, strip)?;
             outputs.push(dst_path);
         } else {
             let dst_path = out_dir.join(rel);
@@ -177,18 +180,20 @@ fn is_main(name: &str) -> bool {
 ///
 /// Accepts multiple script source directories. If `use_luac` is true, `.lua`
 /// files from all directories are compiled to `.luac` in a single temporary
-/// directory before packing. Later directories override earlier ones when
-/// filenames collide. Returns the final binary image.
+/// directory before packing. When `strip` is true, debug info is removed.
+/// Later directories override earlier ones when filenames collide.
+/// Returns the final binary image.
 pub fn build_script_image(
     script_dirs: &[&Path],
     use_luac: bool,
     bitw: u32,
     use_bkcrc: bool,
+    strip: bool,
 ) -> Result<Vec<u8>> {
     let (collect_dirs, _tmp_guard): (Vec<PathBuf>, Option<PathBuf>) = if use_luac {
         let tmp = tempfile::tempdir().context("failed to create temp directory")?;
         for dir in script_dirs {
-            compile_lua_dir(dir, tmp.path(), bitw)?;
+            compile_lua_dir(dir, tmp.path(), bitw, strip)?;
         }
         let kept: PathBuf = tmp.keep();
         (vec![kept.clone()], Some(kept))
@@ -291,7 +296,7 @@ mod tests {
     #[test]
     fn build_image_no_luac() {
         let dir = make_test_dir();
-        let image = build_script_image(&[dir.path()], false, 32, false).unwrap();
+        let image = build_script_image(&[dir.path()], false, 32, false, true).unwrap();
         // Should start with LuaDB magic
         assert_eq!(&image[0..6], &[0x01, 0x04, 0x5A, 0xA5, 0x5A, 0xA5]);
     }
@@ -299,7 +304,7 @@ mod tests {
     #[test]
     fn build_image_with_bkcrc() {
         let dir = make_test_dir();
-        let image = build_script_image(&[dir.path()], false, 32, true).unwrap();
+        let image = build_script_image(&[dir.path()], false, 32, true, true).unwrap();
         // BK CRC adds 2 bytes per 32-byte block
         assert_eq!(image.len() % 34, 0);
     }
@@ -338,7 +343,7 @@ mod tests {
         fs::write(dir1.path().join("main.lua"), b"print('hello')").unwrap();
         fs::write(dir2.path().join("util.lua"), b"return 42").unwrap();
 
-        let image = build_script_image(&[dir1.path(), dir2.path()], false, 32, false).unwrap();
+        let image = build_script_image(&[dir1.path(), dir2.path()], false, 32, false, true).unwrap();
         assert_eq!(&image[0..6], &[0x01, 0x04, 0x5A, 0xA5, 0x5A, 0xA5]);
     }
 
@@ -380,7 +385,7 @@ mod tests {
     #[test]
     fn build_image_with_luac() {
         let dir = make_test_dir();
-        let image = build_script_image(&[dir.path()], true, 32, false).unwrap();
+        let image = build_script_image(&[dir.path()], true, 32, false, true).unwrap();
         assert_eq!(&image[0..6], &[0x01, 0x04, 0x5A, 0xA5, 0x5A, 0xA5]);
     }
 
