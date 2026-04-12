@@ -105,8 +105,8 @@ luatos-cli --format json flash test --soc firmware.soc --port COM6
 | Air6208 | XT804 (air6208) | ✅ | ✅ | — | — | 二进制 | ✅ |
 | Air101/103 | XT804 | ✅ | ✅ | — | — | 二进制 | ✅ |
 | Air1601 | CCM4211 | ✅ | ✅ | ✅ | ✅ | 二进制 (--probe) | ✅ |
-| Air8000 | EC718HM (ec7xx) | ✅ | — | — | — | 二进制 (--probe) | ✅ |
-| Air780E系列 | EC718 (ec7xx) | ✅ | — | — | — | 二进制 (--probe) | ✅ |
+| Air8000 | EC718HM (ec7xx) | ✅ | ✅ | — | — | 二进制 (--probe) | ✅ |
+| Air780E系列 | EC718 (ec7xx) | ✅ | ✅ | — | — | 二进制 (--probe) | ✅ |
 
 <details>
 <summary>详细测试结果 (点击展开)</summary>
@@ -131,6 +131,7 @@ luatos-cli --format json flash test --soc firmware.soc --port COM6
 | Air1601 | `flash test` (闭环测试) | ✅ | SOC 二进制日志 + 探测帧，31 行日志 |
 | Air1601 | `log view-binary --probe` | ✅ | 2Mbps, 探测帧触发日志输出 |
 | Air8000 | `flash run` (全量刷机) | ✅ | USB自动进入boot模式, BL+AP+CP ~43s |
+| Air8000 | `flash script` (刷脚本区) | ✅ | FlexFile类型, 594B脚本, addr=0xC8E000 |
 | Air8000 | `flash test` (闭环测试) | ✅ | 0x7E HDLC日志解码, 921600 baud |
 | Air8000 | `log view-binary --probe` | ✅ | USB接口2(x.2), DTR/RTS HIGH |
 

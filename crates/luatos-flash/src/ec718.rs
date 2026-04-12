@@ -1584,6 +1584,14 @@ pub fn flash_script_ec718(
         bail!("No script_addr found in SOC info.json");
     }
 
+    // Script addr in info.json is relative (e.g. 0x48E000).
+    // Hardware needs absolute addr with 0x800000 base for AP flash.
+    let burn_addr = if script_addr < 0x800000 {
+        script_addr + 0x800000
+    } else {
+        script_addr
+    };
+
     let port_type = detect_port_type(port);
     let agentboot = match port_type {
         Ec718PortType::Usb => AGENTBOOT_EC718M_USB,
@@ -1630,15 +1638,15 @@ pub fn flash_script_ec718(
     on_progress(&FlashProgress::info(
         "Flashing",
         25.0,
-        &format!("Writing script ({}KB @ 0x{:X})...", script_data.len() / 1024, script_addr),
+        &format!("Writing script ({}KB @ 0x{:X})...", script_data.len() / 1024, burn_addr),
     ));
 
     burn_img(
         serial.as_mut(),
         script_data,
-        BurnImageType::Ap,
+        BurnImageType::FlexFile,
         STYPE_AP_FLASH,
-        script_addr,
+        burn_addr,
         "script",
         on_progress,
         25.0,
