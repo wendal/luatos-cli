@@ -30,10 +30,13 @@
 ### 正常运行模式 (App Mode)
 - **VID:** `0x19D1` (Eigencomm)
 - **PID:** `0x0001`
-- 端口分布:
-  - `x.2` → SOC Log / 命令端口 (115200 baud)
-  - `x.4` → AP Log
-  - `x.6` → 用户COM口
+- 端口分布 (通过USB interface编号识别, **不能**按COM端口号排序!):
+  - `x.2` (interface=2) → SOC Log / 命令端口 (AT+ECRST, 0x7E日志帧)
+  - `x.4` (interface=4) → AP Log
+  - `x.6` (interface=6) → 用户COM口
+- **重要**: COM端口号与USB接口号的映射在不同PC上可能不同!
+  例如: COM3=x.6, COM4=x.2, COM5=x.4 (非按COM号顺序)
+- 代码中使用 `serialport` crate 的 `usb_info.interface` 字段匹配
 
 ### 下载模式 (Boot Mode)
 - **VID:** `0x17D1` (Eigencomm Download)
@@ -42,7 +45,7 @@
 
 ### 区分逻辑
 ```
-运行模式: VID=0x19D1, PID=0x0001, 有多个端口 (x.2, x.4, x.6)
+运行模式: VID=0x19D1, PID=0x0001, 多端口, 按interface编号识别
 下载模式: VID=0x17D1, PID=0x0001, 单端口
 ```
 
@@ -208,7 +211,7 @@ DIAG_REBOOT_DOWNLOAD_MS = 0x42  // 重启到下载模式
    e. package_data(agentboot_bin) → 发送agentboot二进制
 3. 对每个分区:
    a. LPC sync → 进入LPC模式
-   b. lpc_burn_one(partition_name) → 开始烧录分区
+   b. lpc_burn_one(partition_name, stor_type) → 开始烧录分区
    c. AGBOOT sync x2 → 进入AGBOOT模式
    d. base_info(HEAD) → 获取信息
    e. image_head(type, baud=0) → 发送分区镜像头
@@ -216,6 +219,18 @@ DIAG_REBOOT_DOWNLOAD_MS = 0x42  // 重启到下载模式
    g. lpc_get_burn_status → 确认烧录完成
 4. LPC sync → lpc_sys_reset → 复位模组
 ```
+
+### EC7xx CP分区特殊处理
+
+**关键**: EC7xx系列 (EC716/EC718) 的CP分区与非EC7xx有重要区别:
+
+| 项目 | EC7xx | 非EC7xx |
+|------|-------|---------|
+| stor_type | `STYPE_AP_FLASH` | `STYPE_CP_FLASH` |
+| lpc_burn_one载荷 | 4字节 (img_id) | 6字节 (img_id + CP_FLASH_MARKER 0xE101) |
+| CP地址偏移 | 需减去0x800000 (若addr ≥ 0x800000) | 直接使用原始地址 |
+
+示例: `cp-demo-flash addr=0x82D000` → EC7xx实际烧录地址 = `0x82D000 - 0x800000 = 0x2D000`
 
 ### AgentBoot二进制
 
@@ -227,18 +242,22 @@ DIAG_REBOOT_DOWNLOAD_MS = 0x42  // 重启到下载模式
 ## 日志输出
 
 - 协议: 0x7E HDLC帧 (与Air1601/CCM4211的0xA5帧不同!)
-- 波特率: 2000000
+- 波特率: **921600** (info.json中标注2000000, 但Windows USB CDC不支持, 实际使用921600)
 - 需要发送探测命令才开始输出 (探测帧格式与ccm4211相同, 0xA5帧)
-- 日志端口: USB模式下为 x.4 端口 (VID=0x19D1, 第二个COM号)
+- 日志端口: USB interface 2 (x.2), 与AT命令端口相同
 - DTR/RTS: 打开端口后需设为 HIGH
 
 ### USB端口分配
 
-| USB接口 | COM号顺序 | 功能 |
-|---------|----------|------|
-| x.2 | 最低 (如COM3) | AT/命令口 |
-| x.4 | 中间 (如COM4) | SOC二进制日志口 |
-| x.6 | 最高 (如COM5) | 用户串口 |
+**重要: COM端口号与USB接口号的映射不固定! 必须通过USB interface编号识别.**
+
+| USB接口 (interface) | 功能 | 说明 |
+|---------|------|------|
+| interface=2 (x.2) | SOC日志 + AT命令 | 0x7E帧日志, AT+ECRST重启命令 |
+| interface=4 (x.4) | AP日志 | AP子系统日志 |
+| interface=6 (x.6) | 用户串口 | 用户自定义通信 |
+
+示例: COM3=x.6, COM4=x.2, COM5=x.4 (非按COM号递增!)
 
 ### 日志协议详情
 
