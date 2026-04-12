@@ -40,26 +40,32 @@ pub struct DependencyGraph {
 /// Well-known LuatOS firmware builtin modules.
 /// These are provided by the C runtime, not as `.lua` files.
 const BUILTIN_MODULES: &[&str] = &[
-    "sys", "log", "uart", "gpio", "spi", "i2c", "adc", "pwm", "timer",
-    "wlan", "socket", "http", "mqtt", "json", "crypto", "pm", "sensor",
-    "disp", "u8g2", "lvgl", "wdt", "rtc", "os", "io", "string", "table",
-    "math", "coroutine", "debug", "bit32", "utf8", "rtos", "pack",
-    "zbuff", "fskv", "fdb", "fs", "pin", "nimble", "softspi", "softi2c",
-    "libcoap", "ercoap", "libgnss", "fatfs", "sdio", "camera", "lcdseg",
-    "otp", "statem", "protobuf", "miniz", "lfs2", "ir", "ymodem",
-    "w5500", "iotauth", "fastlz", "gmssl", "xxtea",
-    "mobile", "sms",
-    "audio", "codec", "record",
-    "keyboard", "multimedia",
-    "max30102", "ht1621",
-    "bit", "ctiot",
-    "errDump", "ftp",
-    "ntp", "ntptime",
-    "httpplus", "websocket",
-    "hmeta",
-    "iconv",
-    "lora", "lora2",
-    "touchkey",
+    // Lua 标准库
+    "os", "io", "string", "table", "math", "coroutine", "debug", "bit32", "utf8",
+    // LuatOS 核心
+    "sys", "log", "rtos", "pack", "zbuff", "hmeta",
+    // 外设
+    "uart", "gpio", "spi", "i2c", "adc", "pwm", "timer", "wdt", "rtc",
+    "pin", "pins", "touchkey", "keyboard", "ir", "tp",
+    // 网络
+    "wlan", "socket", "http", "mqtt", "websocket", "ftp", "ntp", "httpsrv",
+    "mobile", "sms", "netdrv", "bluetooth", "ble", "nimble",
+    "lora", "lora2", "airlink", "voip",
+    // 安全
+    "crypto", "iotauth", "gmssl", "xxtea",
+    // 存储
+    "fskv", "fs", "fatfs", "sdio", "otp",
+    // 显示
+    "disp", "u8g2", "lvgl", "lcd", "eink", "lcdseg", "ht1621", "airui",
+    // 多媒体
+    "audio", "codec", "record", "multimedia", "camera",
+    // 编解码 & 压缩
+    "json", "protobuf", "iconv", "miniz", "fastlz", "ymodem",
+    // 传感器 & 电源
+    "sensor", "max30102", "pm",
+    // 其他
+    "w5500", "libcoap", "ercoap", "libgnss", "statem",
+    "bit64", "errDump",
 ];
 
 fn is_builtin_module(name: &str) -> bool {
