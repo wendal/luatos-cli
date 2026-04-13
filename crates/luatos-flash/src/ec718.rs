@@ -1126,6 +1126,14 @@ fn find_ec718_port_by_interface(target_interface: u8) -> Option<String> {
     None
 }
 
+/// Find the EC718 AP log port (running mode, USB interface 4 = x.4).
+///
+/// The AP log (application processor debug output) is on USB interface 4,
+/// distinct from the SOC log on interface 2.
+pub fn find_ec718_ap_log_port() -> Option<String> {
+    find_ec718_port_by_interface(4)
+}
+
 /// Find the EC718 command port (running mode, USB interface 2 = x.2).
 ///
 /// This is the same physical port as the SOC log port. It handles both

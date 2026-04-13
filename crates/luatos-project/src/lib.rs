@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Deserializer, Serialize};
 
+pub mod analyze;
+pub mod archive;
 pub mod import;
 pub mod lua_deps;
 

@@ -14,3 +14,4 @@ log.workspace = true
 tempfile.workspace = true
 sevenz-rust2.workspace = true
 walkdir.workspace = true
+sha2.workspace = true

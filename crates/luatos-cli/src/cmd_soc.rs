@@ -1,3 +1,5 @@
+use anyhow::Context;
+
 use crate::OutputFormat;
 
 pub fn cmd_soc_info(path: &str, format: &OutputFormat) -> anyhow::Result<()> {
@@ -77,6 +79,53 @@ pub fn cmd_soc_files(path: &str, format: &OutputFormat) -> anyhow::Result<()> {
                 "status": "ok",
                 "command": "soc.files",
                 "data": files,
+            });
+            println!("{}", serde_json::to_string_pretty(&json)?);
+        }
+    }
+    Ok(())
+}
+
+pub fn cmd_soc_combine(soc: &str, bin: &str, addr: &str, output: Option<&str>, format: &OutputFormat) -> anyhow::Result<()> {
+    use std::fs;
+
+    let hex_addr = luatos_soc::parse_addr(addr.trim())
+        .ok_or_else(|| anyhow::anyhow!("Invalid address '{addr}' — use hex like 0x00D00000"))?
+        as u32;
+
+    anyhow::ensure!(std::path::Path::new(soc).exists(), "SOC file not found: {soc}");
+    anyhow::ensure!(std::path::Path::new(bin).exists(), "Binary file not found: {bin}");
+
+    let user_data = fs::read(bin).with_context(|| format!("read {bin}"))?;
+
+    // Default output: <basename>_combined.soc next to the source
+    let out_path: String = output.map(|s| s.to_string()).unwrap_or_else(|| {
+        let p = std::path::Path::new(soc);
+        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
+        let parent = p.parent().unwrap_or(std::path::Path::new("."));
+        parent.join(format!("{stem}_combined.soc")).to_string_lossy().into_owned()
+    });
+
+    luatos_soc::combine_ec7xx_soc(soc, &user_data, hex_addr, &out_path)?;
+
+    match format {
+        OutputFormat::Text => {
+            println!("Combined: {} bytes at 0x{hex_addr:08X}", user_data.len());
+            println!("  Input:  {soc}");
+            println!("  Binary: {bin}");
+            println!("  Output: {out_path}");
+        }
+        OutputFormat::Json => {
+            let json = serde_json::json!({
+                "status": "ok",
+                "command": "soc.combine",
+                "data": {
+                    "soc": soc,
+                    "bin": bin,
+                    "addr": format!("0x{hex_addr:08X}"),
+                    "size": user_data.len(),
+                    "output": out_path,
+                },
             });
             println!("{}", serde_json::to_string_pretty(&json)?);
         }

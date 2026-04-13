@@ -29,5 +29,6 @@ ctrlc = "3"
 serialport.workspace = true
 toml.workspace = true
 chrono.workspace = true
+tempfile.workspace = true
 ureq = { workspace = true }
 indicatif = { workspace = true }

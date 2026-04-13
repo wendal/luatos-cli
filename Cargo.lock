@@ -927,6 +927,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serialport",
+ "tempfile",
  "toml",
  "tracing",
  "tracing-subscriber",
@@ -990,6 +991,7 @@ dependencies = [
  "tempfile",
  "toml",
  "walkdir",
+ "zip",
 ]
 
 [[package]]
@@ -1025,6 +1027,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sevenz-rust2",
+ "sha2",
  "tempfile",
  "walkdir",
  "zip",

@@ -5,10 +5,12 @@
 //   - ROM binary (e.g. luatos.bin)
 //   - Optional: air602_flash.exe, luac, etc.
 
+pub mod combine;
 mod info;
 pub mod pack;
 mod unpack;
 
+pub use combine::combine_ec7xx_soc;
 pub use info::*;
 pub use pack::*;
 pub use unpack::*;

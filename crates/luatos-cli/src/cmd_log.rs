@@ -33,7 +33,104 @@ pub fn cmd_log_view(port: &str, baud: u32, format: &OutputFormat) -> anyhow::Res
     Ok(())
 }
 
-pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, format: &OutputFormat) -> anyhow::Result<()> {
+// ─── Rolling binary file writer ───────────────────────────────────────────────
+
+// Timestamp injection marker: injected when gap between data chunks exceeds 4 ms.
+//
+// Format (16 bytes):
+//   [0..4]  magic   0xFF 0xFE 0xAB 0xCD
+//   [4..12] ms      unix timestamp in ms, little-endian u64
+//   [12..16] gap_ms  gap since last data, little-endian u32 (capped at u32::MAX)
+const MARKER_MAGIC: &[u8] = &[0xFF, 0xFE, 0xAB, 0xCD];
+const MAX_FILE_BYTES: usize = 200 * 1024 * 1024; // 200 MB
+const GAP_THRESHOLD_MS: u128 = 4;
+
+struct RollingBinWriter {
+    dir: std::path::PathBuf,
+    port_safe: String,
+    writer: std::io::BufWriter<std::fs::File>,
+    written: usize,
+    current_path: std::path::PathBuf,
+    last_recv: std::time::Instant,
+}
+
+impl RollingBinWriter {
+    fn new(dir: &std::path::Path, port: &str) -> anyhow::Result<Self> {
+        let port_safe = port.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "_");
+        std::fs::create_dir_all(dir)?;
+        let (writer, path) = open_new_file(dir, &port_safe)?;
+        eprintln!("AP log recording → {}", path.display());
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            port_safe,
+            writer,
+            written: 0,
+            current_path: path,
+            last_recv: std::time::Instant::now(),
+        })
+    }
+
+    fn write_chunk(&mut self, data: &[u8]) -> anyhow::Result<()> {
+        use std::io::Write;
+        let now = std::time::Instant::now();
+        let gap_ms = now.duration_since(self.last_recv).as_millis();
+        self.last_recv = now;
+
+        if gap_ms >= GAP_THRESHOLD_MS {
+            self.inject_timestamp(gap_ms)?;
+        }
+        self.writer.write_all(data)?;
+        self.written += data.len();
+
+        if self.written >= MAX_FILE_BYTES {
+            self.rotate()?;
+        }
+        Ok(())
+    }
+
+    fn inject_timestamp(&mut self, gap_ms: u128) -> anyhow::Result<()> {
+        use std::io::Write;
+        let ts_ms = chrono::Utc::now().timestamp_millis() as u64;
+        let gap_u32 = gap_ms.min(u32::MAX as u128) as u32;
+        self.writer.write_all(MARKER_MAGIC)?;
+        self.writer.write_all(&ts_ms.to_le_bytes())?;
+        self.writer.write_all(&gap_u32.to_le_bytes())?;
+        self.written += MARKER_MAGIC.len() + 8 + 4;
+        Ok(())
+    }
+
+    fn rotate(&mut self) -> anyhow::Result<()> {
+        use std::io::Write;
+        self.writer.flush()?;
+        let (new_writer, new_path) = open_new_file(&self.dir, &self.port_safe)?;
+        self.writer = new_writer;
+        self.written = 0;
+        self.current_path = new_path.clone();
+        eprintln!("AP log rotated → {}", new_path.display());
+        Ok(())
+    }
+
+    fn flush(&mut self) {
+        use std::io::Write;
+        let _ = self.writer.flush();
+    }
+}
+
+fn open_new_file(
+    dir: &std::path::Path,
+    port_safe: &str,
+) -> anyhow::Result<(std::io::BufWriter<std::fs::File>, std::path::PathBuf)> {
+    let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let filename = format!("ap_{ts}_{port_safe}.bin");
+    let path = dir.join(&filename);
+    let file = std::fs::File::create(&path)
+        .map_err(|e| anyhow::anyhow!("create {}: {e}", path.display()))?;
+    Ok((std::io::BufWriter::with_capacity(64 * 1024, file), path))
+}
+
+// ─── cmd_log_view_binary ──────────────────────────────────────────────────────
+
+pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, save_dir: Option<&str>, format: &OutputFormat) -> anyhow::Result<()> {
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
     let _ = ctrlc::set_handler(move || {
@@ -83,16 +180,30 @@ pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, format: &OutputFo
         if is_ec718 { "EC718" } else { "SOC" }
     );
 
+    // Optional rolling binary recorder
+    let bin_writer: Option<std::sync::Arc<std::sync::Mutex<RollingBinWriter>>> = save_dir
+        .map(|d| {
+            RollingBinWriter::new(std::path::Path::new(d), &actual_port)
+                .map(|w| std::sync::Arc::new(std::sync::Mutex::new(w)))
+        })
+        .transpose()?;
+
     let format_clone = format.clone();
 
     if is_ec718 {
         // EC718: 0x7E HDLC framing, DTR/RTS HIGH
         let decoder = std::sync::Mutex::new(luatos_log::Ec718LogDecoder::new());
+        let bin_writer_clone = bin_writer.clone();
         luatos_serial::stream_binary(
             &actual_port,
             baud,
             stop,
             Box::new(move |data| {
+                if let Some(ref bw) = bin_writer_clone {
+                    if let Ok(mut w) = bw.lock() {
+                        let _ = w.write_chunk(data);
+                    }
+                }
                 if let Ok(mut dec) = decoder.lock() {
                     let entries = dec.feed(data);
                     for entry in &entries {
@@ -106,11 +217,17 @@ pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, format: &OutputFo
     } else {
         // Standard SOC: 0xA5 framing
         let decoder = std::sync::Mutex::new(luatos_log::SocLogDecoder::new());
+        let bin_writer_clone = bin_writer.clone();
         luatos_serial::stream_binary(
             &actual_port,
             baud,
             stop,
             Box::new(move |data| {
+                if let Some(ref bw) = bin_writer_clone {
+                    if let Ok(mut w) = bw.lock() {
+                        let _ = w.write_chunk(data);
+                    }
+                }
                 if let Ok(mut dec) = decoder.lock() {
                     let entries = dec.feed(data);
                     for entry in &entries {
@@ -121,6 +238,14 @@ pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, format: &OutputFo
             init_data.as_deref(),
             false,
         )?;
+    }
+
+    // Flush any buffered data
+    if let Some(bw) = bin_writer {
+        if let Ok(mut w) = bw.lock() {
+            w.flush();
+            eprintln!("Binary log saved to {}", w.current_path.display());
+        }
     }
 
     eprintln!("\nLog viewing stopped.");

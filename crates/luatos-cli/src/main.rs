@@ -12,6 +12,7 @@ use clap::{Parser, Subcommand};
 mod cmd_build;
 mod cmd_device;
 mod cmd_flash;
+mod cmd_fota;
 mod cmd_log;
 mod cmd_project;
 mod cmd_resource;
@@ -79,6 +80,11 @@ enum Commands {
     },
     /// Show version information
     Version,
+    /// Build a FOTA (firmware over-the-air) update package
+    Fota {
+        #[command(subcommand)]
+        action: FotaCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -115,6 +121,21 @@ enum SocCommands {
         /// Output .soc file path
         #[arg(short, long)]
         output: String,
+    },
+    /// Inject a binary into an EC7xx .soc at a given flash address (EC7xx/Air8000 only)
+    Combine {
+        /// Path to source .soc file
+        #[arg(long)]
+        soc: String,
+        /// Binary file to inject
+        #[arg(long)]
+        bin: String,
+        /// Flash address (hex, e.g. 0x00D00000)
+        #[arg(long)]
+        addr: String,
+        /// Output .soc path (default: <source>_combined.soc)
+        #[arg(short, long)]
+        output: Option<String>,
     },
 }
 
@@ -222,6 +243,9 @@ enum LogCommands {
         /// Send probe command to trigger log output (required for Air1601/CCM4211/EC718)
         #[arg(long)]
         probe: bool,
+        /// Save raw binary log to directory (rolling 200 MB files with timestamp injection)
+        #[arg(long)]
+        save: Option<String>,
     },
     /// Record serial log to file
     Record {
@@ -274,13 +298,22 @@ enum ProjectCommands {
         /// Value to set (if omitted, shows current value)
         value: Option<String>,
     },
-    /// Import a LuaTools .ini project file
+    /// Import a LuaTools .ini project or a .luatos archive
     Import {
-        /// Path to the .ini file
-        ini: String,
-        /// Output directory for the converted project (default: current directory)
+        /// Path to the .ini or .luatos file
+        file: String,
+        /// Output directory for the project (default: current directory)
         #[arg(long, default_value = ".")]
         dir: String,
+    },
+    /// Export project to a .luatos archive
+    Export {
+        /// Project directory (default: current directory)
+        #[arg(long, default_value = ".")]
+        dir: String,
+        /// Output archive path (default: <name>.luatos)
+        #[arg(short, long)]
+        output: Option<String>,
     },
     /// Analyze Lua script dependencies
     Deps {
@@ -293,6 +326,15 @@ enum ProjectCommands {
         /// Show only unreachable files (not needed by main.lua)
         #[arg(long)]
         unreachable: bool,
+    },
+    /// Full project analysis: syntax check, deps, space usage, partition info
+    Analyze {
+        /// Project directory (default: current directory)
+        #[arg(long, default_value = ".")]
+        dir: String,
+        /// Path to .soc file (overrides project config; used for partition size info)
+        #[arg(long)]
+        soc: Option<String>,
     },
 }
 
@@ -374,6 +416,28 @@ enum DeviceCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum FotaCommands {
+    /// Build a FOTA update package (.sota) from one or two .soc files
+    Build {
+        /// New firmware .soc file
+        #[arg(long)]
+        new: String,
+        /// Old firmware .soc file (differential FOTA; omit for full FOTA)
+        #[arg(long)]
+        old: Option<String>,
+        /// Output .sota file path (default: <chip>_fota.sota)
+        #[arg(short, long)]
+        output: Option<String>,
+        /// Path to FotaToolkit.exe (auto-detected if omitted)
+        #[arg(long)]
+        fota_toolkit: Option<String>,
+        /// Path to soc_tools.exe (auto-detected if omitted)
+        #[arg(long)]
+        soc_tools: Option<String>,
+    },
+}
+
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp_millis()
@@ -390,6 +454,9 @@ fn main() {
             SocCommands::Unpack { path, output } => cmd_soc::cmd_soc_unpack(&path, output.as_deref(), &cli.format),
             SocCommands::Files { path } => cmd_soc::cmd_soc_files(&path, &cli.format),
             SocCommands::Pack { dir, output } => cmd_soc::cmd_soc_pack(&dir, &output, &cli.format),
+            SocCommands::Combine { soc, bin, addr, output } => {
+                cmd_soc::cmd_soc_combine(&soc, &bin, &addr, output.as_deref(), &cli.format)
+            }
         },
         Commands::Flash { action } => match action {
             FlashCommands::Run { soc, port, baud, script } => {
@@ -414,7 +481,7 @@ fn main() {
         },
         Commands::Log { action } => match action {
             LogCommands::View { port, baud } => cmd_log::cmd_log_view(&port, baud, &cli.format),
-            LogCommands::ViewBinary { port, baud, probe } => cmd_log::cmd_log_view_binary(&port, baud, probe, &cli.format),
+            LogCommands::ViewBinary { port, baud, probe, save } => cmd_log::cmd_log_view_binary(&port, baud, probe, save.as_deref(), &cli.format),
             LogCommands::Record { port, baud, output, json } => cmd_log::cmd_log_record(&port, baud, &output, json, &cli.format),
             LogCommands::Parse { path } => cmd_log::cmd_log_parse(&path, &cli.format),
         },
@@ -425,8 +492,10 @@ fn main() {
             }
             ProjectCommands::Info { dir } => cmd_project::cmd_project_info(&dir, &cli.format),
             ProjectCommands::Config { dir, key, value } => cmd_project::cmd_project_config(&dir, key.as_deref(), value.as_deref(), &cli.format),
-            ProjectCommands::Import { ini, dir } => cmd_project::cmd_project_import(&ini, &dir, &cli.format),
+            ProjectCommands::Import { file, dir } => cmd_project::cmd_project_import(&file, &dir, &cli.format),
+            ProjectCommands::Export { dir, output } => cmd_project::cmd_project_export(&dir, output.as_deref(), &cli.format),
             ProjectCommands::Deps { dir, reachable, unreachable } => cmd_project::cmd_project_deps(&dir, reachable, unreachable, &cli.format),
+            ProjectCommands::Analyze { dir, soc } => cmd_project::cmd_project_analyze(&dir, soc.as_deref(), &cli.format),
         },
         Commands::Build { action } => match action {
             BuildCommands::Luac { src, output, bitw } => cmd_build::cmd_build_luac(&src, &output, bitw, &cli.format),
@@ -439,6 +508,11 @@ fn main() {
         Commands::Device { action } => match action {
             DeviceCommands::Reboot { port, chip } => cmd_device::cmd_device_reboot(port.as_deref(), chip.as_deref(), &cli.format),
             DeviceCommands::Boot { port, chip } => cmd_device::cmd_device_boot(port.as_deref(), chip.as_deref(), &cli.format),
+        },
+        Commands::Fota { action } => match action {
+            FotaCommands::Build { new, old, output, fota_toolkit, soc_tools } => {
+                cmd_fota::cmd_fota_build(&new, old.as_deref(), output.as_deref(), fota_toolkit.as_deref(), soc_tools.as_deref(), &cli.format)
+            }
         },
         Commands::Version => {
             let version = env!("CARGO_PKG_VERSION");
