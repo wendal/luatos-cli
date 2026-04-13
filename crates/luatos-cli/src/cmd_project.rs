@@ -4,13 +4,14 @@ use crate::{event, OutputFormat};
 
 pub fn cmd_project_new(dir: &str, name: &str, chip: &str, format: &OutputFormat) -> anyhow::Result<()> {
     let dir_path = std::path::Path::new(dir);
-    luatos_project::scaffold_project(dir_path, name, chip)?;
+    luatos_project::scaffold_project(dir_path, name, chip, &luatos_project::wizard::TemplateKind::HelloWorld)?;
 
     match format {
         OutputFormat::Text => {
             println!("Created project '{name}' for chip '{chip}' in {dir}/");
-            println!("  Config: {dir}/luatos-project.toml");
-            println!("  Script: {dir}/lua/main.lua");
+            println!("  Config:  {dir}/luatos-project.toml");
+            println!("  Script:  {dir}/lua/main.lua");
+            println!("  README:  {dir}/README.md");
             println!("\nNext steps:");
             println!("  cd {dir}");
             println!("  luatos-cli project build        # 使用项目配置构建（推荐）");

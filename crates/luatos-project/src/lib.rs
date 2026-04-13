@@ -18,6 +18,8 @@ pub mod analyze;
 pub mod archive;
 pub mod import;
 pub mod lua_deps;
+pub mod template;
+pub mod wizard;
 
 /// Name of the project configuration file.
 pub const CONFIG_FILE_NAME: &str = "luatos-project.toml";
@@ -268,11 +270,21 @@ pub fn resolve_soc_script_lib_dir(project_dir: &Path, build: &BuildConfig) -> Re
 ///
 /// This creates:
 /// - `luatos-project.toml` with defaults for the given chip
-/// - `lua/` directory
-/// - `lua/main.lua` with a hello-world template
+/// - `lua/main.lua` and `README.md` using the specified `template`
+///
+/// When called without a specific model name (e.g. from `project new --chip`),
+/// the chip identifier is used as a fallback for template display.
 ///
 /// Returns an error if `luatos-project.toml` already exists in `dir`.
-pub fn scaffold_project(dir: &Path, name: &str, chip: &str) -> Result<()> {
+pub fn scaffold_project(dir: &Path, name: &str, chip: &str, tmpl: &wizard::TemplateKind) -> Result<()> {
+    scaffold_project_full(dir, name, chip, chip, tmpl)
+}
+
+/// Scaffold a new LuatOS project with an explicit model name (used by the wizard).
+///
+/// Like [`scaffold_project`] but `model_name` (e.g. `"Air8101"`) is used in template
+/// output instead of the internal chip identifier.
+pub fn scaffold_project_full(dir: &Path, name: &str, chip: &str, model_name: &str, tmpl: &wizard::TemplateKind) -> Result<()> {
     let config_path = Project::config_file(dir);
     if config_path.exists() {
         bail!("{} already exists in {}", CONFIG_FILE_NAME, dir.display());
@@ -285,14 +297,16 @@ pub fn scaffold_project(dir: &Path, name: &str, chip: &str) -> Result<()> {
     let project = Project::new(name, chip);
     project.save(dir)?;
 
-    // Create lua/ directory and main.lua template.
-    let lua_dir = dir.join("lua");
-    fs::create_dir_all(&lua_dir).with_context(|| format!("failed to create {}", lua_dir.display()))?;
+    // Apply the chosen template (creates lua/ and README.md).
+    let vars = template::TemplateVars {
+        project_name: name,
+        model_name,
+        chip,
+        version: &project.project.version,
+    };
+    template::apply_template(dir, tmpl, &vars)?;
 
-    let main_lua = lua_dir.join("main.lua");
-    fs::write(&main_lua, "print(\"Hello from \" .. _VERSION)\n").with_context(|| format!("failed to write {}", main_lua.display()))?;
-
-    log::info!("scaffolded project '{}' for chip '{}' in {}", name, chip, dir.display());
+    log::info!("scaffolded project '{}' for chip '{}' (template: {}) in {}", name, chip, tmpl.id(), dir.display());
     Ok(())
 }
 
@@ -340,7 +354,7 @@ mod tests {
         let tmp = std::env::temp_dir().join("luatos_project_test_scaffold");
         let _ = fs::remove_dir_all(&tmp);
 
-        scaffold_project(&tmp, "hello", "bk72xx").unwrap();
+        scaffold_project(&tmp, "hello", "bk72xx", &wizard::TemplateKind::HelloWorld).unwrap();
 
         // Config file exists and is valid.
         let project = Project::load(&tmp).unwrap();
@@ -348,13 +362,16 @@ mod tests {
         assert_eq!(project.project.chip, "bk72xx");
         assert_eq!(project.build.bitw, 32);
 
-        // lua/main.lua exists with expected content.
+        // lua/main.lua exists with expected content (helloworld template).
         let main_lua = fs::read_to_string(tmp.join("lua").join("main.lua")).unwrap();
-        assert!(main_lua.contains("Hello from"));
-        assert!(main_lua.contains("_VERSION"));
+        assert!(main_lua.contains("sys.run()"), "main.lua 应包含 sys.run()");
+        assert!(main_lua.contains("hello"), "main.lua 应包含项目名");
+
+        // README.md exists.
+        assert!(tmp.join("README.md").exists(), "README.md 应存在");
 
         // Scaffolding again should fail.
-        let err = scaffold_project(&tmp, "hello", "bk72xx");
+        let err = scaffold_project(&tmp, "hello", "bk72xx", &wizard::TemplateKind::HelloWorld);
         assert!(err.is_err());
 
         // Cleanup
