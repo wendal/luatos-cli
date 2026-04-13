@@ -352,7 +352,7 @@ fn execute_wizard(config: WizardConfig, manifest: &ResourceManifest, format: &Ou
             println!("  cd {}", dir.display());
             println!("  luatos-cli project build");
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Jsonl => {
             let json = serde_json::json!({
                 "status": "ok",
                 "command": "project.wizard",
