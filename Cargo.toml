@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/luatos-cli",
+    "crates/luatos-mcp",
     "crates/luatos-soc",
     "crates/luatos-luadb",
     "crates/luatos-flash",

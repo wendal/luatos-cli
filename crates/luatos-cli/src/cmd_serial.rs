@@ -1,4 +1,4 @@
-use crate::OutputFormat;
+use crate::{event, OutputFormat};
 
 pub fn cmd_serial_list(format: &OutputFormat) -> anyhow::Result<()> {
     let ports = luatos_serial::list_ports();
@@ -19,14 +19,7 @@ pub fn cmd_serial_list(format: &OutputFormat) -> anyhow::Result<()> {
                 }
             }
         }
-        OutputFormat::Json => {
-            let json = serde_json::json!({
-                "status": "ok",
-                "command": "serial.list",
-                "data": ports,
-            });
-            println!("{}", serde_json::to_string_pretty(&json)?);
-        }
+        OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "serial.list", "ok", &ports)?,
     }
     Ok(())
 }

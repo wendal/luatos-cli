@@ -1,16 +1,22 @@
-use crate::OutputFormat;
+use crate::{
+    event::{self, MessageLevel},
+    OutputFormat,
+};
 
 pub fn cmd_flash_run(soc: &str, port: &str, baud: Option<u32>, script_folders: Option<&[String]>, format: &OutputFormat) -> anyhow::Result<()> {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let format_clone = *format;
 
     // Set up Ctrl+C handler
     let cancel_clone = cancel.clone();
     ctrlc::set_handler(move || {
-        eprintln!("\nCancelling flash...");
+        if let Err(e) = event::emit_message(&format_clone, "flash.run", MessageLevel::Warn, "Cancelling flash...") {
+            log::warn!("输出取消事件失败: {e}");
+        }
         cancel_clone.store(true, std::sync::atomic::Ordering::Relaxed);
     })?;
 
-    let on_progress = make_progress_callback(format);
+    let on_progress = make_progress_callback(format, "flash.run");
 
     // Detect chip type from SOC info.json
     let info = luatos_soc::read_soc_info(soc)?;
@@ -29,14 +35,7 @@ pub fn cmd_flash_run(soc: &str, port: &str, baud: Option<u32>, script_folders: O
                         }
                     }
                 }
-                OutputFormat::Json => {
-                    let json = serde_json::json!({
-                        "status": "ok",
-                        "command": "flash.run",
-                        "data": { "boot_log": lines },
-                    });
-                    println!("{}", serde_json::to_string_pretty(&json)?);
-                }
+                OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "boot_log": lines }))?,
             }
         }
         "air6208" | "air101" | "air103" | "air601" => {
@@ -45,14 +44,7 @@ pub fn cmd_flash_run(soc: &str, port: &str, baud: Option<u32>, script_folders: O
                 OutputFormat::Text => {
                     println!("XT804 flash completed successfully.");
                 }
-                OutputFormat::Json => {
-                    let json = serde_json::json!({
-                        "status": "ok",
-                        "command": "flash.run",
-                        "data": { "chip": chip },
-                    });
-                    println!("{}", serde_json::to_string_pretty(&json)?);
-                }
+                OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": chip }))?,
             }
         }
         "air1601" | "ccm4211" => {
@@ -61,14 +53,7 @@ pub fn cmd_flash_run(soc: &str, port: &str, baud: Option<u32>, script_folders: O
                 OutputFormat::Text => {
                     println!("CCM4211 flash completed successfully.");
                 }
-                OutputFormat::Json => {
-                    let json = serde_json::json!({
-                        "status": "ok",
-                        "command": "flash.run",
-                        "data": { "chip": chip },
-                    });
-                    println!("{}", serde_json::to_string_pretty(&json)?);
-                }
+                OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": chip }))?,
             }
         }
         "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" => {
@@ -79,14 +64,7 @@ pub fn cmd_flash_run(soc: &str, port: &str, baud: Option<u32>, script_folders: O
                 OutputFormat::Text => {
                     println!("EC718 flash completed successfully.");
                 }
-                OutputFormat::Json => {
-                    let json = serde_json::json!({
-                        "status": "ok",
-                        "command": "flash.run",
-                        "data": { "chip": chip },
-                    });
-                    println!("{}", serde_json::to_string_pretty(&json)?);
-                }
+                OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": chip }))?,
             }
         }
         _ => {
@@ -97,32 +75,31 @@ pub fn cmd_flash_run(soc: &str, port: &str, baud: Option<u32>, script_folders: O
     Ok(())
 }
 
-pub fn make_progress_callback(format: &OutputFormat) -> luatos_flash::ProgressCallback {
-    let format_clone = format.clone();
-    Box::new(move |p| match format_clone {
-        OutputFormat::Text => {
-            if p.percent >= 0.0 {
-                eprintln!("[{:>6.1}%] {} — {}", p.percent, p.stage, p.message);
-            } else {
-                eprintln!("          {}", p.message);
-            }
-        }
-        OutputFormat::Json => {
-            println!("{}", serde_json::to_string(p).unwrap_or_default());
+pub fn make_progress_callback(format: &OutputFormat, command: impl Into<String>) -> luatos_flash::ProgressCallback {
+    let format_clone = *format;
+    let command = command.into();
+    Box::new(move |p| {
+        if let Err(e) = event::emit_flash_progress(&format_clone, &command, p) {
+            log::warn!("输出进度事件失败: {e}");
         }
     })
 }
 
 pub fn cmd_flash_partition(op: &str, soc: &str, port: &str, script_folders: Option<&[String]>, format: &OutputFormat) -> anyhow::Result<()> {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let command = format!("flash.{op}");
+    let cancel_command = command.clone();
+    let format_clone = *format;
 
     let cancel_clone = cancel.clone();
     let _ = ctrlc::set_handler(move || {
-        eprintln!("\nCancelling...");
+        if let Err(e) = event::emit_message(&format_clone, &cancel_command, MessageLevel::Warn, "Cancelling...") {
+            log::warn!("输出取消事件失败: {e}");
+        }
         cancel_clone.store(true, std::sync::atomic::Ordering::Relaxed);
     });
 
-    let on_progress = make_progress_callback(format);
+    let on_progress = make_progress_callback(format, command.clone());
 
     // Detect chip type
     let info = luatos_soc::read_soc_info(soc)?;
@@ -220,13 +197,7 @@ pub fn cmd_flash_partition(op: &str, soc: &str, port: &str, script_folders: Opti
         OutputFormat::Text => {
             println!("Operation '{op}' completed successfully.");
         }
-        OutputFormat::Json => {
-            let json = serde_json::json!({
-                "status": "ok",
-                "command": format!("flash.{op}"),
-            });
-            println!("{}", serde_json::to_string_pretty(&json)?);
-        }
+        OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, &command, "ok", serde_json::json!({}))?,
     }
     Ok(())
 }
@@ -266,13 +237,16 @@ pub fn cmd_flash_test(
     use std::time::{Duration, Instant};
 
     let cancel = Arc::new(AtomicBool::new(false));
+    let format_clone = *format;
     let cancel_clone = cancel.clone();
     let _ = ctrlc::set_handler(move || {
-        eprintln!("\nCancelling flash test...");
+        if let Err(e) = event::emit_message(&format_clone, "flash.test", MessageLevel::Warn, "Cancelling flash test...") {
+            log::warn!("输出取消事件失败: {e}");
+        }
         cancel_clone.store(true, Ordering::Relaxed);
     });
 
-    let on_progress = make_progress_callback(format);
+    let on_progress = make_progress_callback(format, "flash.test");
 
     // Step 1: Flash the firmware
     let info = luatos_soc::read_soc_info(soc)?;
@@ -291,17 +265,17 @@ pub fn cmd_flash_test(
             luatos_flash::bk7258::flash_bk7258(soc, folders_refs.as_deref(), port, baud, cancel.clone(), on_progress)?
         }
         "air6208" | "air101" | "air103" | "air601" => {
-            let on_progress2 = make_progress_callback(format);
+            let on_progress2 = make_progress_callback(format, "flash.test");
             luatos_flash::xt804::flash_xt804(soc, port, on_progress2, cancel.clone())?;
             Vec::new() // XT804 does not return boot lines from flash
         }
         "air1601" | "ccm4211" => {
-            let on_progress2 = make_progress_callback(format);
+            let on_progress2 = make_progress_callback(format, "flash.test");
             luatos_flash::ccm4211::flash_ccm4211(soc, port, &on_progress2, cancel.clone())?;
             Vec::new()
         }
         "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" => {
-            let on_progress2 = make_progress_callback(format);
+            let on_progress2 = make_progress_callback(format, "flash.test");
             let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress2)?;
             luatos_flash::ec718::flash_ec718(soc, &boot_port, &on_progress2, cancel.clone())?;
             Vec::new()
@@ -326,23 +300,17 @@ pub fn cmd_flash_test(
     // re-enumerates as running mode (VID=0x19D1). We need to wait for the
     // new log port to appear and use that instead of the original port.
     let log_port: String = if is_ec718 {
-        if format == &OutputFormat::Text {
-            eprintln!("Waiting for EC718 module to reboot and re-enumerate USB...");
-        }
+        event::emit_message(format, "flash.test", MessageLevel::Info, "Waiting for EC718 module to reboot and re-enumerate USB...")?;
         // Wait up to 15s for the log port to appear
         match luatos_flash::ec718::wait_for_log_port(15) {
             Some(p) => {
-                if format == &OutputFormat::Text {
-                    eprintln!("Found EC718 log port: {p}");
-                }
+                event::emit_message(format, "flash.test", MessageLevel::Info, format!("Found EC718 log port: {p}"))?;
                 // Give USB a moment to stabilize
                 std::thread::sleep(Duration::from_millis(500));
                 p
             }
             None => {
-                if format == &OutputFormat::Text {
-                    eprintln!("EC718 log port not found, trying original port {port}");
-                }
+                event::emit_message(format, "flash.test", MessageLevel::Warn, format!("EC718 log port not found, trying original port {port}"))?;
                 port.to_string()
             }
         }
@@ -350,9 +318,12 @@ pub fn cmd_flash_test(
         port.to_string()
     };
 
-    if format == &OutputFormat::Text {
-        eprintln!("Capturing boot log for {timeout_secs}s on {log_port} @ {log_br}...");
-    }
+    event::emit_message(
+        format,
+        "flash.test",
+        MessageLevel::Info,
+        format!("Capturing boot log for {timeout_secs}s on {log_port} @ {log_br}..."),
+    )?;
 
     // Open serial port and capture lines for the timeout period
     let serial = serialport::new(&log_port, log_br).timeout(Duration::from_millis(500)).open();
@@ -386,8 +357,15 @@ pub fn cmd_flash_test(
                         Ok(n) if n > 0 => {
                             let entries = decoder.feed(&buf[..n]);
                             for entry in &entries {
-                                let module = entry.module.as_deref().unwrap_or("-");
-                                let msg = format!("[{}] {}/{} {}", entry.device_time.as_deref().unwrap_or("?"), entry.level, module, entry.message);
+                                let msg = event::format_log_entry(entry);
+                                let _ = event::emit_jsonl_event(
+                                    format,
+                                    serde_json::json!({
+                                        "type": "boot_log_line",
+                                        "command": "flash.test",
+                                        "line": msg,
+                                    }),
+                                );
                                 all_lines.push(msg);
                             }
                             let found_all = keywords.iter().all(|kw| all_lines.iter().any(|line| line.contains(kw.as_str())));
@@ -411,8 +389,15 @@ pub fn cmd_flash_test(
                         Ok(n) if n > 0 => {
                             let entries = decoder.feed(&buf[..n]);
                             for entry in &entries {
-                                let module = entry.module.as_deref().unwrap_or("-");
-                                let msg = format!("[{}] {}/{} {}", entry.device_time.as_deref().unwrap_or("?"), entry.level, module, entry.message);
+                                let msg = event::format_log_entry(entry);
+                                let _ = event::emit_jsonl_event(
+                                    format,
+                                    serde_json::json!({
+                                        "type": "boot_log_line",
+                                        "command": "flash.test",
+                                        "line": msg,
+                                    }),
+                                );
                                 all_lines.push(msg);
                             }
                             let found_all = keywords.iter().all(|kw| all_lines.iter().any(|line| line.contains(kw.as_str())));
@@ -440,6 +425,14 @@ pub fn cmd_flash_test(
                             if ch == '\n' {
                                 let line = line_buf.trim_end_matches('\r').to_string();
                                 if !line.is_empty() {
+                                    let _ = event::emit_jsonl_event(
+                                        format,
+                                        serde_json::json!({
+                                            "type": "boot_log_line",
+                                            "command": "flash.test",
+                                            "line": line,
+                                        }),
+                                    );
                                     all_lines.push(line);
                                 }
                                 line_buf.clear();
@@ -464,7 +457,16 @@ pub fn cmd_flash_test(
             }
             // Flush remaining line buffer
             if !line_buf.is_empty() {
-                all_lines.push(line_buf.trim_end_matches('\r').to_string());
+                let line = line_buf.trim_end_matches('\r').to_string();
+                let _ = event::emit_jsonl_event(
+                    format,
+                    serde_json::json!({
+                        "type": "boot_log_line",
+                        "command": "flash.test",
+                        "line": line,
+                    }),
+                );
+                all_lines.push(line);
             }
         }
     } else if all_lines.is_empty() {
@@ -501,24 +503,22 @@ pub fn cmd_flash_test(
                 }
             }
         }
-        OutputFormat::Json => {
-            let json = serde_json::json!({
-                "status": if all_passed { "ok" } else { "fail" },
-                "command": "flash.test",
-                "data": {
-                    "result": result_str,
-                    "chip": chip,
-                    "soc": soc,
-                    "port": port,
-                    "keywords": keyword_results.iter().map(|(kw, found)| {
-                        serde_json::json!({ "keyword": kw, "found": found })
-                    }).collect::<Vec<_>>(),
-                    "boot_log": all_lines,
-                    "log_line_count": all_lines.len(),
-                },
-            });
-            println!("{}", serde_json::to_string_pretty(&json)?);
-        }
+        OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(
+            format,
+            "flash.test",
+            if all_passed { "ok" } else { "fail" },
+            serde_json::json!({
+                "result": result_str,
+                "chip": chip,
+                "soc": soc,
+                "port": port,
+                "keywords": keyword_results.iter().map(|(kw, found)| {
+                    serde_json::json!({ "keyword": kw, "found": found })
+                }).collect::<Vec<_>>(),
+                "boot_log": all_lines,
+                "log_line_count": all_lines.len(),
+            }),
+        )?,
     }
 
     if !all_passed {

@@ -21,7 +21,7 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
-use crate::OutputFormat;
+use crate::{event, OutputFormat};
 
 // ─── Tool discovery ──────────────────────────────────────────────────────────
 
@@ -102,7 +102,7 @@ fn unpack(soc_path: &str, out_dir: &Path) -> Result<luatos_soc::UnpackedSoc> {
 /// Create an empty dummy.bin placeholder.
 fn create_dummy(dir: &Path) -> Result<PathBuf> {
     let path = dir.join("dummy.bin");
-    fs::write(&path, &[]).context("create dummy.bin")?;
+    fs::write(&path, []).context("create dummy.bin")?;
     Ok(path)
 }
 
@@ -449,7 +449,7 @@ pub fn cmd_fota_build(
             build_ec7xx_fota(new_soc, old, chip, &toolkit, &toolkit_dir, &soc_tools, &out_path)?;
 
             let size = fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
-            print_result(format, chip, new_soc, old_soc, &[(&out_path, size)]);
+            print_result(format, chip, new_soc, old_soc, &[(&out_path, size)])?;
         }
 
         // ── Air1601 / CCM4211 — full only ─────────────────────────────────────
@@ -463,7 +463,7 @@ pub fn cmd_fota_build(
             build_ccm4211_fota(new_soc, &soc_tools, &out_path)?;
 
             let size = fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
-            print_result(format, chip, new_soc, old_soc, &[(&out_path, size)]);
+            print_result(format, chip, new_soc, old_soc, &[(&out_path, size)])?;
         }
 
         // ── Air6208 / XT804 — full only ────────────────────────────────────────
@@ -496,7 +496,7 @@ pub fn cmd_fota_build(
                 outputs.push(sota_tmp);
             }
 
-            print_result(format, chip, new_soc, old_soc, &outputs);
+            print_result(format, chip, new_soc, old_soc, &outputs)?;
         }
 
         other => bail!(
@@ -508,7 +508,7 @@ pub fn cmd_fota_build(
     Ok(())
 }
 
-fn print_result(format: &OutputFormat, chip: &str, new_soc: &str, old_soc: Option<&str>, outputs: &[(&Path, u64)]) {
+fn print_result(format: &OutputFormat, chip: &str, new_soc: &str, old_soc: Option<&str>, outputs: &[(&Path, u64)]) -> anyhow::Result<()> {
     match format {
         OutputFormat::Text => {
             println!("FOTA package built:");
@@ -521,22 +521,23 @@ fn print_result(format: &OutputFormat, chip: &str, new_soc: &str, old_soc: Optio
                 println!("  Output:  {}  ({size} bytes)", path.display());
             }
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Jsonl => {
             let out_list: Vec<serde_json::Value> = outputs
                 .iter()
                 .map(|(p, s)| serde_json::json!({ "path": p.display().to_string(), "size_bytes": s }))
                 .collect();
-            let json = serde_json::json!({
-                "status": "ok",
-                "command": "fota.build",
-                "data": {
+            event::emit_result(
+                format,
+                "fota.build",
+                "ok",
+                serde_json::json!({
                     "chip": chip,
                     "new_soc": new_soc,
                     "old_soc": old_soc,
                     "outputs": out_list,
-                },
-            });
-            println!("{}", serde_json::to_string_pretty(&json).unwrap_or_default());
+                }),
+            )?;
         }
     }
+    Ok(())
 }

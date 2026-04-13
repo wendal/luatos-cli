@@ -1,6 +1,6 @@
 use std::fs;
 
-use crate::OutputFormat;
+use crate::{event, OutputFormat};
 
 pub fn cmd_project_new(dir: &str, name: &str, chip: &str, format: &OutputFormat) -> anyhow::Result<()> {
     let dir_path = std::path::Path::new(dir);
@@ -17,14 +17,7 @@ pub fn cmd_project_new(dir: &str, name: &str, chip: &str, format: &OutputFormat)
             println!("  # 或者手动指定参数:");
             println!("  luatos-cli build filesystem --src lua/ --output build/script.bin");
         }
-        OutputFormat::Json => {
-            let json = serde_json::json!({
-                "status": "ok",
-                "command": "project.new",
-                "data": { "name": name, "chip": chip, "dir": dir },
-            });
-            println!("{}", serde_json::to_string_pretty(&json)?);
-        }
+        OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "project.new", "ok", serde_json::json!({ "name": name, "chip": chip, "dir": dir }))?,
     }
     Ok(())
 }
@@ -58,14 +51,7 @@ pub fn cmd_project_info(dir: &str, format: &OutputFormat) -> anyhow::Result<()> 
                 println!("  Port:        {port}");
             }
         }
-        OutputFormat::Json => {
-            let json = serde_json::json!({
-                "status": "ok",
-                "command": "project.info",
-                "data": project,
-            });
-            println!("{}", serde_json::to_string_pretty(&json)?);
-        }
+        OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "project.info", "ok", &project)?,
     }
     Ok(())
 }
@@ -82,14 +68,7 @@ pub fn cmd_project_config(dir: &str, key: Option<&str>, value: Option<&str>, for
                     let toml_str = toml::to_string_pretty(&project)?;
                     println!("{toml_str}");
                 }
-                OutputFormat::Json => {
-                    let json = serde_json::json!({
-                        "status": "ok",
-                        "command": "project.config",
-                        "data": project,
-                    });
-                    println!("{}", serde_json::to_string_pretty(&json)?);
-                }
+                OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "project.config", "ok", &project)?,
             }
         }
         (Some(k), None) => {
@@ -97,14 +76,7 @@ pub fn cmd_project_config(dir: &str, key: Option<&str>, value: Option<&str>, for
             let val = get_config_value(&project, k)?;
             match format {
                 OutputFormat::Text => println!("{val}"),
-                OutputFormat::Json => {
-                    let json = serde_json::json!({
-                        "status": "ok",
-                        "command": "project.config",
-                        "data": { "key": k, "value": val },
-                    });
-                    println!("{}", serde_json::to_string_pretty(&json)?);
-                }
+                OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "project.config", "ok", serde_json::json!({ "key": k, "value": val }))?,
             }
         }
         (Some(k), Some(v)) => {
@@ -113,14 +85,7 @@ pub fn cmd_project_config(dir: &str, key: Option<&str>, value: Option<&str>, for
             project.save(dir_path)?;
             match format {
                 OutputFormat::Text => println!("Set {k} = {v}"),
-                OutputFormat::Json => {
-                    let json = serde_json::json!({
-                        "status": "ok",
-                        "command": "project.config",
-                        "data": { "key": k, "value": v },
-                    });
-                    println!("{}", serde_json::to_string_pretty(&json)?);
-                }
+                OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "project.config", "ok", serde_json::json!({ "key": k, "value": v }))?,
             }
         }
     }
@@ -194,19 +159,17 @@ pub fn cmd_project_import(file: &str, dir: &str, format: &OutputFormat) -> anyho
                     }
                     println!("  Output:  {}", result.output_dir.display());
                 }
-                OutputFormat::Json => {
-                    let json = serde_json::json!({
-                        "status": "ok",
-                        "command": "project.import",
-                        "data": {
-                            "source": file,
-                            "project": result.project,
-                            "files": result.files_extracted,
-                            "dir": result.output_dir.display().to_string(),
-                        },
-                    });
-                    println!("{}", serde_json::to_string_pretty(&json)?);
-                }
+                OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(
+                    format,
+                    "project.import",
+                    "ok",
+                    serde_json::json!({
+                        "source": file,
+                        "project": result.project,
+                        "files": result.files_extracted,
+                        "dir": result.output_dir.display().to_string(),
+                    }),
+                )?,
             }
         }
         "ini" => {
@@ -227,21 +190,21 @@ pub fn cmd_project_import(file: &str, dir: &str, format: &OutputFormat) -> anyho
                     }
                     println!("  Config:   {dir}/luatos-project.toml");
                 }
-                OutputFormat::Json => {
+                OutputFormat::Json | OutputFormat::Jsonl => {
                     let sections: Vec<serde_json::Value> = lt_project
                         .script_sections
                         .iter()
                         .map(|s| serde_json::json!({ "dir": s.dir_path, "files": s.files }))
                         .collect();
-                    let json = serde_json::json!({
-                        "status": "ok",
-                        "command": "project.import",
-                        "data": {
+                    event::emit_result(
+                        format,
+                        "project.import",
+                        "ok",
+                        serde_json::json!({
                             "project": project,
                             "source_sections": sections,
-                        },
-                    });
-                    println!("{}", serde_json::to_string_pretty(&json)?);
+                        }),
+                    )?;
                 }
             }
         }
@@ -275,19 +238,17 @@ pub fn cmd_project_export(dir: &str, output: Option<&str>, format: &OutputFormat
                 println!("    {f}");
             }
         }
-        OutputFormat::Json => {
-            let json = serde_json::json!({
-                "status": "ok",
-                "command": "project.export",
-                "data": {
-                    "output": result.output.display().to_string(),
-                    "project": result.project_name,
-                    "chip": result.chip,
-                    "files": result.files_added,
-                },
-            });
-            println!("{}", serde_json::to_string_pretty(&json)?);
-        }
+        OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(
+            format,
+            "project.export",
+            "ok",
+            serde_json::json!({
+                "output": result.output.display().to_string(),
+                "project": result.project_name,
+                "chip": result.chip,
+                "files": result.files_added,
+            }),
+        )?,
     }
     Ok(())
 }
@@ -398,7 +359,7 @@ pub fn cmd_project_analyze(dir: &str, soc_override: Option<&str>, format: &Outpu
     // ── 4. LuaDB image size ──────────────────────────────────────────────────
     // Resolve SOC file: CLI override → project config → None
     let soc_path_resolved: Option<std::path::PathBuf> = soc_override
-        .map(|p| std::path::PathBuf::from(p))
+        .map(std::path::PathBuf::from)
         .or_else(|| project.flash.soc_file.as_ref().map(|p| dir_path.join(p)));
 
     let soc_info = soc_path_resolved
@@ -454,10 +415,9 @@ pub fn cmd_project_analyze(dir: &str, soc_override: Option<&str>, format: &Outpu
             println!("\n── Dependencies ──────────────────────────────────────");
             println!("  Total files:  {}", files.len());
             println!(
-                "  Included:     {} ({}reachable from main.lua{})",
+                "  Included:     {} ({}reachable from main.lua)",
                 included.len(),
-                if project.build.ignore_deps { "ignore_deps=true, all " } else { "" },
-                if project.build.ignore_deps { "" } else { "" }
+                if project.build.ignore_deps { "ignore_deps=true, all " } else { "" }
             );
             println!("  Excluded:     {}", unreachable_names.len());
             if !dep_graph.deps.is_empty() {
@@ -528,7 +488,7 @@ pub fn cmd_project_analyze(dir: &str, soc_override: Option<&str>, format: &Outpu
             }
         }
 
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Jsonl => {
             let file_list: Vec<serde_json::Value> = results
                 .iter()
                 .map(|r| {
@@ -544,10 +504,11 @@ pub fn cmd_project_analyze(dir: &str, soc_override: Option<&str>, format: &Outpu
 
             let deps_map: serde_json::Map<String, serde_json::Value> = dep_graph.deps.iter().map(|(k, v)| (k.clone(), serde_json::json!(v))).collect();
 
-            let json = serde_json::json!({
-                "status": "ok",
-                "command": "project.analyze",
-                "data": {
+            event::emit_result(
+                format,
+                "project.analyze",
+                "ok",
+                serde_json::json!({
                     "project": project.project.name,
                     "chip": project.project.chip,
                     "syntax_errors": syntax_errors.iter().map(|(f,e)| serde_json::json!({"file":f,"error":e})).collect::<Vec<_>>(),
@@ -562,9 +523,8 @@ pub fn cmd_project_analyze(dir: &str, soc_override: Option<&str>, format: &Outpu
                         (Some(img), Some(part)) => serde_json::json!(part.saturating_sub(img)),
                         _ => serde_json::Value::Null,
                     },
-                },
-            });
-            println!("{}", serde_json::to_string_pretty(&json)?);
+                }),
+            )?;
         }
     }
 
@@ -661,21 +621,21 @@ pub fn cmd_project_deps(dir: &str, show_reachable: bool, show_unreachable: bool,
                 }
             }
         }
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Jsonl => {
             let deps_map: serde_json::Map<String, serde_json::Value> = graph.deps.iter().map(|(k, v)| (k.clone(), serde_json::json!(v))).collect();
-            let json = serde_json::json!({
-                "status": "ok",
-                "command": "project.deps",
-                "data": {
+            event::emit_result(
+                format,
+                "project.deps",
+                "ok",
+                serde_json::json!({
                     "total_files": graph.files.len(),
                     "reachable": graph.reachable,
                     "unreachable": unreachable,
                     "external_modules": graph.external_modules,
                     "dependencies": deps_map,
                     "ignore_deps": project.build.ignore_deps,
-                },
-            });
-            println!("{}", serde_json::to_string_pretty(&json)?);
+                }),
+            )?;
         }
     }
     Ok(())

@@ -18,6 +18,7 @@ mod cmd_project;
 mod cmd_resource;
 mod cmd_serial;
 mod cmd_soc;
+mod event;
 
 #[derive(Parser)]
 #[command(name = "luatos-cli", version, about = "LuatOS CLI tool — flash, log, project management")]
@@ -30,10 +31,11 @@ struct Cli {
     command: Commands,
 }
 
-#[derive(Clone, PartialEq, clap::ValueEnum)]
+#[derive(Clone, Copy, PartialEq, clap::ValueEnum)]
 enum OutputFormat {
     Text,
     Json,
+    Jsonl,
 }
 
 #[derive(Subcommand)]
@@ -540,12 +542,19 @@ fn main() {
                 OutputFormat::Text => {
                     println!("luatos-cli v{version}");
                 }
-                OutputFormat::Json => {
-                    let json = serde_json::json!({
-                        "version": version,
-                        "name": "luatos-cli",
-                    });
-                    println!("{}", serde_json::to_string_pretty(&json).unwrap());
+                OutputFormat::Json | OutputFormat::Jsonl => {
+                    if let Err(err) = event::emit_result(
+                        &cli.format,
+                        "version",
+                        "ok",
+                        serde_json::json!({
+                            "version": version,
+                            "name": "luatos-cli",
+                        }),
+                    ) {
+                        eprintln!("Error: {err:#}");
+                        std::process::exit(1);
+                    }
                 }
             }
             Ok(())
@@ -553,19 +562,9 @@ fn main() {
     };
 
     if let Err(e) = result {
-        match cli.format {
-            OutputFormat::Text => {
-                eprintln!("Error: {e:#}");
-                std::process::exit(1);
-            }
-            OutputFormat::Json => {
-                let json = serde_json::json!({
-                    "status": "error",
-                    "error": format!("{e:#}"),
-                });
-                println!("{}", serde_json::to_string_pretty(&json).unwrap());
-                std::process::exit(1);
-            }
+        if let Err(render_err) = event::emit_error(&cli.format, None, &format!("{e:#}")) {
+            eprintln!("Error: {render_err:#}");
         }
+        std::process::exit(1);
     }
 }

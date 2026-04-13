@@ -1,4 +1,4 @@
-use crate::OutputFormat;
+use crate::{event, OutputFormat};
 
 pub fn cmd_build_luac(src_dirs: &[String], output: &str, bitw: u32, format: &OutputFormat) -> anyhow::Result<()> {
     let out_path = std::path::Path::new(output);
@@ -18,17 +18,15 @@ pub fn cmd_build_luac(src_dirs: &[String], output: &str, bitw: u32, format: &Out
                 println!("  {}", f.display());
             }
         }
-        OutputFormat::Json => {
-            let json = serde_json::json!({
-                "status": "ok",
-                "command": "build.luac",
-                "data": {
-                    "count": total_files.len(),
-                    "files": total_files.iter().map(|f| f.display().to_string()).collect::<Vec<_>>(),
-                },
-            });
-            println!("{}", serde_json::to_string_pretty(&json)?);
-        }
+        OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(
+            format,
+            "build.luac",
+            "ok",
+            serde_json::json!({
+                "count": total_files.len(),
+                "files": total_files.iter().map(|f| f.display().to_string()).collect::<Vec<_>>(),
+            }),
+        )?,
     }
     Ok(())
 }
@@ -56,19 +54,17 @@ pub fn cmd_build_filesystem(src_dirs: &[String], output: &str, use_luac: bool, b
             println!("  Luac:   {use_luac}");
             println!("  BK CRC: {bkcrc}");
         }
-        OutputFormat::Json => {
-            let json = serde_json::json!({
-                "status": "ok",
-                "command": "build.filesystem",
-                "data": {
-                    "output": output,
-                    "size": image.len(),
-                    "use_luac": use_luac,
-                    "bkcrc": bkcrc,
-                },
-            });
-            println!("{}", serde_json::to_string_pretty(&json)?);
-        }
+        OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(
+            format,
+            "build.filesystem",
+            "ok",
+            serde_json::json!({
+                "output": output,
+                "size": image.len(),
+                "use_luac": use_luac,
+                "bkcrc": bkcrc,
+            }),
+        )?,
     }
     Ok(())
 }

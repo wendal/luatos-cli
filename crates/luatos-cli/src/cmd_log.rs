@@ -1,4 +1,7 @@
-use crate::OutputFormat;
+use crate::{
+    event::{self, MessageLevel},
+    OutputFormat,
+};
 
 pub fn cmd_log_view(port: &str, baud: u32, format: &OutputFormat) -> anyhow::Result<()> {
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -7,10 +10,10 @@ pub fn cmd_log_view(port: &str, baud: u32, format: &OutputFormat) -> anyhow::Res
         stop_clone.store(true, std::sync::atomic::Ordering::Relaxed);
     });
 
-    eprintln!("Viewing log on {port} @ {baud} bps (Ctrl+C to stop)");
+    event::emit_message(format, "log.view", MessageLevel::Info, format!("Viewing log on {port} @ {baud} bps (Ctrl+C to stop)"))?;
 
     let dispatcher = luatos_log::LogDispatcher::default_parsers();
-    let format_clone = format.clone();
+    let format_clone = *format;
 
     luatos_serial::stream_log_lines(
         port,
@@ -18,18 +21,13 @@ pub fn cmd_log_view(port: &str, baud: u32, format: &OutputFormat) -> anyhow::Res
         stop,
         Box::new(move |line| {
             let entry = dispatcher.parse(line);
-            match format_clone {
-                OutputFormat::Text => {
-                    println!("{}", line);
-                }
-                OutputFormat::Json => {
-                    println!("{}", serde_json::to_string(&entry).unwrap_or_default());
-                }
+            if let Err(e) = event::emit_log_entry(&format_clone, "log.view", &entry) {
+                log::warn!("输出日志事件失败: {e}");
             }
         }),
     )?;
 
-    eprintln!("\nLog viewing stopped.");
+    event::emit_message(format, "log.view", MessageLevel::Info, "Log viewing stopped.")?;
     Ok(())
 }
 
@@ -48,6 +46,8 @@ const GAP_THRESHOLD_MS: u128 = 4;
 struct RollingBinWriter {
     dir: std::path::PathBuf,
     port_safe: String,
+    format: OutputFormat,
+    command: &'static str,
     writer: std::io::BufWriter<std::fs::File>,
     written: usize,
     current_path: std::path::PathBuf,
@@ -55,14 +55,16 @@ struct RollingBinWriter {
 }
 
 impl RollingBinWriter {
-    fn new(dir: &std::path::Path, port: &str) -> anyhow::Result<Self> {
+    fn new(dir: &std::path::Path, port: &str, format: OutputFormat, command: &'static str) -> anyhow::Result<Self> {
         let port_safe = port.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "_");
         std::fs::create_dir_all(dir)?;
         let (writer, path) = open_new_file(dir, &port_safe)?;
-        eprintln!("AP log recording → {}", path.display());
+        event::emit_message(&format, command, MessageLevel::Info, format!("AP log recording → {}", path.display()))?;
         Ok(Self {
             dir: dir.to_path_buf(),
             port_safe,
+            format,
+            command,
             writer,
             written: 0,
             current_path: path,
@@ -106,7 +108,7 @@ impl RollingBinWriter {
         self.writer = new_writer;
         self.written = 0;
         self.current_path = new_path.clone();
-        eprintln!("AP log rotated → {}", new_path.display());
+        event::emit_message(&self.format, self.command, MessageLevel::Info, format!("AP log rotated → {}", new_path.display()))?;
         Ok(())
     }
 
@@ -139,10 +141,10 @@ pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, save_dir: Option<
     // Auto-detect log port if "auto" specified
     let actual_port = if port == "auto" {
         if is_ec718 {
-            eprintln!("Auto-detecting EC718 log port (VID=0x19D1)...");
+            event::emit_message(format, "log.view_binary", MessageLevel::Info, "Auto-detecting EC718 log port (VID=0x19D1)...")?;
             match luatos_flash::ec718::find_ec718_log_port() {
                 Some(p) => {
-                    eprintln!("Found EC718 log port: {p}");
+                    event::emit_message(format, "log.view_binary", MessageLevel::Info, format!("Found EC718 log port: {p}"))?;
                     p
                 }
                 None => {
@@ -165,23 +167,28 @@ pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, save_dir: Option<
 
     // Build probe data — same 0xA5 probe works for both chip types
     let init_data = if probe {
-        eprintln!("Sending probe to trigger log output ...");
+        event::emit_message(format, "log.view_binary", MessageLevel::Info, "Sending probe to trigger log output ...")?;
         Some(luatos_flash::ec718::build_log_probe())
     } else {
         None
     };
 
-    eprintln!(
-        "Viewing {} binary log on {actual_port} @ {baud} bps (Ctrl+C to stop)",
-        if is_ec718 { "EC718" } else { "SOC" }
-    );
+    event::emit_message(
+        format,
+        "log.view_binary",
+        MessageLevel::Info,
+        format!(
+            "Viewing {} binary log on {actual_port} @ {baud} bps (Ctrl+C to stop)",
+            if is_ec718 { "EC718" } else { "SOC" }
+        ),
+    )?;
 
     // Optional rolling binary recorder
     let bin_writer: Option<std::sync::Arc<std::sync::Mutex<RollingBinWriter>>> = save_dir
-        .map(|d| RollingBinWriter::new(std::path::Path::new(d), &actual_port).map(|w| std::sync::Arc::new(std::sync::Mutex::new(w))))
+        .map(|d| RollingBinWriter::new(std::path::Path::new(d), &actual_port, *format, "log.view_binary").map(|w| std::sync::Arc::new(std::sync::Mutex::new(w))))
         .transpose()?;
 
-    let format_clone = format.clone();
+    let format_clone = *format;
 
     if is_ec718 {
         // EC718: 0x7E HDLC framing, DTR/RTS HIGH
@@ -200,7 +207,9 @@ pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, save_dir: Option<
                 if let Ok(mut dec) = decoder.lock() {
                     let entries = dec.feed(data);
                     for entry in &entries {
-                        print_log_entry(entry, &format_clone);
+                        if let Err(e) = event::emit_log_entry(&format_clone, "log.view_binary", entry) {
+                            log::warn!("输出日志事件失败: {e}");
+                        }
                     }
                 }
             }),
@@ -224,7 +233,9 @@ pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, save_dir: Option<
                 if let Ok(mut dec) = decoder.lock() {
                     let entries = dec.feed(data);
                     for entry in &entries {
-                        print_log_entry(entry, &format_clone);
+                        if let Err(e) = event::emit_log_entry(&format_clone, "log.view_binary", entry) {
+                            log::warn!("输出日志事件失败: {e}");
+                        }
                     }
                 }
             }),
@@ -237,26 +248,12 @@ pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, save_dir: Option<
     if let Some(bw) = bin_writer {
         if let Ok(mut w) = bw.lock() {
             w.flush();
-            eprintln!("Binary log saved to {}", w.current_path.display());
+            event::emit_message(format, "log.view_binary", MessageLevel::Info, format!("Binary log saved to {}", w.current_path.display()))?;
         }
     }
 
-    eprintln!("\nLog viewing stopped.");
+    event::emit_message(format, "log.view_binary", MessageLevel::Info, "Log viewing stopped.")?;
     Ok(())
-}
-
-/// Format and print a single log entry to stdout.
-fn print_log_entry(entry: &luatos_log::LogEntry, format: &OutputFormat) {
-    match format {
-        OutputFormat::Text => {
-            let module = entry.module.as_deref().unwrap_or("-");
-            let time = entry.device_time.as_deref().unwrap_or("?");
-            println!("[{}] {}/{} {}", time, entry.level, module, entry.message);
-        }
-        OutputFormat::Json => {
-            println!("{}", serde_json::to_string(&entry).unwrap_or_default());
-        }
-    }
 }
 
 pub fn cmd_log_record(port: &str, baud: u32, output_dir: &str, save_json: bool, format: &OutputFormat) -> anyhow::Result<()> {
@@ -275,14 +272,19 @@ pub fn cmd_log_record(port: &str, baud: u32, output_dir: &str, save_json: bool, 
 
     let writer = luatos_log::LogWriter::new(Some(&text_path), json_path.as_deref())?;
 
-    eprintln!("Recording log on {port} @ {baud} bps → {}", text_path.display());
+    event::emit_message(
+        format,
+        "log.record",
+        MessageLevel::Info,
+        format!("Recording log on {port} @ {baud} bps → {}", text_path.display()),
+    )?;
     if let Some(ref jp) = json_path {
-        eprintln!("  JSON log: {}", jp.display());
+        event::emit_message(format, "log.record", MessageLevel::Info, format!("  JSON log: {}", jp.display()))?;
     }
-    eprintln!("Press Ctrl+C to stop.");
+    event::emit_message(format, "log.record", MessageLevel::Info, "Press Ctrl+C to stop.")?;
 
     let dispatcher = luatos_log::LogDispatcher::default_parsers();
-    let format_clone = format.clone();
+    let format_clone = *format;
 
     let writer = std::sync::Mutex::new(writer);
     let line_count = std::sync::atomic::AtomicUsize::new(0);
@@ -293,14 +295,8 @@ pub fn cmd_log_record(port: &str, baud: u32, output_dir: &str, save_json: bool, 
         stop,
         Box::new(move |line| {
             let entry = dispatcher.parse(line);
-
-            match format_clone {
-                OutputFormat::Text => {
-                    println!("{}", line);
-                }
-                OutputFormat::Json => {
-                    println!("{}", serde_json::to_string(&entry).unwrap_or_default());
-                }
+            if let Err(e) = event::emit_log_entry(&format_clone, "log.record", &entry) {
+                log::warn!("输出日志事件失败: {e}");
             }
 
             if let Ok(mut w) = writer.lock() {
@@ -313,7 +309,7 @@ pub fn cmd_log_record(port: &str, baud: u32, output_dir: &str, save_json: bool, 
         }),
     )?;
 
-    eprintln!("\nRecording stopped. Log saved to {}", text_path.display());
+    event::emit_message(format, "log.record", MessageLevel::Info, format!("Recording stopped. Log saved to {}", text_path.display()))?;
     Ok(())
 }
 
@@ -330,14 +326,7 @@ pub fn cmd_log_parse(path: &str, format: &OutputFormat) -> anyhow::Result<()> {
                 println!("[{}] {}/{} {}", time, entry.level, module, entry.message);
             }
         }
-        OutputFormat::Json => {
-            let json = serde_json::json!({
-                "status": "ok",
-                "command": "log.parse",
-                "data": entries,
-            });
-            println!("{}", serde_json::to_string_pretty(&json)?);
-        }
+        OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "log.parse", "ok", &entries)?,
     }
     Ok(())
 }

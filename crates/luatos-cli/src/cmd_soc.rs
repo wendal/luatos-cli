@@ -1,6 +1,6 @@
 use anyhow::Context;
 
-use crate::OutputFormat;
+use crate::{event, OutputFormat};
 
 pub fn cmd_soc_info(path: &str, format: &OutputFormat) -> anyhow::Result<()> {
     let info = luatos_soc::read_soc_info(path)?;
@@ -22,14 +22,7 @@ pub fn cmd_soc_info(path: &str, format: &OutputFormat) -> anyhow::Result<()> {
             }
             println!("  BK CRC:     {}", info.use_bkcrc());
         }
-        OutputFormat::Json => {
-            let json = serde_json::json!({
-                "status": "ok",
-                "command": "soc.info",
-                "data": info,
-            });
-            println!("{}", serde_json::to_string_pretty(&json)?);
-        }
+        OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "soc.info", "ok", &info)?,
     }
     Ok(())
 }
@@ -48,19 +41,17 @@ pub fn cmd_soc_unpack(path: &str, output: Option<&str>, format: &OutputFormat) -
                 println!("  Exe:   {}", exe.display());
             }
         }
-        OutputFormat::Json => {
-            let json = serde_json::json!({
-                "status": "ok",
-                "command": "soc.unpack",
-                "data": {
-                    "dir": out_path.display().to_string(),
-                    "chip": unpacked.info.chip.chip_type,
-                    "rom": unpacked.rom_path.display().to_string(),
-                    "flash_exe": unpacked.flash_exe.map(|p| p.display().to_string()),
-                },
-            });
-            println!("{}", serde_json::to_string_pretty(&json)?);
-        }
+        OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(
+            format,
+            "soc.unpack",
+            "ok",
+            serde_json::json!({
+                "dir": out_path.display().to_string(),
+                "chip": unpacked.info.chip.chip_type,
+                "rom": unpacked.rom_path.display().to_string(),
+                "flash_exe": unpacked.flash_exe.map(|p| p.display().to_string()),
+            }),
+        )?,
     }
     Ok(())
 }
@@ -74,14 +65,7 @@ pub fn cmd_soc_files(path: &str, format: &OutputFormat) -> anyhow::Result<()> {
                 println!("  {f}");
             }
         }
-        OutputFormat::Json => {
-            let json = serde_json::json!({
-                "status": "ok",
-                "command": "soc.files",
-                "data": files,
-            });
-            println!("{}", serde_json::to_string_pretty(&json)?);
-        }
+        OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "soc.files", "ok", &files)?,
     }
     Ok(())
 }
@@ -113,20 +97,18 @@ pub fn cmd_soc_combine(soc: &str, bin: &str, addr: &str, output: Option<&str>, f
             println!("  Binary: {bin}");
             println!("  Output: {out_path}");
         }
-        OutputFormat::Json => {
-            let json = serde_json::json!({
-                "status": "ok",
-                "command": "soc.combine",
-                "data": {
-                    "soc": soc,
-                    "bin": bin,
-                    "addr": format!("0x{hex_addr:08X}"),
-                    "size": user_data.len(),
-                    "output": out_path,
-                },
-            });
-            println!("{}", serde_json::to_string_pretty(&json)?);
-        }
+        OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(
+            format,
+            "soc.combine",
+            "ok",
+            serde_json::json!({
+                "soc": soc,
+                "bin": bin,
+                "addr": format!("0x{hex_addr:08X}"),
+                "size": user_data.len(),
+                "output": out_path,
+            }),
+        )?,
     }
     Ok(())
 }
@@ -142,14 +124,7 @@ pub fn cmd_soc_pack(dir: &str, output: &str, format: &OutputFormat) -> anyhow::R
         OutputFormat::Text => {
             println!("Packed {} → {output}", dir);
         }
-        OutputFormat::Json => {
-            let json = serde_json::json!({
-                "status": "ok",
-                "command": "soc.pack",
-                "data": { "output": output },
-            });
-            println!("{}", serde_json::to_string_pretty(&json)?);
-        }
+        OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "soc.pack", "ok", serde_json::json!({ "output": output }))?,
     }
     Ok(())
 }
