@@ -77,7 +77,14 @@ luatos-cli log record --port COM6 --output ./logs/ --json
 
 # ── 项目管理 ──
 
-# 创建新项目
+# 向导式创建项目（交互式，推荐）
+luatos-cli project new my-project          # 省略 --chip 自动进入向导
+luatos-cli project wizard                  # 显式进入向导
+
+# 非交互式创建（全参数时跳过交互）
+luatos-cli project wizard --name my-app --model Air8101 --template helloworld --no-git --no-download
+
+# 老方式：指定 chip 直接创建（helloworld 模板）
 luatos-cli project new my-project --chip air8101
 
 # 查看项目信息
@@ -111,8 +118,11 @@ luatos-cli resource list
 # 查看模组的固件版本
 luatos-cli resource list Air8101
 
-# 下载最新固件资源
-luatos-cli resource download Air8101 --output ./resource/
+# 下载最新固件（三段式：category sub [item]）
+luatos-cli resource download Air8101 V2032               # 下载整个版本
+luatos-cli resource download Air8101 V2032 114           # 下载版本中含'114'的文件
+luatos-cli resource download public soc_script           # 最新 soc_script 扩展库
+luatos-cli resource download public soc_script v2026.04.10  # 指定版本
 
 # ── JSON 输出 (AI 友好) ──
 luatos-cli --format json serial list

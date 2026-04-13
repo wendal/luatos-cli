@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.2] - 2026-04-13
+
+### Features
+
+#### 向导式项目创建 (luatos-cli / luatos-project)
+- **新增 `project wizard` 子命令** — 10 步交互式引导创建 LuatOS 项目
+  - 从 CDN manifest 自动拉取型号列表（含 fallback 预置列表）
+  - 引导选择：模组型号 → 固件版本 → 项目模板 → COM 口 → soc_script 版本
+  - 可选立即下载固件和 soc_script 扩展库
+  - 可选 `git init` + 自动生成 `.gitignore`
+  - 全参数时跳过交互（CI/脚本友好）：  
+    `project wizard --name my-app --model Air8101 --template helloworld --no-git --no-download`
+- **`project new` 省略 `--chip` 自动进入向导** — 对齐新手使用习惯
+- **新增 `TemplateKind` 模板系统** — `helloworld` / `ui` / `empty` 三种模板
+  - `helloworld`：标准 Hello World 入门模板
+  - `ui`：AirUI 风格 UI 模板（仅 bk72xx/air6208/air101 芯片）
+  - `empty`：空模板（仅生成配置和 README）
+- **新增 manifest 缓存** — `MANIFEST_CACHE_TTL_SECS = 300`（5 分钟，源码可调）
+  - 缓存路径：`~/.cache/luatos-cli/manifest.json`（Linux/macOS）/ `%LOCALAPPDATA%\luatos-cli\manifest.json`（Windows）
+
+### Tests
+- 新增 14 个单元测试（wizard 数据层 6 个、template 渲染 5 个、向导非交互 3 个）
+
+---
+
 ## [1.6.0] - 2026-04-13
 
 ### Features
