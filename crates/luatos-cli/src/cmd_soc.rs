@@ -89,9 +89,7 @@ pub fn cmd_soc_files(path: &str, format: &OutputFormat) -> anyhow::Result<()> {
 pub fn cmd_soc_combine(soc: &str, bin: &str, addr: &str, output: Option<&str>, format: &OutputFormat) -> anyhow::Result<()> {
     use std::fs;
 
-    let hex_addr = luatos_soc::parse_addr(addr.trim())
-        .ok_or_else(|| anyhow::anyhow!("Invalid address '{addr}' — use hex like 0x00D00000"))?
-        as u32;
+    let hex_addr = luatos_soc::parse_addr(addr.trim()).ok_or_else(|| anyhow::anyhow!("Invalid address '{addr}' — use hex like 0x00D00000"))? as u32;
 
     anyhow::ensure!(std::path::Path::new(soc).exists(), "SOC file not found: {soc}");
     anyhow::ensure!(std::path::Path::new(bin).exists(), "Binary file not found: {bin}");

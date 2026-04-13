@@ -38,8 +38,10 @@ pub fn combine_ec7xx_soc(soc_path: &str, user_data: &[u8], hex_addr: u32, out_pa
     let info = crate::read_soc_info(soc_path)?;
     let chip = info.chip.chip_type.as_str();
     if !is_ec7xx(chip) {
-        bail!("soc combine only supports EC7xx / Air8000 chips, got '{chip}'.\n\
-               Supported: ec7xx, air8000, air780epm, air780ehm, air780ehv, air780ehg, air780epv");
+        bail!(
+            "soc combine only supports EC7xx / Air8000 chips, got '{chip}'.\n\
+               Supported: ec7xx, air8000, air780epm, air780ehm, air780ehv, air780ehg, air780epv"
+        );
     }
 
     // ── 2. Extract archive ───────────────────────────────────────────────────
@@ -68,7 +70,11 @@ pub fn combine_ec7xx_soc(soc_path: &str, user_data: &[u8], hex_addr: u32, out_pa
         if hex_addr < span.end && user_end > span.addr {
             bail!(
                 "0x{:08X}..0x{:08X} overlaps existing entry '{}' (0x{:08X}..0x{:08X})",
-                hex_addr, user_end, span.name, span.addr, span.end
+                hex_addr,
+                user_end,
+                span.name,
+                span.addr,
+                span.end
             );
         }
     }
@@ -80,13 +86,7 @@ pub fn combine_ec7xx_soc(soc_path: &str, user_data: &[u8], hex_addr: u32, out_pa
     // ── 6. Repack .soc ───────────────────────────────────────────────────────
     pack_soc_7z(temppath, out_path).context("repack soc")?;
 
-    log::info!(
-        "combine: injected {} bytes at 0x{:08X} into '{}' → '{}'",
-        user_data.len(),
-        hex_addr,
-        soc_path,
-        out_path
-    );
+    log::info!("combine: injected {} bytes at 0x{:08X} into '{}' → '{}'", user_data.len(), hex_addr, soc_path, out_path);
     Ok(())
 }
 
@@ -163,11 +163,7 @@ fn append_entry(original: &[u8], name: &str, addr: u32, data: &[u8]) -> Vec<u8> 
 
 /// Extract a null-terminated string from a byte slice.
 fn null_str(bytes: &[u8]) -> String {
-    bytes
-        .split(|&b| b == 0)
-        .next()
-        .map(|s| String::from_utf8_lossy(s).to_string())
-        .unwrap_or_default()
+    bytes.split(|&b| b == 0).next().map(|s| String::from_utf8_lossy(s).to_string()).unwrap_or_default()
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

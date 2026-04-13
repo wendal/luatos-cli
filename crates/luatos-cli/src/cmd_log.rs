@@ -116,15 +116,11 @@ impl RollingBinWriter {
     }
 }
 
-fn open_new_file(
-    dir: &std::path::Path,
-    port_safe: &str,
-) -> anyhow::Result<(std::io::BufWriter<std::fs::File>, std::path::PathBuf)> {
+fn open_new_file(dir: &std::path::Path, port_safe: &str) -> anyhow::Result<(std::io::BufWriter<std::fs::File>, std::path::PathBuf)> {
     let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
     let filename = format!("ap_{ts}_{port_safe}.bin");
     let path = dir.join(&filename);
-    let file = std::fs::File::create(&path)
-        .map_err(|e| anyhow::anyhow!("create {}: {e}", path.display()))?;
+    let file = std::fs::File::create(&path).map_err(|e| anyhow::anyhow!("create {}: {e}", path.display()))?;
     Ok((std::io::BufWriter::with_capacity(64 * 1024, file), path))
 }
 
@@ -182,10 +178,7 @@ pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, save_dir: Option<
 
     // Optional rolling binary recorder
     let bin_writer: Option<std::sync::Arc<std::sync::Mutex<RollingBinWriter>>> = save_dir
-        .map(|d| {
-            RollingBinWriter::new(std::path::Path::new(d), &actual_port)
-                .map(|w| std::sync::Arc::new(std::sync::Mutex::new(w)))
-        })
+        .map(|d| RollingBinWriter::new(std::path::Path::new(d), &actual_port).map(|w| std::sync::Arc::new(std::sync::Mutex::new(w))))
         .transpose()?;
 
     let format_clone = format.clone();

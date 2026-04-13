@@ -31,15 +31,13 @@ use crate::{Project, CONFIG_FILE_NAME};
 pub fn export_project(dir: &Path, output_path: &Path) -> Result<ExportResult> {
     let project = Project::load(dir)?;
 
-    let file = fs::File::create(output_path)
-        .with_context(|| format!("create archive {}", output_path.display()))?;
+    let file = fs::File::create(output_path).with_context(|| format!("create archive {}", output_path.display()))?;
     let mut zip = ZipWriter::new(file);
     let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
 
     // ── 1. Config ────────────────────────────────────────────────────────────
     let config_path = dir.join(CONFIG_FILE_NAME);
-    let config_bytes = fs::read(&config_path)
-        .with_context(|| format!("read {}", config_path.display()))?;
+    let config_bytes = fs::read(&config_path).with_context(|| format!("read {}", config_path.display()))?;
     zip.start_file(CONFIG_FILE_NAME, opts).context("zip: start config")?;
     zip.write_all(&config_bytes).context("zip: write config")?;
 
@@ -63,16 +61,11 @@ pub fn export_project(dir: &Path, output_path: &Path) -> Result<ExportResult> {
             if !seen.insert(abs_path.clone()) {
                 continue;
             }
-            let rel = abs_path
-                .strip_prefix(dir)
-                .with_context(|| format!("strip prefix {}", abs_path.display()))?;
+            let rel = abs_path.strip_prefix(dir).with_context(|| format!("strip prefix {}", abs_path.display()))?;
             let zip_path = rel.to_string_lossy().replace('\\', "/");
-            zip.start_file(&zip_path, opts)
-                .with_context(|| format!("zip: start {zip_path}"))?;
-            let data = fs::read(&abs_path)
-                .with_context(|| format!("read {}", abs_path.display()))?;
-            zip.write_all(&data)
-                .with_context(|| format!("zip: write {zip_path}"))?;
+            zip.start_file(&zip_path, opts).with_context(|| format!("zip: start {zip_path}"))?;
+            let data = fs::read(&abs_path).with_context(|| format!("read {}", abs_path.display()))?;
+            zip.write_all(&data).with_context(|| format!("zip: write {zip_path}"))?;
             files_added.push(zip_path);
         }
     }
@@ -83,16 +76,11 @@ pub fn export_project(dir: &Path, output_path: &Path) -> Result<ExportResult> {
         if !abs_path.exists() || !seen.insert(abs_path.clone()) {
             continue;
         }
-        let rel = abs_path
-            .strip_prefix(dir)
-            .with_context(|| format!("strip prefix {}", abs_path.display()))?;
+        let rel = abs_path.strip_prefix(dir).with_context(|| format!("strip prefix {}", abs_path.display()))?;
         let zip_path = rel.to_string_lossy().replace('\\', "/");
-        zip.start_file(&zip_path, opts)
-            .with_context(|| format!("zip: start {zip_path}"))?;
-        let data = fs::read(&abs_path)
-            .with_context(|| format!("read {}", abs_path.display()))?;
-        zip.write_all(&data)
-            .with_context(|| format!("zip: write {zip_path}"))?;
+        zip.start_file(&zip_path, opts).with_context(|| format!("zip: start {zip_path}"))?;
+        let data = fs::read(&abs_path).with_context(|| format!("read {}", abs_path.display()))?;
+        zip.write_all(&data).with_context(|| format!("zip: write {zip_path}"))?;
         files_added.push(zip_path);
     }
 
@@ -121,10 +109,8 @@ pub struct ExportResult {
 /// Existing files are overwritten. Parent directories are created on demand.
 /// Returns the deserialized project config after extraction.
 pub fn import_archive(archive_path: &Path, output_dir: &Path) -> Result<ImportResult> {
-    let file = fs::File::open(archive_path)
-        .with_context(|| format!("open archive {}", archive_path.display()))?;
-    let mut zip = ZipArchive::new(file)
-        .with_context(|| format!("parse ZIP {}", archive_path.display()))?;
+    let file = fs::File::open(archive_path).with_context(|| format!("open archive {}", archive_path.display()))?;
+    let mut zip = ZipArchive::new(file).with_context(|| format!("parse ZIP {}", archive_path.display()))?;
 
     let mut files_extracted: Vec<String> = Vec::new();
 
@@ -139,21 +125,17 @@ pub fn import_archive(archive_path: &Path, output_dir: &Path) -> Result<ImportRe
 
         let dest = output_dir.join(&zip_name);
         if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("create dir {}", parent.display()))?;
+            fs::create_dir_all(parent).with_context(|| format!("create dir {}", parent.display()))?;
         }
 
         let mut data = Vec::new();
-        entry.read_to_end(&mut data)
-            .with_context(|| format!("read zip entry {zip_name}"))?;
-        fs::write(&dest, &data)
-            .with_context(|| format!("write {}", dest.display()))?;
+        entry.read_to_end(&mut data).with_context(|| format!("read zip entry {zip_name}"))?;
+        fs::write(&dest, &data).with_context(|| format!("write {}", dest.display()))?;
 
         files_extracted.push(zip_name);
     }
 
-    let project = Project::load(output_dir)
-        .context("archive does not contain a valid luatos-project.toml")?;
+    let project = Project::load(output_dir).context("archive does not contain a valid luatos-project.toml")?;
 
     Ok(ImportResult {
         project,

@@ -29,25 +29,25 @@ pub struct ProjectFile {
 ///
 /// Paths in `script_dirs` and `script_files` are resolved relative to
 /// `project_dir`. Returns a map of filename → [`ProjectFile`].
-pub fn collect_project_files(
-    script_dirs: &[String],
-    script_files: &[String],
-    project_dir: &Path,
-) -> Result<BTreeMap<String, ProjectFile>> {
-    let abs_dirs: Vec<String> =
-        script_dirs.iter().map(|d| project_dir.join(d).to_string_lossy().into_owned()).collect();
-    let abs_files: Vec<String> =
-        script_files.iter().map(|f| project_dir.join(f).to_string_lossy().into_owned()).collect();
+pub fn collect_project_files(script_dirs: &[String], script_files: &[String], project_dir: &Path) -> Result<BTreeMap<String, ProjectFile>> {
+    let abs_dirs: Vec<String> = script_dirs.iter().map(|d| project_dir.join(d).to_string_lossy().into_owned()).collect();
+    let abs_files: Vec<String> = script_files.iter().map(|f| project_dir.join(f).to_string_lossy().into_owned()).collect();
 
     let raw = crate::lua_deps::collect_script_files(&abs_dirs, &abs_files)?;
 
     let mut result = BTreeMap::new();
     for (name, path) in raw {
-        let raw_size = fs::metadata(&path)
-            .with_context(|| format!("cannot stat {}", path.display()))?
-            .len() as usize;
+        let raw_size = fs::metadata(&path).with_context(|| format!("cannot stat {}", path.display()))?.len() as usize;
         let is_lua = name.ends_with(".lua") || name.ends_with(".luac");
-        result.insert(name.clone(), ProjectFile { filename: name, path, raw_size, is_lua });
+        result.insert(
+            name.clone(),
+            ProjectFile {
+                filename: name,
+                path,
+                raw_size,
+                is_lua,
+            },
+        );
     }
     Ok(result)
 }

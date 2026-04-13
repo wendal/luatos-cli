@@ -25,20 +25,9 @@ use crate::OutputFormat;
 
 // ─── Tool discovery ──────────────────────────────────────────────────────────
 
-const SEARCH_ROOTS: &[&str] = &[
-    ".",
-    "tools",
-    "refs/origin_tools/tools",
-    "../refs/origin_tools/tools",
-    "../../refs/origin_tools/tools",
-];
+const SEARCH_ROOTS: &[&str] = &[".", "tools", "refs/origin_tools/tools", "../refs/origin_tools/tools", "../../refs/origin_tools/tools"];
 
-const DTOOLS_SEARCH_ROOTS: &[&str] = &[
-    "dtools",
-    "refs/origin_tools/dtools",
-    "../refs/origin_tools/dtools",
-    "../../refs/origin_tools/dtools",
-];
+const DTOOLS_SEARCH_ROOTS: &[&str] = &["dtools", "refs/origin_tools/dtools", "../refs/origin_tools/dtools", "../../refs/origin_tools/dtools"];
 
 fn exe_dir() -> PathBuf {
     std::env::current_exe()
@@ -96,16 +85,17 @@ fn find_fota_toolkit(chip: &str, explicit: Option<&str>) -> Result<(PathBuf, Pat
             return Ok((candidate, dir));
         }
     }
-    bail!("FotaToolkit.exe not found for chip '{chip}' (variant: {variant}). \
-           Provide --fota-toolkit <path> or place dtools/ next to luatos-cli.")
+    bail!(
+        "FotaToolkit.exe not found for chip '{chip}' (variant: {variant}). \
+           Provide --fota-toolkit <path> or place dtools/ next to luatos-cli."
+    )
 }
 
 // ─── Shared helpers ──────────────────────────────────────────────────────────
 
 /// Extract a .soc archive, return the unpacked result.
 fn unpack(soc_path: &str, out_dir: &Path) -> Result<luatos_soc::UnpackedSoc> {
-    fs::create_dir_all(out_dir)
-        .with_context(|| format!("create dir {}", out_dir.display()))?;
+    fs::create_dir_all(out_dir).with_context(|| format!("create dir {}", out_dir.display()))?;
     luatos_soc::unpack_soc(soc_path, out_dir)
 }
 
@@ -125,9 +115,7 @@ fn parse_hex_addr(s: &str) -> Option<u64> {
 
 /// Run a command, surface stderr on failure, return an error if exit code ≠ 0.
 fn run_cmd(mut cmd: Command) -> Result<()> {
-    let status = cmd.status().with_context(|| {
-        format!("failed to launch {:?}", cmd.get_program())
-    })?;
+    let status = cmd.status().with_context(|| format!("failed to launch {:?}", cmd.get_program()))?;
     if !status.success() {
         bail!("{:?} exited with code {:?}", cmd.get_program(), status.code());
     }
@@ -136,15 +124,7 @@ fn run_cmd(mut cmd: Command) -> Result<()> {
 
 // ─── EC7xx / EC618 — differential FOTA ───────────────────────────────────────
 
-fn build_ec7xx_fota(
-    new_soc: &str,
-    old_soc: &str,
-    chip: &str,
-    toolkit_path: &Path,
-    toolkit_dir: &Path,
-    soc_tools: &Path,
-    out_path: &Path,
-) -> Result<()> {
+fn build_ec7xx_fota(new_soc: &str, old_soc: &str, chip: &str, toolkit_path: &Path, toolkit_dir: &Path, soc_tools: &Path, out_path: &Path) -> Result<()> {
     let tmp = tempfile::tempdir().context("tempdir")?;
 
     let new_up = unpack(new_soc, &tmp.path().join("new"))?;
@@ -178,8 +158,17 @@ fn build_ec7xx_fota(
 
     run_cmd({
         let mut c = Command::new(soc_tools);
-        c.args(["make_ota_file", "0", "0", "0", "0", "0",
-            &dummy.to_string_lossy(), &delta.to_string_lossy(), &out_path.to_string_lossy()]);
+        c.args([
+            "make_ota_file",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            &dummy.to_string_lossy(),
+            &delta.to_string_lossy(),
+            &out_path.to_string_lossy(),
+        ]);
         c
     })?;
 
@@ -189,11 +178,7 @@ fn build_ec7xx_fota(
 
 // ─── Air1601 / CCM4211 — full FOTA ───────────────────────────────────────────
 
-fn build_ccm4211_fota(
-    new_soc: &str,
-    soc_tools: &Path,
-    out_path: &Path,
-) -> Result<()> {
+fn build_ccm4211_fota(new_soc: &str, soc_tools: &Path, out_path: &Path) -> Result<()> {
     let tmp = tempfile::tempdir().context("tempdir")?;
     let up = unpack(new_soc, &tmp.path().join("soc"))?;
     let info = &up.info;
@@ -216,8 +201,7 @@ fn build_ccm4211_fota(
     let ap_zip = tmp.path().join("ap.zip");
     run_cmd({
         let mut c = Command::new(soc_tools);
-        c.args(["zip_file", magic, app_addr,
-            &rom_bin.to_string_lossy(), &ap_zip.to_string_lossy(), "40000", "1"]);
+        c.args(["zip_file", magic, app_addr, &rom_bin.to_string_lossy(), &ap_zip.to_string_lossy(), "40000", "1"]);
         c
     })?;
 
@@ -228,8 +212,7 @@ fn build_ccm4211_fota(
             let s_zip = tmp.path().join("s.zip");
             run_cmd({
                 let mut c = Command::new(soc_tools);
-                c.args(["zip_file", magic, saddr,
-                    &script_bin.to_string_lossy(), &s_zip.to_string_lossy(), "40000", "1"]);
+                c.args(["zip_file", magic, saddr, &script_bin.to_string_lossy(), &s_zip.to_string_lossy(), "40000", "1"]);
                 c
             })?;
             let mut data = fs::read(&ap_zip).context("read ap.zip")?;
@@ -247,9 +230,18 @@ fn build_ccm4211_fota(
     run_cmd({
         let mut c = Command::new(soc_tools);
         // args: make_ota_file <magic> <old_cp_sentinel=0xFFFFFFFF> 0 0 0 <version=0> <ap.zip> <dummy> <out>
-        c.args(["make_ota_file", magic, "4294967295", "0", "0", "0", "0",
-            &total_zip.to_string_lossy(), &dummy.to_string_lossy(),
-            &out_path.to_string_lossy()]);
+        c.args([
+            "make_ota_file",
+            magic,
+            "4294967295",
+            "0",
+            "0",
+            "0",
+            "0",
+            &total_zip.to_string_lossy(),
+            &dummy.to_string_lossy(),
+            &out_path.to_string_lossy(),
+        ]);
         c
     })?;
 
@@ -272,16 +264,9 @@ fn build_air6208_fota(
         .ok_or_else(|| anyhow::anyhow!("air101_flash.exe not found inside the Air6208 .soc archive"))?;
 
     // ── Resolve addresses ──────────────────────────────────────────────────────
-    let app_addr = info
-        .download
-        .app_addr
-        .as_deref()
-        .or(info.download.core_addr.as_deref())
-        .unwrap_or("8010000");
+    let app_addr = info.download.app_addr.as_deref().or(info.download.core_addr.as_deref()).unwrap_or("8010000");
 
-    let run_addr_computed: String = parse_hex_addr(app_addr)
-        .map(|a| format!("{:x}", a + 0x400))
-        .unwrap_or_else(|| "8010400".to_string());
+    let run_addr_computed: String = parse_hex_addr(app_addr).map(|a| format!("{:x}", a + 0x400)).unwrap_or_else(|| "8010400".to_string());
     let run_addr = info.download.run_addr.as_deref().unwrap_or(&run_addr_computed);
 
     let fota_addr = info
@@ -293,13 +278,7 @@ fn build_air6208_fota(
         .or(info.download.ota_addr.as_deref())
         .unwrap_or("8280000");
 
-    let script_offset = info
-        .rom
-        .fs
-        .as_ref()
-        .and_then(|fs| fs.script.as_ref())
-        .and_then(|s| s.offset.as_deref())
-        .unwrap_or("0");
+    let script_offset = info.rom.fs.as_ref().and_then(|fs| fs.script.as_ref()).and_then(|s| s.offset.as_deref()).unwrap_or("0");
 
     let compress_type: u8 = info
         .fota
@@ -317,21 +296,31 @@ fn build_air6208_fota(
     run_cmd({
         let mut c = Command::new(flash_exe);
         c.args([
-            "-b", &rom_bin.to_string_lossy(),
-            "-it", "2", "-fc", "0",
-            "-ih", "20008000",
-            "-ra", script_offset,
-            "-ua", "0",
-            "-nh", "0", "-un", "0",
-            "-o", &mid_base.to_string_lossy(),
+            "-b",
+            &rom_bin.to_string_lossy(),
+            "-it",
+            "2",
+            "-fc",
+            "0",
+            "-ih",
+            "20008000",
+            "-ra",
+            script_offset,
+            "-ua",
+            "0",
+            "-nh",
+            "0",
+            "-un",
+            "0",
+            "-o",
+            &mid_base.to_string_lossy(),
         ]);
         c
     })?;
 
     // ── Step 2: strip secboot header from the intermediate image ──────────────
     let mid_img = mid_base.with_extension("img");
-    let bin_data = fs::read(&mid_img)
-        .with_context(|| format!("read intermediate image {}", mid_img.display()))?;
+    let bin_data = fs::read(&mid_img).with_context(|| format!("read intermediate image {}", mid_img.display()))?;
 
     if bin_data.len() < 16 {
         bail!("Intermediate image too small to contain secboot header");
@@ -351,13 +340,24 @@ fn build_air6208_fota(
     run_cmd({
         let mut c = Command::new(flash_exe);
         c.args([
-            "-b", &stripped_path.to_string_lossy(),
-            "-it", "1", "-fc", &fc_str,
-            "-ih", app_addr,
-            "-ra", run_addr,
-            "-ua", fota_addr,
-            "-nh", "0", "-un", "0",
-            "-o", &fw_base.to_string_lossy(),
+            "-b",
+            &stripped_path.to_string_lossy(),
+            "-it",
+            "1",
+            "-fc",
+            &fc_str,
+            "-ih",
+            app_addr,
+            "-ra",
+            run_addr,
+            "-ua",
+            fota_addr,
+            "-nh",
+            "0",
+            "-un",
+            "0",
+            "-o",
+            &fw_base.to_string_lossy(),
         ]);
         c
     })?;
@@ -365,8 +365,7 @@ fn build_air6208_fota(
     // Rename {fw_base}_gz.img → <out_base>.fota
     let gz_img = PathBuf::from(format!("{}_gz.img", fw_base.display()));
     let fota_out = out_base.with_extension("fota");
-    fs::rename(&gz_img, &fota_out)
-        .with_context(|| format!("rename {} → {}", gz_img.display(), fota_out.display()))?;
+    fs::rename(&gz_img, &fota_out).with_context(|| format!("rename {} → {}", gz_img.display(), fota_out.display()))?;
     let _ = fs::remove_file(PathBuf::from(format!("{}.bin.gz", fw_base.display())));
 
     // ── Step 4 (optional): script-only FOTA (type=2, compressed) ─────────────
@@ -378,13 +377,24 @@ fn build_air6208_fota(
             run_cmd({
                 let mut c = Command::new(flash_exe);
                 c.args([
-                    "-b", &script_bin.to_string_lossy(),
-                    "-it", "2", "-fc", &fc_str,
-                    "-ih", script_addr,
-                    "-ra", script_addr,
-                    "-ua", fota_addr,
-                    "-nh", "0", "-un", "0",
-                    "-o", &s_base.to_string_lossy(),
+                    "-b",
+                    &script_bin.to_string_lossy(),
+                    "-it",
+                    "2",
+                    "-fc",
+                    &fc_str,
+                    "-ih",
+                    script_addr,
+                    "-ra",
+                    script_addr,
+                    "-ua",
+                    fota_addr,
+                    "-nh",
+                    "0",
+                    "-un",
+                    "0",
+                    "-o",
+                    &s_base.to_string_lossy(),
                 ]);
                 c
             })?;
@@ -428,18 +438,13 @@ pub fn cmd_fota_build(
 
     match chip {
         // ── EC7xx / EC618 — differential ─────────────────────────────────────
-        "ec7xx" | "ec618" | "air8000"
-        | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" | "air780epv" => {
-            let old = old_soc.ok_or_else(|| {
-                anyhow::anyhow!("Full FOTA for EC7xx/EC618 is not yet supported. Please provide --old <old.soc> for differential FOTA.")
-            })?;
+        "ec7xx" | "ec618" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" | "air780epv" => {
+            let old = old_soc.ok_or_else(|| anyhow::anyhow!("Full FOTA for EC7xx/EC618 is not yet supported. Please provide --old <old.soc> for differential FOTA."))?;
 
             let (toolkit, toolkit_dir) = find_fota_toolkit(chip, fota_toolkit_path)?;
             let soc_tools = find_soc_tools(soc_tools_path)?;
 
-            let out_path: PathBuf = output
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from(format!("{chip}_fota.sota")));
+            let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{chip}_fota.sota")));
 
             build_ec7xx_fota(new_soc, old, chip, &toolkit, &toolkit_dir, &soc_tools, &out_path)?;
 
@@ -453,9 +458,7 @@ pub fn cmd_fota_build(
                 log::warn!("--old is ignored for Air1601/CCM4211: only full FOTA is supported");
             }
             let soc_tools = find_soc_tools(soc_tools_path)?;
-            let out_path: PathBuf = output
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from(format!("{chip}_fota.sota")));
+            let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{chip}_fota.sota")));
 
             build_ccm4211_fota(new_soc, &soc_tools, &out_path)?;
 
@@ -486,12 +489,7 @@ pub fn cmd_fota_build(
             let fota_size = fs::metadata(&result.fota).map(|m| m.len()).unwrap_or(0);
             outputs.push((result.fota.as_path(), fota_size));
 
-            let sota_size = result
-                .sota
-                .as_ref()
-                .and_then(|p| fs::metadata(p).ok())
-                .map(|m| m.len())
-                .unwrap_or(0);
+            let sota_size = result.sota.as_ref().and_then(|p| fs::metadata(p).ok()).map(|m| m.len()).unwrap_or(0);
             let sota_tmp;
             if let Some(ref sota) = result.sota {
                 sota_tmp = (sota.as_path(), sota_size);
@@ -501,20 +499,16 @@ pub fn cmd_fota_build(
             print_result(format, chip, new_soc, old_soc, &outputs);
         }
 
-        other => bail!("FOTA not supported for chip '{other}'. \
-            Supported: EC7xx/EC618/Air8000 (differential), Air1601/CCM4211 (full), Air6208/XT804 (full)."),
+        other => bail!(
+            "FOTA not supported for chip '{other}'. \
+            Supported: EC7xx/EC618/Air8000 (differential), Air1601/CCM4211 (full), Air6208/XT804 (full)."
+        ),
     }
 
     Ok(())
 }
 
-fn print_result(
-    format: &OutputFormat,
-    chip: &str,
-    new_soc: &str,
-    old_soc: Option<&str>,
-    outputs: &[(&Path, u64)],
-) {
+fn print_result(format: &OutputFormat, chip: &str, new_soc: &str, old_soc: Option<&str>, outputs: &[(&Path, u64)]) {
     match format {
         OutputFormat::Text => {
             println!("FOTA package built:");
