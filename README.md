@@ -188,9 +188,11 @@ target/release/luatos-mcp.exe
 - `serial_list` — 库直调
 - `soc_info` / `soc_files` / `soc_unpack` / `soc_pack` — 库直调
 - `project_info` / `project_deps` / `project_analyze`
+- `project_wizard` — 向导式创建项目（非交互模式）
 - `build_luac` / `build_filesystem`
 - `resource_list` — 库直调
 - `resource_download`
+- `device_reboot` / `device_boot` — 库直调，设备重启/进入下载模式
 - `flash_run` / `flash_script` / `flash_test` — 子进程（硬件操作）
 - `doctor` — 库直调，环境诊断
 

@@ -24,6 +24,8 @@ All notable changes to this project will be documented in this file.
 - **查询类工具重构为库直调** — serial_list、soc_info、soc_files、soc_unpack、soc_pack、project_info、resource_list 直接调用库函数，无需 spawn 子进程
   - 响应速度提升：消除进程启动开销（约 100ms → <1ms）
   - 无需 luatos-cli 二进制在 PATH 中（纯查询场景）
+- **新增 `project_wizard` MCP 工具** — AI agent 可通过非交互模式创建 LuatOS 项目
+- **新增 `device_reboot` / `device_boot` MCP 工具** — 设备重启和进入 bootloader 模式（库直调）
 - **新增 `doctor` MCP 工具** — AI agent 可诊断用户开发环境
 - 硬件操作（flash、log）仍走子进程保证进程隔离
 

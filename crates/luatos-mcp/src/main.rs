@@ -162,6 +162,44 @@ struct DoctorArgs {
     dir: Option<String>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ProjectWizardArgs {
+    #[schemars(description = "项目名称")]
+    name: String,
+    #[schemars(description = "创建目录（默认 ./<name>）")]
+    dir: Option<String>,
+    #[schemars(description = "模组型号，如 Air8101、Air780EPM")]
+    model: String,
+    #[schemars(description = "固件版本号，如 V2001")]
+    version: Option<String>,
+    #[schemars(description = "项目模板: helloworld / ui / empty")]
+    template: Option<String>,
+    #[schemars(description = "串口号（如 COM6），\"none\" 表示不选")]
+    port: Option<String>,
+    #[schemars(description = "soc_script 版本: latest / disable / 版本号")]
+    soc_script: Option<String>,
+    #[schemars(description = "是否跳过 git 初始化")]
+    no_git: Option<bool>,
+    #[schemars(description = "是否跳过固件和 soc_script 下载")]
+    no_download: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct DeviceRebootArgs {
+    #[schemars(description = "串口号（如 COM6），EC718 系列可省略（自动检测）")]
+    port: Option<String>,
+    #[schemars(description = "芯片类型: bk72xx, air8101, xt804, air6208, ec718, air8000, air1601, ccm4211 等")]
+    chip: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct DeviceBootArgs {
+    #[schemars(description = "串口号（如 COM6），EC718 系列可省略（自动检测）")]
+    port: Option<String>,
+    #[schemars(description = "芯片类型: bk72xx, air8101, xt804, air6208, ec718, air8000, air1601, ccm4211 等")]
+    chip: String,
+}
+
 #[derive(Debug, Default)]
 struct StreamState {
     final_result: Option<Value>,
@@ -243,6 +281,23 @@ impl LuatosMcp {
         let mut cli_args = vec!["project".into(), "analyze".into(), "--dir".into(), args.dir.unwrap_or_else(|| ".".into())];
         push_opt_flag(&mut cli_args, "--soc", args.soc);
         self.run_tool("project.analyze", cli_args, context).await
+    }
+
+    #[tool(description = "向导式创建 LuatOS 项目（非交互模式，需提供 name 和 model）")]
+    async fn project_wizard(&self, Parameters(args): Parameters<ProjectWizardArgs>, context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        let mut cli_args = vec!["project".into(), "wizard".into(), "--name".into(), args.name, "--model".into(), args.model];
+        push_opt_flag(&mut cli_args, "--dir", args.dir);
+        push_opt_flag(&mut cli_args, "--version", args.version);
+        push_opt_flag(&mut cli_args, "--template", args.template);
+        push_opt_flag(&mut cli_args, "--port", args.port);
+        push_opt_flag(&mut cli_args, "--soc-script", args.soc_script);
+        if args.no_git.unwrap_or(false) {
+            cli_args.push("--no-git".into());
+        }
+        if args.no_download.unwrap_or(false) {
+            cli_args.push("--no-download".into());
+        }
+        self.run_tool("project.wizard", cli_args, context).await
     }
 
     #[tool(description = "批量编译 Lua 源码到输出目录")]
@@ -345,6 +400,18 @@ impl LuatosMcp {
 
     // ─── 硬件操作仍走子进程 ──────────────────────────────────────────────────
 
+    #[tool(description = "重启设备（通过 DTR/RTS 或 AT 指令）")]
+    async fn device_reboot(&self, Parameters(args): Parameters<DeviceRebootArgs>, _context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        luatos_flash::device::device_reboot(args.port.as_deref(), &args.chip).map_err(internal_error)?;
+        lib_result("device.reboot", &json!({"status": "rebooted", "chip": args.chip}))
+    }
+
+    #[tool(description = "强制设备进入 bootloader（下载）模式")]
+    async fn device_boot(&self, Parameters(args): Parameters<DeviceBootArgs>, _context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        luatos_flash::device::device_enter_boot(args.port.as_deref(), &args.chip).map_err(internal_error)?;
+        lib_result("device.boot", &json!({"status": "boot_mode", "chip": args.chip}))
+    }
+
     #[tool(description = "下载 LuatOS 固件/脚本资源")]
     async fn resource_download(&self, Parameters(args): Parameters<ResourceDownloadArgs>, context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let mut cli_args = vec!["resource".into(), "download".into(), args.category, args.sub];
@@ -386,7 +453,7 @@ impl LuatosMcp {
 #[tool_handler(
     name = "luatos-mcp",
     version = "1.7.0",
-    instructions = "LuatOS MCP server — 串口/SOC/项目/资源等查询操作走库直调（零延迟），刷机/日志等硬件操作走 CLI 子进程。新增 doctor 工具用于环境诊断。"
+    instructions = "LuatOS MCP server — 串口/SOC/项目/资源等查询操作走库直调（零延迟），刷机/日志等硬件操作走 CLI 子进程。新增 doctor 环境诊断、project_wizard 向导创建、device_reboot/device_boot 设备控制工具。"
 )]
 impl ServerHandler for LuatosMcp {}
 
