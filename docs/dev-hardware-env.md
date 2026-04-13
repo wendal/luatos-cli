@@ -10,8 +10,8 @@
 |---------|---------|----------------|
 | BK7258 (博通) | Air8101 | `bk72xx` / `air8101` |
 | XT804 (联盛德) | Air6208、Air101、Air103、Air601 | `xt804` / `air6208` / `air101` / `air103` / `air601` |
-| EC718 (展锐) | Air8000、Air780E、Air780EPM、Air780EHM/EHV/EHG | `ec718` / `ec7xx` / `air8000` |
-| CCM4211 (翱捷) | Air1601 | `ccm4211` / `air1601` |
+| EC718 (移芯) | Air8000、Air780E、Air780EPM、Air780EHM/EHV/EHG | `ec718` / `ec7xx` / `air8000` |
+| CCM4211 (国芯) | Air1601 | `ccm4211` / `air1601` |
 
 ---
 
