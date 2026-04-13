@@ -5,3 +5,8 @@ target/
 !csrc/
 node_modules/
 dist/
+resource/
+*.log
+*.tmp
+*.bak
+*.pyc

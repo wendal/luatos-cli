@@ -176,25 +176,63 @@ pub fn find_category<'a>(manifest: &'a ResourceManifest, module: &str) -> Option
     manifest.resouces.iter().find(|c| c.name.eq_ignore_ascii_case(module))
 }
 
-/// 收集待下载的文件列表
+/// 查找分类下的指定子项（大小写不敏感）
+pub fn find_child<'a>(category: &'a ResourceCategory, child_name: &str) -> Option<&'a ResourceChild> {
+    category.childrens.iter().find(|c| c.name.eq_ignore_ascii_case(child_name))
+}
+
+/// 从单个子项收集待下载文件
+///
+/// - `version_filter` 为 None → 只取第一个（最新）版本
+/// - `version_filter` 为 Some(v) → 取所有名称 contains v 的版本
+pub fn collect_files_for_child(child: &ResourceChild, version_filter: Option<&str>) -> Vec<FileEntry> {
+    let mut files = Vec::new();
+    for ver in &child.versions {
+        if let Some(filter) = version_filter {
+            if !ver.name.contains(filter) {
+                continue;
+            }
+        }
+        files.extend(ver.file_entries());
+        if version_filter.is_none() {
+            break;
+        }
+    }
+    files
+}
+
+/// 跨子项按版本名 + 文件名筛选文件
+///
+/// 遍历分类下所有子项，收集版本名中包含 `version_filter` 的版本文件。
+/// 若指定了 `file_filter`，则只保留文件名中包含该字符串的文件。
+pub fn collect_files_for_version(category: &ResourceCategory, version_filter: &str, file_filter: Option<&str>) -> Vec<FileEntry> {
+    let mut files = Vec::new();
+    for child in &category.childrens {
+        for ver in &child.versions {
+            if !ver.name.contains(version_filter) {
+                continue;
+            }
+            for entry in ver.file_entries() {
+                if let Some(ff) = file_filter {
+                    if !entry.filename.contains(ff) {
+                        continue;
+                    }
+                }
+                files.push(entry);
+            }
+        }
+    }
+    files
+}
+
+/// 收集待下载的文件列表（兼容旧接口，内部使用）
 ///
 /// 如果指定了 `version_filter`，只下载名称中包含该字符串的版本。
 /// 如果未指定版本过滤，每个子分类只取第一个（最新）版本。
 pub fn collect_files(category: &ResourceCategory, version_filter: Option<&str>) -> Vec<FileEntry> {
     let mut files = Vec::new();
     for child in &category.childrens {
-        for ver in &child.versions {
-            if let Some(filter) = version_filter {
-                if !ver.name.contains(filter) {
-                    continue;
-                }
-            }
-            files.extend(ver.file_entries());
-            // 未指定版本过滤时，每个 child 只取第一个版本
-            if version_filter.is_none() {
-                break;
-            }
-        }
+        files.extend(collect_files_for_child(child, version_filter));
     }
     files
 }

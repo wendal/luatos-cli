@@ -390,13 +390,20 @@ enum ResourceCommands {
         module: Option<String>,
     },
     /// Download firmware resource
+    ///
+    /// Examples:
+    ///   resource download public soc_script                   # 最新版
+    ///   resource download public soc_script v2026.04.10.16   # 指定版本
+    ///   resource download Air8000 V2032                       # 指定大版本全部文件
+    ///   resource download Air8000 V2032 114                   # 指定大版本中包含 "114" 的文件
     Download {
-        /// Module name (e.g. Air8101)
-        module: String,
-        /// Version filter (e.g. V2012). If omitted, downloads latest version.
-        #[arg(long)]
-        version: Option<String>,
-        /// Output directory (default: resource/)
+        /// 资源大类名称（如 Air8000、public）
+        category: String,
+        /// 子项名称 或 版本过滤器（如 soc_script、V2032）
+        sub: Option<String>,
+        /// 版本名（当 sub 为子项名时），或文件名过滤器（当 sub 为版本过滤时）
+        item: Option<String>,
+        /// 输出目录（默认 resource/）
         #[arg(long, default_value = "resource")]
         output: String,
     },
@@ -512,7 +519,7 @@ fn main() {
         },
         Commands::Resource { action } => match action {
             ResourceCommands::List { module } => cmd_resource::cmd_resource_list(module.as_deref(), &cli.format),
-            ResourceCommands::Download { module, version, output } => cmd_resource::cmd_resource_download(&module, version.as_deref(), &output, &cli.format),
+            ResourceCommands::Download { category, sub, item, output } => cmd_resource::cmd_resource_download(&category, sub.as_deref(), item.as_deref(), &output, &cli.format),
         },
         Commands::Device { action } => match action {
             DeviceCommands::Reboot { port, chip } => cmd_device::cmd_device_reboot(port.as_deref(), chip.as_deref(), &cli.format),

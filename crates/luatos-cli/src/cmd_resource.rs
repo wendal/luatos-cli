@@ -107,14 +107,31 @@ pub fn cmd_resource_list(module: Option<&str>, format: &OutputFormat) -> anyhow:
     Ok(())
 }
 
-pub fn cmd_resource_download(module: &str, version_filter: Option<&str>, output: &str, format: &OutputFormat) -> anyhow::Result<()> {
+pub fn cmd_resource_download(category: &str, sub: Option<&str>, item: Option<&str>, output: &str, format: &OutputFormat) -> anyhow::Result<()> {
     let manifest = luatos_resource::fetch_manifest()?;
 
-    let cat = luatos_resource::find_category(&manifest, module).ok_or_else(|| anyhow::anyhow!("Module '{}' not found", module))?;
+    let cat = luatos_resource::find_category(&manifest, category).ok_or_else(|| anyhow::anyhow!("资源大类 '{}' 不存在，可用: resource list", category))?;
 
-    let files = luatos_resource::collect_files(cat, version_filter);
+    // sub 必须提供
+    let sub = sub.ok_or_else(|| anyhow::anyhow!("请指定子项或版本，例如:\n  resource download {} <sub_or_version> [item]", category))?;
+
+    // 歧义消解：sub 是否是已知的子项名称？
+    let files = if let Some(child) = luatos_resource::find_child(cat, sub) {
+        // sub 是子项名 (如 soc_script) → item 为版本过滤
+        luatos_resource::collect_files_for_child(child, item)
+    } else {
+        // sub 作为版本过滤器 (如 V2032) → item 为文件名过滤
+        luatos_resource::collect_files_for_version(cat, sub, item)
+    };
+
     if files.is_empty() {
-        anyhow::bail!("No files found for module '{}' with version filter {:?}", module, version_filter);
+        anyhow::bail!(
+            "未找到匹配的文件 (category={}, sub={}, item={:?})\n提示: 使用 'resource list {}' 查看可用内容",
+            category,
+            sub,
+            item,
+            category
+        );
     }
 
     let out_path = std::path::Path::new(output);
@@ -172,7 +189,7 @@ pub fn cmd_resource_download(module: &str, version_filter: Option<&str>, output:
         }
     });
 
-    let report = luatos_resource::download_files(module, &files, &manifest.mirrors, out_path, Some(&callback))?;
+    let report = luatos_resource::download_files(category, &files, &manifest.mirrors, out_path, Some(&callback))?;
 
     match format {
         OutputFormat::Text => {
@@ -183,7 +200,9 @@ pub fn cmd_resource_download(module: &str, version_filter: Option<&str>, output:
                 "status": if report.failed == 0 { "ok" } else { "partial" },
                 "command": "resource.download",
                 "data": {
-                    "module": module,
+                    "category": category,
+                    "sub": sub,
+                    "item": item,
                     "downloaded": report.succeeded,
                     "failed": report.failed,
                     "output": output,
