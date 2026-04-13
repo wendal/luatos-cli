@@ -3,7 +3,7 @@ use crate::{
     OutputFormat,
 };
 
-pub fn cmd_log_view(port: &str, baud: u32, format: &OutputFormat) -> anyhow::Result<()> {
+pub fn cmd_log_view(port: &str, baud: u32, smart: bool, format: &OutputFormat) -> anyhow::Result<()> {
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
     let _ = ctrlc::set_handler(move || {
@@ -11,9 +11,17 @@ pub fn cmd_log_view(port: &str, baud: u32, format: &OutputFormat) -> anyhow::Res
     });
 
     event::emit_message(format, "log.view", MessageLevel::Info, format!("Viewing log on {port} @ {baud} bps (Ctrl+C to stop)"))?;
+    if smart {
+        event::emit_message(format, "log.view", MessageLevel::Info, "🧠 智能分析已启用")?;
+    }
 
     let dispatcher = luatos_log::LogDispatcher::default_parsers();
     let format_clone = *format;
+    let analyzer = if smart {
+        Some(std::sync::Mutex::new(luatos_log::smart::SmartAnalyzer::new()))
+    } else {
+        None
+    };
 
     luatos_serial::stream_log_lines(
         port,
@@ -24,8 +32,35 @@ pub fn cmd_log_view(port: &str, baud: u32, format: &OutputFormat) -> anyhow::Res
             if let Err(e) = event::emit_log_entry(&format_clone, "log.view", &entry) {
                 log::warn!("输出日志事件失败: {e}");
             }
+            if let Some(ref analyzer) = analyzer {
+                if let Ok(mut a) = analyzer.lock() {
+                    let diags = a.analyze(&entry);
+                    for diag in &diags {
+                        match format_clone {
+                            OutputFormat::Text => {
+                                eprintln!("\n{}\n", luatos_log::smart::format_diagnostic(diag));
+                            }
+                            OutputFormat::Json | OutputFormat::Jsonl => {
+                                let _ = event::emit_jsonl_event(
+                                    &format_clone,
+                                    serde_json::json!({
+                                        "type": "diagnostic",
+                                        "command": "log.view",
+                                        "diagnostic": diag,
+                                    }),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }),
     )?;
+
+    // 输出智能分析汇总
+    if let Some(analyzer) = if smart { Some(luatos_log::smart::SmartAnalyzer::new()) } else { None } {
+        let _ = analyzer; // 已在回调中消费
+    }
 
     event::emit_message(format, "log.view", MessageLevel::Info, "Log viewing stopped.")?;
     Ok(())
@@ -128,7 +163,7 @@ fn open_new_file(dir: &std::path::Path, port_safe: &str) -> anyhow::Result<(std:
 
 // ─── cmd_log_view_binary ──────────────────────────────────────────────────────
 
-pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, save_dir: Option<&str>, format: &OutputFormat) -> anyhow::Result<()> {
+pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, save_dir: Option<&str>, smart: bool, format: &OutputFormat) -> anyhow::Result<()> {
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
     let _ = ctrlc::set_handler(move || {
@@ -183,17 +218,27 @@ pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, save_dir: Option<
         ),
     )?;
 
+    if smart {
+        event::emit_message(format, "log.view_binary", MessageLevel::Info, "🧠 智能分析已启用")?;
+    }
+
     // Optional rolling binary recorder
     let bin_writer: Option<std::sync::Arc<std::sync::Mutex<RollingBinWriter>>> = save_dir
         .map(|d| RollingBinWriter::new(std::path::Path::new(d), &actual_port, *format, "log.view_binary").map(|w| std::sync::Arc::new(std::sync::Mutex::new(w))))
         .transpose()?;
 
     let format_clone = *format;
+    let smart_analyzer: Option<std::sync::Arc<std::sync::Mutex<luatos_log::smart::SmartAnalyzer>>> = if smart {
+        Some(std::sync::Arc::new(std::sync::Mutex::new(luatos_log::smart::SmartAnalyzer::new())))
+    } else {
+        None
+    };
 
     if is_ec718 {
         // EC718: 0x7E HDLC framing, DTR/RTS HIGH
         let decoder = std::sync::Mutex::new(luatos_log::Ec718LogDecoder::new());
         let bin_writer_clone = bin_writer.clone();
+        let analyzer_clone = smart_analyzer.clone();
         luatos_serial::stream_binary(
             &actual_port,
             baud,
@@ -210,6 +255,7 @@ pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, save_dir: Option<
                         if let Err(e) = event::emit_log_entry(&format_clone, "log.view_binary", entry) {
                             log::warn!("输出日志事件失败: {e}");
                         }
+                        emit_smart_diagnostics(&analyzer_clone, entry, &format_clone);
                     }
                 }
             }),
@@ -220,6 +266,7 @@ pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, save_dir: Option<
         // Standard SOC: 0xA5 framing
         let decoder = std::sync::Mutex::new(luatos_log::SocLogDecoder::new());
         let bin_writer_clone = bin_writer.clone();
+        let analyzer_clone = smart_analyzer.clone();
         luatos_serial::stream_binary(
             &actual_port,
             baud,
@@ -236,12 +283,47 @@ pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, save_dir: Option<
                         if let Err(e) = event::emit_log_entry(&format_clone, "log.view_binary", entry) {
                             log::warn!("输出日志事件失败: {e}");
                         }
+                        emit_smart_diagnostics(&analyzer_clone, entry, &format_clone);
                     }
                 }
             }),
             init_data.as_deref(),
             false,
         )?;
+    }
+
+    // 输出智能分析汇总
+    if let Some(ref sa) = smart_analyzer {
+        if let Ok(a) = sa.lock() {
+            let summary = a.summary();
+            if !summary.diagnostics.is_empty() {
+                match format {
+                    OutputFormat::Text => {
+                        eprintln!("\n╔══════════════════════════════════════╗");
+                        eprintln!("║     🧠 智能分析汇总                  ║");
+                        eprintln!("╚══════════════════════════════════════╝");
+                        eprintln!(
+                            "  分析 {} 条日志, 检测到 {} 个启动, {} 个错误, {} 个警告",
+                            summary.entries_analyzed, summary.boot_count, summary.errors, summary.warnings
+                        );
+                        for diag in &summary.diagnostics {
+                            eprintln!("\n{}", luatos_log::smart::format_diagnostic(diag));
+                        }
+                        eprintln!();
+                    }
+                    OutputFormat::Json | OutputFormat::Jsonl => {
+                        let _ = event::emit_jsonl_event(
+                            format,
+                            serde_json::json!({
+                                "type": "smart_summary",
+                                "command": "log.view_binary",
+                                "summary": summary,
+                            }),
+                        );
+                    }
+                }
+            }
+        }
     }
 
     // Flush any buffered data
@@ -329,4 +411,30 @@ pub fn cmd_log_parse(path: &str, format: &OutputFormat) -> anyhow::Result<()> {
         OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "log.parse", "ok", &entries)?,
     }
     Ok(())
+}
+
+/// 在日志回调中发出智能诊断事件
+fn emit_smart_diagnostics(analyzer: &Option<std::sync::Arc<std::sync::Mutex<luatos_log::smart::SmartAnalyzer>>>, entry: &luatos_log::LogEntry, format: &OutputFormat) {
+    if let Some(ref sa) = analyzer {
+        if let Ok(mut a) = sa.lock() {
+            let diags = a.analyze(entry);
+            for diag in &diags {
+                match format {
+                    OutputFormat::Text => {
+                        eprintln!("\n{}\n", luatos_log::smart::format_diagnostic(diag));
+                    }
+                    OutputFormat::Json | OutputFormat::Jsonl => {
+                        let _ = event::emit_jsonl_event(
+                            format,
+                            serde_json::json!({
+                                "type": "diagnostic",
+                                "command": "log.view_binary",
+                                "diagnostic": diag,
+                            }),
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

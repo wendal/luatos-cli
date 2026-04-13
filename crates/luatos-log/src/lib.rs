@@ -7,6 +7,8 @@
 // Design: LogParser trait allows adding new chip-specific parsers without
 // modifying existing code.
 
+pub mod smart;
+
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 

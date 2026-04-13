@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.0] - 2026-04-13
+
+### Features
+
+#### 环境诊断 — `doctor` 命令 (luatos-cli)
+- **新增 `luatos-cli doctor` 子命令** — 一键诊断开发环境
+  - 7 项自动检查：串口检测、项目配置验证、SOC 固件读取、Lua 编译器测试、资源目录、脚本目录、CDN 连通性
+  - 每项检查返回 ✅/❌ + 改进建议
+  - 支持 `--dir` 指定项目目录（默认当前目录）
+  - 支持 Text / JSON / JSONL 三种输出格式
+
+#### 智能日志分析 — `--smart` 标志 (luatos-log / luatos-cli)
+- **新增 `log view --smart` 和 `log view-binary --smart`** — 实时智能诊断
+  - 14 条诊断规则：OOM、低内存、Lua 运行时错误、require 失败、看门狗复位、SIM 卡/网络、DNS 失败、供电异常、I2C/SPI 错误、文件系统、panic、栈溢出、重复重启检测
+  - 流式分析：每条日志实时检测，命中时立即输出诊断建议
+  - 会话结束时输出诊断摘要（统计 + 建议列表）
+  - 有状态分析：追踪启动次数，检测循环重启
+
+#### MCP Server 重构 (luatos-mcp)
+- **查询类工具重构为库直调** — serial_list、soc_info、soc_files、soc_unpack、soc_pack、project_info、resource_list 直接调用库函数，无需 spawn 子进程
+  - 响应速度提升：消除进程启动开销（约 100ms → <1ms）
+  - 无需 luatos-cli 二进制在 PATH 中（纯查询场景）
+- **新增 `doctor` MCP 工具** — AI agent 可诊断用户开发环境
+- 硬件操作（flash、log）仍走子进程保证进程隔离
+
+### Tests
+- 新增 4 个 doctor 单元测试
+- 新增 9 个 SmartAnalyzer 单元测试（覆盖 14 条诊断规则 + 去重 + 摘要）
+- 测试总数从 136 增至 159
+
+---
+
 ## [1.6.2] - 2026-04-13
 
 ### Features

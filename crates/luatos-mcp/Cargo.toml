@@ -3,7 +3,7 @@ name = "luatos-mcp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "LuatOS MCP server backed by luatos-cli"
+description = "LuatOS MCP server — direct library calls + subprocess for flash/log"
 
 [[bin]]
 name = "luatos-mcp"
@@ -15,6 +15,13 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# 直接依赖库 crate（非硬件操作走库调用）
+luatos-soc = { path = "../luatos-soc" }
+luatos-serial = { path = "../luatos-serial" }
+luatos-project = { path = "../luatos-project" }
+luatos-resource = { path = "../luatos-resource" }
+luatos-luadb = { path = "../luatos-luadb" }
+luatos-log = { path = "../luatos-log" }
 rmcp = { version = "1.4.0", features = ["server", "macros", "schemars", "transport-io"] }
 schemars = "1"
 tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "sync"] }

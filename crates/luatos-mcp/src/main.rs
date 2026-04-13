@@ -156,6 +156,12 @@ struct FlashTestArgs {
     keyword: Option<Vec<String>>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct DoctorArgs {
+    #[schemars(description = "项目目录")]
+    dir: Option<String>,
+}
+
 #[derive(Debug, Default)]
 struct StreamState {
     final_result: Option<Value>,
@@ -166,50 +172,62 @@ struct StreamState {
 
 #[tool_router]
 impl LuatosMcp {
+    // ─── 库直调工具（无需子进程） ─────────────────────────────────────────────
+
     #[tool(description = "列出当前可用串口")]
-    async fn serial_list(&self, _: Parameters<SerialListArgs>, context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
-        self.run_tool("serial.list", vec!["serial".into(), "list".into()], context).await
+    async fn serial_list(&self, _: Parameters<SerialListArgs>, _context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        let ports = luatos_serial::list_ports();
+        lib_result("serial.list", &ports)
     }
 
     #[tool(description = "读取 SOC 固件包的基础信息")]
-    async fn soc_info(&self, Parameters(args): Parameters<SocInfoArgs>, context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
-        self.run_tool("soc.info", vec!["soc".into(), "info".into(), args.path], context).await
+    async fn soc_info(&self, Parameters(args): Parameters<SocInfoArgs>, _context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        let info = luatos_soc::read_soc_info(&args.path).map_err(internal_error)?;
+        lib_result("soc.info", &info)
     }
 
     #[tool(description = "列出 SOC 固件包内的文件列表")]
-    async fn soc_files(&self, Parameters(args): Parameters<SocFilesArgs>, context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
-        self.run_tool("soc.files", vec!["soc".into(), "files".into(), args.path], context).await
+    async fn soc_files(&self, Parameters(args): Parameters<SocFilesArgs>, _context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        let files = luatos_soc::list_soc_files(&args.path).map_err(internal_error)?;
+        lib_result("soc.files", &files)
     }
 
     #[tool(description = "解包 SOC 固件到目录")]
-    async fn soc_unpack(&self, Parameters(args): Parameters<SocUnpackArgs>, context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
-        let mut cli_args = vec!["soc".into(), "unpack".into(), args.path];
-        push_opt_flag(&mut cli_args, "-o", args.output);
-        self.run_tool("soc.unpack", cli_args, context).await
+    async fn soc_unpack(&self, Parameters(args): Parameters<SocUnpackArgs>, _context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        let out_dir = args.output.unwrap_or_else(|| {
+            std::path::Path::new(&args.path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "soc_unpacked".into())
+        });
+        let unpacked = luatos_soc::unpack_soc(&args.path, std::path::Path::new(&out_dir)).map_err(internal_error)?;
+        lib_result(
+            "soc.unpack",
+            &json!({
+                "dir": unpacked.dir.display().to_string(),
+                "rom_path": unpacked.rom_path.display().to_string(),
+                "flash_exe": unpacked.flash_exe.as_ref().map(|p| p.display().to_string()),
+                "chip": unpacked.info.chip.chip_type,
+            }),
+        )
     }
 
     #[tool(description = "把目录重新打包为 .soc 固件")]
-    async fn soc_pack(&self, Parameters(args): Parameters<SocPackArgs>, context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
-        self.run_tool(
-            "soc.pack",
-            vec!["soc".into(), "pack".into(), "--dir".into(), args.dir, "--output".into(), args.output],
-            context,
-        )
-        .await
+    async fn soc_pack(&self, Parameters(args): Parameters<SocPackArgs>, _context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        luatos_soc::pack_soc(std::path::Path::new(&args.dir), &args.output).map_err(internal_error)?;
+        lib_result("soc.pack", &json!({"output": args.output}))
     }
 
     #[tool(description = "读取 LuatOS 项目配置与基础信息")]
-    async fn project_info(&self, Parameters(args): Parameters<ProjectInfoArgs>, context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
-        self.run_tool(
-            "project.info",
-            vec!["project".into(), "info".into(), "--dir".into(), args.dir.unwrap_or_else(|| ".".into())],
-            context,
-        )
-        .await
+    async fn project_info(&self, Parameters(args): Parameters<ProjectInfoArgs>, _context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        let dir = args.dir.unwrap_or_else(|| ".".into());
+        let project = luatos_project::Project::load(std::path::Path::new(&dir)).map_err(internal_error)?;
+        lib_result("project.info", &project)
     }
 
     #[tool(description = "分析 LuatOS 项目依赖图")]
     async fn project_deps(&self, Parameters(args): Parameters<ProjectDepsArgs>, context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        // 依赖分析涉及较多逻辑（脚本收集+分析+格式化），仍走 CLI 子进程
         let mut cli_args = vec!["project".into(), "deps".into(), "--dir".into(), args.dir.unwrap_or_else(|| ".".into())];
         if args.reachable.unwrap_or(false) {
             cli_args.push("--reachable".into());
@@ -256,13 +274,76 @@ impl LuatosMcp {
     }
 
     #[tool(description = "列出 LuatOS CDN 上的固件资源")]
-    async fn resource_list(&self, Parameters(args): Parameters<ResourceListArgs>, context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
-        let mut cli_args = vec!["resource".into(), "list".into()];
-        if let Some(module) = args.module {
-            cli_args.push(module);
+    async fn resource_list(&self, Parameters(args): Parameters<ResourceListArgs>, _context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        let manifest = luatos_resource::fetch_manifest().map_err(internal_error)?;
+        match args.module {
+            Some(ref module) => match luatos_resource::find_category(&manifest, module) {
+                Some(category) => lib_result("resource.list", &category),
+                None => {
+                    let names: Vec<&str> = manifest.resouces.iter().map(|c| c.name.as_str()).collect();
+                    Err(McpError::internal_error(format!("未找到模组 '{module}'。可用模组: {}", names.join(", ")), None))
+                }
+            },
+            None => {
+                let summary: Vec<Value> = manifest
+                    .resouces
+                    .iter()
+                    .map(|c| {
+                        json!({
+                            "name": c.name,
+                            "desc": c.desc,
+                            "children_count": c.childrens.len(),
+                        })
+                    })
+                    .collect();
+                lib_result("resource.list", &summary)
+            }
         }
-        self.run_tool("resource.list", cli_args, context).await
     }
+
+    #[tool(description = "诊断开发环境（串口、项目配置、固件、工具链）")]
+    async fn doctor(&self, Parameters(args): Parameters<DoctorArgs>, _context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        // doctor 走 CLI 子进程（它自带格式化输出）
+        // 但核心检查也可以在库层面做
+        let dir = args.dir.unwrap_or_else(|| ".".into());
+        let mut checks = Vec::new();
+
+        // 串口
+        let ports = luatos_serial::list_ports();
+        checks.push(json!({
+            "name": "串口检测",
+            "passed": !ports.is_empty(),
+            "detail": if ports.is_empty() { "未发现串口".into() } else { format!("发现 {} 个串口", ports.len()) },
+            "ports": ports,
+        }));
+
+        // 项目配置
+        let project_ok = luatos_project::Project::load(std::path::Path::new(&dir)).is_ok();
+        checks.push(json!({
+            "name": "项目配置",
+            "passed": project_ok,
+            "detail": if project_ok { "luatos-project.toml 有效" } else { "未找到或无法解析 luatos-project.toml" },
+        }));
+
+        // Lua 编译器
+        let luac_ok = luatos_luadb::build::compile_lua_bytes(b"print('test')", "test", false, 32).is_ok();
+        checks.push(json!({
+            "name": "Lua 编译器",
+            "passed": luac_ok,
+            "detail": if luac_ok { "内嵌 luac 可用" } else { "编译测试失败" },
+        }));
+
+        lib_result(
+            "doctor",
+            &json!({
+                "checks": checks,
+                "passed": checks.iter().filter(|c| c["passed"].as_bool().unwrap_or(false)).count(),
+                "failed": checks.iter().filter(|c| !c["passed"].as_bool().unwrap_or(false)).count(),
+            }),
+        )
+    }
+
+    // ─── 硬件操作仍走子进程 ──────────────────────────────────────────────────
 
     #[tool(description = "下载 LuatOS 固件/脚本资源")]
     async fn resource_download(&self, Parameters(args): Parameters<ResourceDownloadArgs>, context: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
@@ -304,8 +385,8 @@ impl LuatosMcp {
 
 #[tool_handler(
     name = "luatos-mcp",
-    version = "1.6.0",
-    instructions = "通过 luatos-cli 暴露 LuatOS 的串口、SOC、项目、资源、构建与刷机能力。适合配合 --format jsonl 的结构化事件流。"
+    version = "1.7.0",
+    instructions = "LuatOS MCP server — 串口/SOC/项目/资源等查询操作走库直调（零延迟），刷机/日志等硬件操作走 CLI 子进程。新增 doctor 工具用于环境诊断。"
 )]
 impl ServerHandler for LuatosMcp {}
 
@@ -520,6 +601,17 @@ fn push_repeat_flag(args: &mut Vec<String>, flag: &str, values: Vec<String>) {
 
 fn internal_error(error: anyhow::Error) -> McpError {
     McpError::internal_error(error.to_string(), None)
+}
+
+/// 把库直调的结果包装成 MCP CallToolResult（JSON 格式）
+fn lib_result<T: serde::Serialize>(command: &str, data: &T) -> Result<CallToolResult, McpError> {
+    let envelope = json!({
+        "status": "ok",
+        "command": command,
+        "data": data,
+    });
+    let text = serde_json::to_string_pretty(&envelope).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+    Ok(CallToolResult::success(vec![Content::text(text)]))
 }
 
 #[tokio::main]

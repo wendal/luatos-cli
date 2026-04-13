@@ -11,6 +11,7 @@ use clap::{Parser, Subcommand};
 
 mod cmd_build;
 mod cmd_device;
+mod cmd_doctor;
 mod cmd_flash;
 mod cmd_fota;
 mod cmd_log;
@@ -80,6 +81,12 @@ enum Commands {
     Device {
         #[command(subcommand)]
         action: DeviceCommands,
+    },
+    /// Diagnose development environment (serial ports, project, firmware, tools)
+    Doctor {
+        /// Project directory to check (default: current directory)
+        #[arg(long, default_value = ".")]
+        dir: String,
     },
     /// Show version information
     Version,
@@ -234,6 +241,9 @@ enum LogCommands {
         /// Baud rate (default: 921600)
         #[arg(long, default_value = "921600")]
         baud: u32,
+        /// Enable smart analysis: auto-detect common issues and show suggestions
+        #[arg(long)]
+        smart: bool,
     },
     /// View serial log in binary SOC mode (Air1601, Air8000/EC718, etc.)
     ViewBinary {
@@ -249,6 +259,9 @@ enum LogCommands {
         /// Save raw binary log to directory (rolling 200 MB files with timestamp injection)
         #[arg(long)]
         save: Option<String>,
+        /// Enable smart analysis: auto-detect common issues and show suggestions
+        #[arg(long)]
+        smart: bool,
     },
     /// Record serial log to file
     Record {
@@ -539,8 +552,8 @@ fn main() {
             }
         },
         Commands::Log { action } => match action {
-            LogCommands::View { port, baud } => cmd_log::cmd_log_view(&port, baud, &cli.format),
-            LogCommands::ViewBinary { port, baud, probe, save } => cmd_log::cmd_log_view_binary(&port, baud, probe, save.as_deref(), &cli.format),
+            LogCommands::View { port, baud, smart } => cmd_log::cmd_log_view(&port, baud, smart, &cli.format),
+            LogCommands::ViewBinary { port, baud, probe, save, smart } => cmd_log::cmd_log_view_binary(&port, baud, probe, save.as_deref(), smart, &cli.format),
             LogCommands::Record { port, baud, output, json } => cmd_log::cmd_log_record(&port, baud, &output, json, &cli.format),
             LogCommands::Parse { path } => cmd_log::cmd_log_parse(&path, &cli.format),
         },
@@ -621,6 +634,7 @@ fn main() {
                 soc_tools,
             } => cmd_fota::cmd_fota_build(&new, old.as_deref(), output.as_deref(), fota_toolkit.as_deref(), soc_tools.as_deref(), &cli.format),
         },
+        Commands::Doctor { dir } => cmd_doctor::cmd_doctor(&dir, &cli.format),
         Commands::Version => {
             let version = env!("CARGO_PKG_VERSION");
             match cli.format {

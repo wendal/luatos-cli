@@ -1108,6 +1108,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ureq",
+ "walkdir",
 ]
 
 [[package]]
@@ -1161,6 +1162,12 @@ name = "luatos-mcp"
 version = "1.6.2"
 dependencies = [
  "anyhow",
+ "luatos-log",
+ "luatos-luadb",
+ "luatos-project",
+ "luatos-resource",
+ "luatos-serial",
+ "luatos-soc",
  "rmcp",
  "schemars",
  "serde",
