@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.0] - 2026-04-13
+
+### Features
+
+#### soc_script 扩展库版本管理 (luatos-project)
+- **新增 `build.soc_script` 配置项** — 控制 LuatOS 扩展库（CDN `public/soc_script`）的版本
+  - `"latest"`（默认）：自动使用 `resource_dir/public/soc_script/` 下最新版本（字典序最大）
+  - `"disable"`：不使用 soc_script 扩展库
+  - 具体版本号（如 `"v2026.04.10.16"`）：使用指定版本
+  - 未找到时输出提示：`luatos-cli resource download public`
+- **新增 `build.resource_dir` 配置项**（默认 `"resource/"`）— 对应 `resource download --output` 目标目录
+- **新增 `resolve_soc_script_lib_dir()` 公共函数** — 解析 soc_script `lib/` 目录路径
+- **新增 `project build` 子命令** — 读取项目配置、自动注入 soc_script lib 目录后构建脚本镜像
+- `project info` 输出新增 `soc_script` 和 `resource_dir` 字段展示
+
+#### resource 下载 zip 自动解压 (luatos-resource)
+- **zip 文件自动解压** — SHA256 校验通过后，`.zip` 文件自动解压到同级 `{stem}/` 子目录
+  - 与 LuaTools 行为一致（`v2026.04.10.16.zip` → `v2026.04.10.16/lib/*.lua`）
+  - 内部目录结构完整保留
+- **新增 `DownloadEvent::Extracted`** — 解压完成后触发，携带目标目录路径
+
+### Tests
+
+- 新增 7 个单元测试（luatos-project: 5 个 soc_script 场景；luatos-resource: 2 个 zip 解压场景）
+- 测试总数从 113 增加到 124
+
+---
+
 ## [1.5.0] - 2026-04-12
 
 ### Features
