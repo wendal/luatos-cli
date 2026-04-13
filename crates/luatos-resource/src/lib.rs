@@ -118,6 +118,8 @@ pub enum DownloadEvent {
     MirrorFailed { mirror_url: String, filename: String, error: String },
     /// 文件下载完全失败（所有镜像都失败）
     FileFailed { filename: String },
+    /// zip 文件已解压到目标目录
+    Extracted { filename: String, dest_dir: String },
 }
 
 /// 下载进度回调类型
@@ -242,6 +244,22 @@ pub fn download_files(module: &str, files: &[FileEntry], mirrors: &[Mirror], out
                                 dest: dest.display().to_string(),
                             });
                         }
+                        // zip 文件自动解压到同级的 {stem}/ 子目录
+                        if entry.filename.ends_with(".zip") {
+                            match extract_zip_to_stem_dir(&dest) {
+                                Ok(extract_dir) => {
+                                    if let Some(cb) = &on_event {
+                                        cb(&DownloadEvent::Extracted {
+                                            filename: entry.filename.clone(),
+                                            dest_dir: extract_dir.display().to_string(),
+                                        });
+                                    }
+                                }
+                                Err(e) => {
+                                    log::warn!("解压 {} 失败: {e}", entry.filename);
+                                }
+                            }
+                        }
                         results.push(FileResult {
                             filename: entry.filename.clone(),
                             path: entry.path.clone(),
@@ -323,6 +341,44 @@ fn download_single_file(url: &str, dest: &Path, total_size: u64, filename: &str,
         }
     }
     Ok(())
+}
+
+/// 将 zip 文件解压到同级的 `{stem}/` 子目录。
+///
+/// 例如：`public/soc_script/v2026.04.10.16.zip`
+/// 解压到：`public/soc_script/v2026.04.10.16/`，内部结构保持不变。
+///
+/// 若目标目录已存在，会在其中覆盖写入（已有文件不删除）。
+/// 返回解压目标目录路径。
+fn extract_zip_to_stem_dir(zip_path: &Path) -> Result<std::path::PathBuf> {
+    let stem = zip_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .with_context(|| format!("无法获取文件名 stem: {}", zip_path.display()))?;
+    let parent = zip_path.parent().with_context(|| format!("无法获取父目录: {}", zip_path.display()))?;
+    let dest_dir = parent.join(stem);
+    std::fs::create_dir_all(&dest_dir)?;
+
+    let file = std::fs::File::open(zip_path).with_context(|| format!("打开 zip 文件失败: {}", zip_path.display()))?;
+    let mut archive = zip::ZipArchive::new(file).with_context(|| format!("读取 zip 失败: {}", zip_path.display()))?;
+
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i)?;
+        let entry_name = entry.name().to_owned();
+        // 跳过目录条目
+        if entry_name.ends_with('/') {
+            continue;
+        }
+        let out_path = dest_dir.join(&entry_name);
+        if let Some(p) = out_path.parent() {
+            std::fs::create_dir_all(p)?;
+        }
+        let mut out_file = std::fs::File::create(&out_path).with_context(|| format!("创建文件失败: {}", out_path.display()))?;
+        std::io::copy(&mut entry, &mut out_file)?;
+    }
+
+    log::debug!("zip 解压完成: {} → {}", zip_path.display(), dest_dir.display());
+    Ok(dest_dir)
 }
 
 /// 校验本地文件的 SHA256 是否与预期一致
@@ -475,5 +531,49 @@ mod tests {
         // SHA256("hello world") = B94D27B9934D3E08A52E52D7DA7DABFAC484EFE37A5380EE9088F7ACE2EFCDE9
         assert!(verify_sha256(&path, "B94D27B9934D3E08A52E52D7DA7DABFAC484EFE37A5380EE9088F7ACE2EFCDE9").unwrap());
         assert!(!verify_sha256(&path, "0000000000000000000000000000000000000000000000000000000000000000").unwrap());
+    }
+
+    /// 验证 extract_zip_to_stem_dir 能正确解压到同名子目录
+    #[test]
+    fn extract_zip_to_stem_dir_basic() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = dir.path().join("mylib.zip");
+
+        // 创建一个包含 lib/test.lua 和 lib/sub/util.lua 的 zip
+        let file = std::fs::File::create(&zip_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let opts = zip::write::SimpleFileOptions::default();
+        writer.start_file("lib/test.lua", opts).unwrap();
+        writer.write_all(b"-- test").unwrap();
+        writer.start_file("lib/sub/util.lua", opts).unwrap();
+        writer.write_all(b"-- util").unwrap();
+        writer.finish().unwrap();
+
+        let dest = extract_zip_to_stem_dir(&zip_path).unwrap();
+        assert_eq!(dest, dir.path().join("mylib"));
+        assert!(dest.join("lib").join("test.lua").exists());
+        assert!(dest.join("lib").join("sub").join("util.lua").exists());
+    }
+
+    /// 验证 soc_script zip 解压后 lib/ 目录结构正确（模拟 public/soc_script/v2026.zip）
+    #[test]
+    fn extract_zip_soc_script_structure() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let soc_script_dir = dir.path().join("public").join("soc_script");
+        std::fs::create_dir_all(&soc_script_dir).unwrap();
+        let zip_path = soc_script_dir.join("v2026.04.10.16.zip");
+
+        let file = std::fs::File::create(&zip_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let opts = zip::write::SimpleFileOptions::default();
+        writer.start_file("lib/airlbs.lua", opts).unwrap();
+        writer.write_all(b"-- airlbs").unwrap();
+        writer.finish().unwrap();
+
+        let dest = extract_zip_to_stem_dir(&zip_path).unwrap();
+        assert_eq!(dest, soc_script_dir.join("v2026.04.10.16"));
+        assert!(dest.join("lib").join("airlbs.lua").exists());
     }
 }

@@ -1005,6 +1005,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "ureq",
+ "zip",
 ]
 
 [[package]]

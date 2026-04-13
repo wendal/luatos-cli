@@ -206,6 +206,8 @@ pub fn import_luatools_ini_str(content: &str, ini_path: &Path) -> Result<(Projec
             bitw: default_bitw(&chip),
             luac_debug,
             ignore_deps: false,
+            soc_script: "latest".to_string(),
+            resource_dir: "resource/".to_string(),
         },
         flash: FlashConfig {
             soc_file: soc_path,

@@ -13,6 +13,8 @@ pub fn cmd_project_new(dir: &str, name: &str, chip: &str, format: &OutputFormat)
             println!("  Script: {dir}/lua/main.lua");
             println!("\nNext steps:");
             println!("  cd {dir}");
+            println!("  luatos-cli project build        # 使用项目配置构建（推荐）");
+            println!("  # 或者手动指定参数:");
             println!("  luatos-cli build filesystem --src lua/ --output build/script.bin");
         }
         OutputFormat::Json => {
@@ -47,6 +49,8 @@ pub fn cmd_project_info(dir: &str, format: &OutputFormat) -> anyhow::Result<()> 
             println!("  Bitwidth:    {}", project.build.bitw);
             println!("  Debug info:  {}", project.build.luac_debug);
             println!("  Ignore deps: {}", project.build.ignore_deps);
+            println!("  soc_script:  {}", project.build.soc_script);
+            println!("  Resource:    {}", project.build.resource_dir);
             if let Some(ref soc) = project.flash.soc_file {
                 println!("  SOC:         {soc}");
             }
@@ -301,10 +305,8 @@ pub fn cmd_project_analyze(dir: &str, soc_override: Option<&str>, format: &Outpu
     let files = collect_project_files(&project.build.script_dirs, &project.build.script_files, dir_path)?;
 
     // ── 2. Dependency graph ──────────────────────────────────────────────────
-    let abs_dirs: Vec<String> =
-        project.build.script_dirs.iter().map(|d| dir_path.join(d).to_string_lossy().into_owned()).collect();
-    let abs_files: Vec<String> =
-        project.build.script_files.iter().map(|f| dir_path.join(f).to_string_lossy().into_owned()).collect();
+    let abs_dirs: Vec<String> = project.build.script_dirs.iter().map(|d| dir_path.join(d).to_string_lossy().into_owned()).collect();
+    let abs_files: Vec<String> = project.build.script_files.iter().map(|f| dir_path.join(f).to_string_lossy().into_owned()).collect();
     let dep_graph = analyze_deps(&abs_dirs, &abs_files)?;
 
     // Files included in the build (respects ignore_deps)
@@ -352,7 +354,10 @@ pub fn cmd_project_analyze(dir: &str, soc_override: Option<&str>, format: &Outpu
                     if is_included {
                         let entry_name = name.replace(".lua", ".luac");
                         let entry_data = if use_luac { bytecode } else { source };
-                        luadb_entries.push(LuadbEntry { filename: entry_name, data: entry_data });
+                        luadb_entries.push(LuadbEntry {
+                            filename: entry_name,
+                            data: entry_data,
+                        });
                     }
                     results.push(FileResult {
                         filename: (*name).clone(),
@@ -415,8 +420,7 @@ pub fn cmd_project_analyze(dir: &str, soc_override: Option<&str>, format: &Outpu
     let partition_size: Option<usize> = soc_info.as_ref().map(|i| i.script_size());
 
     // ── 5. Output ────────────────────────────────────────────────────────────
-    let unreachable_names: Vec<&String> =
-        files.keys().filter(|n| !dep_graph.reachable.contains(*n)).collect();
+    let unreachable_names: Vec<&String> = files.keys().filter(|n| !dep_graph.reachable.contains(*n)).collect();
 
     match format {
         OutputFormat::Text => {
@@ -449,10 +453,12 @@ pub fn cmd_project_analyze(dir: &str, soc_override: Option<&str>, format: &Outpu
             // — Dependencies —
             println!("\n── Dependencies ──────────────────────────────────────");
             println!("  Total files:  {}", files.len());
-            println!("  Included:     {} ({}reachable from main.lua{})",
+            println!(
+                "  Included:     {} ({}reachable from main.lua{})",
                 included.len(),
                 if project.build.ignore_deps { "ignore_deps=true, all " } else { "" },
-                if project.build.ignore_deps { "" } else { "" });
+                if project.build.ignore_deps { "" } else { "" }
+            );
             println!("  Excluded:     {}", unreachable_names.len());
             if !dep_graph.deps.is_empty() {
                 println!("  Dep tree:");
@@ -484,8 +490,8 @@ pub fn cmd_project_analyze(dir: &str, soc_override: Option<&str>, format: &Outpu
                 let raw_str = fmt_bytes(r.raw_size);
                 let built_str = r.built_size.map(fmt_bytes).unwrap_or_else(|| "  (error)".into());
                 let status = match (r.included, r.syntax_error.is_some()) {
-                    (_, true)  => "✗ error",
-                    (true, _)  => "✓",
+                    (_, true) => "✗ error",
+                    (true, _) => "✓",
                     (false, _) => "— excluded",
                 };
                 println!("  {:<col_w$}  {:>10}  {:>10}  {status}", r.filename, raw_str, built_str);
@@ -503,7 +509,8 @@ pub fn cmd_project_analyze(dir: &str, soc_override: Option<&str>, format: &Outpu
 
             // — Partition Space —
             if let (Some(img), Some(part)) = (image_size, partition_size) {
-                let soc_name = soc_path_resolved.as_ref()
+                let soc_name = soc_path_resolved
+                    .as_ref()
                     .and_then(|p| p.file_name())
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "soc".into());
@@ -535,8 +542,7 @@ pub fn cmd_project_analyze(dir: &str, soc_override: Option<&str>, format: &Outpu
                 })
                 .collect();
 
-            let deps_map: serde_json::Map<String, serde_json::Value> =
-                dep_graph.deps.iter().map(|(k, v)| (k.clone(), serde_json::json!(v))).collect();
+            let deps_map: serde_json::Map<String, serde_json::Value> = dep_graph.deps.iter().map(|(k, v)| (k.clone(), serde_json::json!(v))).collect();
 
             let json = serde_json::json!({
                 "status": "ok",
@@ -673,4 +679,35 @@ pub fn cmd_project_deps(dir: &str, show_reachable: bool, show_unreachable: bool,
         }
     }
     Ok(())
+}
+
+/// 构建项目脚本镜像（读取 luatos-project.toml 配置，自动处理 soc_script 扩展库）
+///
+/// 等同于 `build filesystem`，但通过项目配置文件获取所有参数，并额外：
+/// - 根据 `build.soc_script` 配置解析扩展库 `lib/` 目录，追加到源目录列表末尾
+/// - 若未找到对应版本，打印提示后退出（不构建）
+pub fn cmd_project_build(dir: &str, format: &crate::OutputFormat) -> anyhow::Result<()> {
+    let dir_path = std::path::Path::new(dir);
+    let project = luatos_project::Project::load(dir_path)?;
+
+    // 解析 soc_script lib 目录
+    let soc_lib = luatos_project::resolve_soc_script_lib_dir(dir_path, &project.build)?;
+
+    // 构建源目录列表（项目 script_dirs + 可选的 soc_script lib）
+    let mut src_dirs: Vec<String> = project.build.script_dirs.iter().map(|d| dir_path.join(d).to_string_lossy().into_owned()).collect();
+    if let Some(lib) = soc_lib {
+        src_dirs.push(lib.to_string_lossy().into_owned());
+    }
+
+    let output = dir_path.join(&project.build.output_dir).join("script.bin");
+    let output_str = output.to_string_lossy().into_owned();
+
+    crate::cmd_build::cmd_build_filesystem(
+        &src_dirs,
+        &output_str,
+        project.build.use_luac,
+        project.build.bitw,
+        false, // bkcrc 由芯片类型决定，此处保守处理
+        format,
+    )
 }

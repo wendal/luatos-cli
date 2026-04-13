@@ -165,6 +165,11 @@ pub fn cmd_resource_download(module: &str, version_filter: Option<&str>, output:
             }
             eprintln!("  ✗ 下载失败: {}", filename);
         }
+        luatos_resource::DownloadEvent::Extracted { filename, dest_dir } => {
+            if is_text {
+                eprintln!("  ⬡ 已解压: {} → {}", filename, dest_dir);
+            }
+        }
     });
 
     let report = luatos_resource::download_files(module, &files, &manifest.mirrors, out_path, Some(&callback))?;

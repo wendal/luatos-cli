@@ -336,6 +336,16 @@ enum ProjectCommands {
         #[arg(long)]
         soc: Option<String>,
     },
+    /// Build script filesystem image using project configuration
+    ///
+    /// Reads luatos-project.toml, resolves soc_script lib directory,
+    /// and builds the script image. Use `build.soc_script = "disable"` to skip
+    /// the soc_script library, or set a specific version like `"v2026.04.10.16"`.
+    Build {
+        /// Project directory (default: current directory)
+        #[arg(long, default_value = ".")]
+        dir: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -454,9 +464,7 @@ fn main() {
             SocCommands::Unpack { path, output } => cmd_soc::cmd_soc_unpack(&path, output.as_deref(), &cli.format),
             SocCommands::Files { path } => cmd_soc::cmd_soc_files(&path, &cli.format),
             SocCommands::Pack { dir, output } => cmd_soc::cmd_soc_pack(&dir, &output, &cli.format),
-            SocCommands::Combine { soc, bin, addr, output } => {
-                cmd_soc::cmd_soc_combine(&soc, &bin, &addr, output.as_deref(), &cli.format)
-            }
+            SocCommands::Combine { soc, bin, addr, output } => cmd_soc::cmd_soc_combine(&soc, &bin, &addr, output.as_deref(), &cli.format),
         },
         Commands::Flash { action } => match action {
             FlashCommands::Run { soc, port, baud, script } => {
@@ -496,6 +504,7 @@ fn main() {
             ProjectCommands::Export { dir, output } => cmd_project::cmd_project_export(&dir, output.as_deref(), &cli.format),
             ProjectCommands::Deps { dir, reachable, unreachable } => cmd_project::cmd_project_deps(&dir, reachable, unreachable, &cli.format),
             ProjectCommands::Analyze { dir, soc } => cmd_project::cmd_project_analyze(&dir, soc.as_deref(), &cli.format),
+            ProjectCommands::Build { dir } => cmd_project::cmd_project_build(&dir, &cli.format),
         },
         Commands::Build { action } => match action {
             BuildCommands::Luac { src, output, bitw } => cmd_build::cmd_build_luac(&src, &output, bitw, &cli.format),
@@ -510,9 +519,13 @@ fn main() {
             DeviceCommands::Boot { port, chip } => cmd_device::cmd_device_boot(port.as_deref(), chip.as_deref(), &cli.format),
         },
         Commands::Fota { action } => match action {
-            FotaCommands::Build { new, old, output, fota_toolkit, soc_tools } => {
-                cmd_fota::cmd_fota_build(&new, old.as_deref(), output.as_deref(), fota_toolkit.as_deref(), soc_tools.as_deref(), &cli.format)
-            }
+            FotaCommands::Build {
+                new,
+                old,
+                output,
+                fota_toolkit,
+                soc_tools,
+            } => cmd_fota::cmd_fota_build(&new, old.as_deref(), output.as_deref(), fota_toolkit.as_deref(), soc_tools.as_deref(), &cli.format),
         },
         Commands::Version => {
             let version = env!("CARGO_PKG_VERSION");

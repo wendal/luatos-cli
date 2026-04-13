@@ -28,6 +28,12 @@ const DEFAULT_SCRIPT_DIR: &str = "lua/";
 /// Default build output directory.
 const DEFAULT_OUTPUT_DIR: &str = "build/";
 
+/// Default resource directory (where `luatos-cli resource download` saves files).
+const DEFAULT_RESOURCE_DIR: &str = "resource/";
+
+/// Default soc_script version: always use the latest available version.
+const DEFAULT_SOC_SCRIPT_VERSION: &str = "latest";
+
 /// Returns the default Lua integer bit-width for a given chip.
 ///
 /// Chips that use a 64-bit Lua VM: `air6208`, `air101`.
@@ -92,6 +98,14 @@ fn default_script_dirs() -> Vec<String> {
     vec![DEFAULT_SCRIPT_DIR.to_string()]
 }
 
+fn default_resource_dir() -> String {
+    DEFAULT_RESOURCE_DIR.to_string()
+}
+
+fn default_soc_script_version() -> String {
+    DEFAULT_SOC_SCRIPT_VERSION.to_string()
+}
+
 /// Build configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BuildConfig {
@@ -117,6 +131,20 @@ pub struct BuildConfig {
     /// When `false` (default), only scripts reachable from `main.lua` are included.
     #[serde(default)]
     pub ignore_deps: bool,
+    /// soc_script 扩展库版本号。
+    ///
+    /// - `"latest"` （默认）：自动使用 `resource_dir/public/soc_script/` 下最新版本。
+    /// - `"disable"` ：不使用 soc_script。
+    /// - 具体版本号（如 `"v2026.04.10.16"`）：使用指定版本。
+    ///
+    /// 当值不为 `"disable"` 时，构建前会检查对应 `lib/` 目录是否存在；
+    /// 若不存在则提示运行 `luatos-cli resource download public`。
+    #[serde(default = "default_soc_script_version")]
+    pub soc_script: String,
+    /// 资源目录路径，对应 `luatos-cli resource download --output` 的下载目标目录。
+    /// 默认值为 `"resource/"`，相对于项目根目录。
+    #[serde(default = "default_resource_dir")]
+    pub resource_dir: String,
 }
 
 /// Flash / download configuration.
@@ -151,6 +179,8 @@ impl Project {
                 bitw: default_bitw(chip),
                 luac_debug: false,
                 ignore_deps: false,
+                soc_script: DEFAULT_SOC_SCRIPT_VERSION.to_string(),
+                resource_dir: DEFAULT_RESOURCE_DIR.to_string(),
             },
             flash: FlashConfig {
                 soc_file: None,
@@ -183,6 +213,55 @@ impl Project {
         fs::write(&path, content).with_context(|| format!("failed to write {}", path.display()))?;
         Ok(())
     }
+}
+
+/// 解析 soc_script 的 `lib/` 目录路径。
+///
+/// 根据项目配置中的 `soc_script` 字段，在 `project_dir/{resource_dir}/public/soc_script/` 下
+/// 查找对应版本目录，返回其 `lib/` 子目录路径。
+///
+/// - `"disable"` → 返回 `Ok(None)`
+/// - `"latest"` → 扫描目录，取版本名最大的子目录（按字典序降序）
+/// - 具体版本号 → 直接使用该名称作为子目录
+///
+/// 若对应目录不存在，返回 `Err`，其中包含提示用户下载的说明。
+pub fn resolve_soc_script_lib_dir(project_dir: &Path, build: &BuildConfig) -> Result<Option<PathBuf>> {
+    if build.soc_script == "disable" {
+        return Ok(None);
+    }
+
+    let soc_script_root = project_dir.join(&build.resource_dir).join("public").join("soc_script");
+
+    let version_name = if build.soc_script == "latest" {
+        // 扫描目录，取字典序最大的子目录名
+        let mut entries: Vec<String> = fs::read_dir(&soc_script_root)
+            .map_err(|_| anyhow::anyhow!("未找到 soc_script 资源目录 {}，请运行: luatos-cli resource download public", soc_script_root.display()))?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect();
+
+        if entries.is_empty() {
+            anyhow::bail!("soc_script 资源目录 {} 为空，请运行: luatos-cli resource download public", soc_script_root.display());
+        }
+
+        entries.sort_unstable_by(|a, b| b.cmp(a)); // 字典序降序，取最新
+        entries.remove(0)
+    } else {
+        build.soc_script.clone()
+    };
+
+    let lib_dir = soc_script_root.join(&version_name).join("lib");
+    if !lib_dir.is_dir() {
+        anyhow::bail!(
+            "soc_script 版本 '{}' 的 lib 目录不存在: {}，请运行: luatos-cli resource download public",
+            version_name,
+            lib_dir.display()
+        );
+    }
+
+    log::debug!("使用 soc_script lib 目录: {}", lib_dir.display());
+    Ok(Some(lib_dir))
 }
 
 /// Scaffold a new LuatOS project inside `dir`.
@@ -294,6 +373,8 @@ mod tests {
         assert_eq!(p.build.bitw, 64);
         assert!(!p.build.luac_debug);
         assert!(!p.build.ignore_deps);
+        assert_eq!(p.build.soc_script, "latest");
+        assert_eq!(p.build.resource_dir, "resource/");
         assert!(p.flash.port.is_none());
     }
 
@@ -360,6 +441,9 @@ bitw = 32
         assert!(project.build.script_files.is_empty());
         assert!(!project.build.luac_debug);
         assert!(!project.build.ignore_deps);
+        // 新增字段的默认值
+        assert_eq!(project.build.soc_script, "latest");
+        assert_eq!(project.build.resource_dir, "resource/");
     }
 
     /// Config with script_files and new flags.
@@ -387,5 +471,97 @@ soc_file = "firmware.soc"
         assert_eq!(project.build.script_files, vec!["extra/helper.lua", "lib/utils.lua"]);
         assert!(project.build.luac_debug);
         assert!(project.build.ignore_deps);
+    }
+
+    /// soc_script = "disable" 时返回 None
+    #[test]
+    fn soc_script_disable_returns_none() {
+        let tmp = std::env::temp_dir().join("luatos_soc_script_disable");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        let mut p = Project::new("test", "bk72xx");
+        p.build.soc_script = "disable".to_string();
+
+        let result = resolve_soc_script_lib_dir(&tmp, &p.build).unwrap();
+        assert!(result.is_none());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// soc_script = "latest"，resource 目录为空时返回 Err
+    #[test]
+    fn soc_script_latest_empty_resource_dir_returns_err() {
+        let tmp = std::env::temp_dir().join("luatos_soc_script_empty");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        let p = Project::new("test", "bk72xx");
+        // resource/public/soc_script/ 不存在
+        let result = resolve_soc_script_lib_dir(&tmp, &p.build);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("luatos-cli resource download public"), "错误信息应包含下载提示: {msg}");
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// soc_script = "latest"，找到最新版本 lib 目录
+    #[test]
+    fn soc_script_latest_finds_newest_version() {
+        let tmp = std::env::temp_dir().join("luatos_soc_script_latest");
+        let _ = fs::remove_dir_all(&tmp);
+
+        // 构造 resource/public/soc_script/v2026.01.01.00/lib/
+        let lib_old = tmp.join("resource").join("public").join("soc_script").join("v2026.01.01.00").join("lib");
+        let lib_new = tmp.join("resource").join("public").join("soc_script").join("v2026.04.10.16").join("lib");
+        fs::create_dir_all(&lib_old).unwrap();
+        fs::create_dir_all(&lib_new).unwrap();
+
+        let p = Project::new("test", "bk72xx");
+        let result = resolve_soc_script_lib_dir(&tmp, &p.build).unwrap();
+        assert!(result.is_some());
+        let lib = result.unwrap();
+        // 字典序最大的是 v2026.04.10.16
+        assert!(lib.to_string_lossy().contains("v2026.04.10.16"), "应选最新版本: {}", lib.display());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// soc_script = 指定版本，lib 存在时返回路径
+    #[test]
+    fn soc_script_specific_version_found() {
+        let tmp = std::env::temp_dir().join("luatos_soc_script_specific");
+        let _ = fs::remove_dir_all(&tmp);
+
+        let lib_dir = tmp.join("resource").join("public").join("soc_script").join("v2026.04.10.16").join("lib");
+        fs::create_dir_all(&lib_dir).unwrap();
+
+        let mut p = Project::new("test", "bk72xx");
+        p.build.soc_script = "v2026.04.10.16".to_string();
+
+        let result = resolve_soc_script_lib_dir(&tmp, &p.build).unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), lib_dir);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// soc_script = 指定版本，lib 不存在时返回 Err
+    #[test]
+    fn soc_script_specific_version_not_found() {
+        let tmp = std::env::temp_dir().join("luatos_soc_script_notfound");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        let mut p = Project::new("test", "bk72xx");
+        p.build.soc_script = "v9999.99.99.99".to_string();
+
+        let result = resolve_soc_script_lib_dir(&tmp, &p.build);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("luatos-cli resource download public"), "错误信息应包含下载提示: {msg}");
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 }
