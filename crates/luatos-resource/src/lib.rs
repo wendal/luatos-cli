@@ -147,6 +147,9 @@ pub struct DownloadReport {
 
 // ─── API 函数 ──────────────────────────────────────────
 
+/// manifest 缓存有效期（秒）。可在源码中修改此常量调整缓存时长。
+pub const MANIFEST_CACHE_TTL_SECS: u64 = 300; // 5 分钟
+
 /// 从 CDN 获取资源清单，自动尝试多个镜像
 pub fn fetch_manifest() -> Result<ResourceManifest> {
     fetch_manifest_from(MANIFEST_URLS)
@@ -154,21 +157,65 @@ pub fn fetch_manifest() -> Result<ResourceManifest> {
 
 /// 从指定 URL 列表获取资源清单（便于测试）
 pub fn fetch_manifest_from(urls: &[&str]) -> Result<ResourceManifest> {
+    let body = fetch_manifest_raw_from(urls)?;
+    serde_json::from_str(&body).context("解析资源清单 JSON 失败")
+}
+
+/// 获取资源清单（带本地缓存）。
+///
+/// 若 `cache_path` 文件存在且修改时间在 [`MANIFEST_CACHE_TTL_SECS`] 秒内，
+/// 直接读取缓存；否则从 CDN 拉取并覆写缓存文件。
+///
+/// 推荐缓存路径：`~/.luatos/manifest_cache.json`。
+pub fn fetch_manifest_with_cache(cache_path: &Path) -> Result<ResourceManifest> {
+    if is_cache_fresh(cache_path, MANIFEST_CACHE_TTL_SECS) {
+        if let Ok(content) = std::fs::read_to_string(cache_path) {
+            match serde_json::from_str::<ResourceManifest>(&content) {
+                Ok(m) => {
+                    log::debug!("使用缓存资源清单: {}", cache_path.display());
+                    return Ok(m);
+                }
+                Err(e) => log::warn!("缓存清单解析失败，重新拉取: {e}"),
+            }
+        }
+    }
+
+    let body = fetch_manifest_raw_from(MANIFEST_URLS)?;
+
+    // 写入缓存（写入失败不影响本次使用）
+    if let Some(parent) = cache_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(e) = std::fs::write(cache_path, &body) {
+        log::warn!("写入清单缓存失败: {e}");
+    }
+
+    serde_json::from_str(&body).context("解析资源清单 JSON 失败")
+}
+
+/// 从 CDN URL 列表获取清单原始 JSON 字符串（内部使用）
+fn fetch_manifest_raw_from(urls: &[&str]) -> Result<String> {
     let mut last_err = None;
     for url in urls {
         match ureq::get(url).call() {
-            Ok(resp) => {
-                let body = resp.into_string()?;
-                let manifest: ResourceManifest = serde_json::from_str(&body).context("解析资源清单 JSON 失败")?;
-                return Ok(manifest);
-            }
+            Ok(resp) => return resp.into_string().context("读取清单响应体失败"),
             Err(e) => {
                 log::warn!("获取清单失败 {url}: {e}");
                 last_err = Some(e);
             }
         }
     }
-    bail!("所有清单地址均失败: {}", last_err.map(|e| e.to_string()).unwrap_or_else(|| "无 URL".into()));
+    bail!("所有清单地址均失败: {}", last_err.map(|e| e.to_string()).unwrap_or_else(|| "无 URL".into()))
+}
+
+/// 判断缓存文件是否在 `ttl_secs` 秒内修改过
+fn is_cache_fresh(path: &Path, ttl_secs: u64) -> bool {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.elapsed().ok())
+        .map(|e| e.as_secs() < ttl_secs)
+        .unwrap_or(false)
 }
 
 /// 查找指定模组的资源分类

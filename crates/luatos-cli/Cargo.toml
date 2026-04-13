@@ -31,4 +31,5 @@ toml.workspace = true
 chrono.workspace = true
 tempfile.workspace = true
 ureq = { workspace = true }
+dialoguer = { workspace = true }
 indicatif = { workspace = true }

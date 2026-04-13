@@ -159,7 +159,7 @@ mod tests {
     use std::fs;
 
     fn make_test_project(dir: &Path) {
-        crate::scaffold_project(dir, "archive_test", "bk72xx").unwrap();
+        crate::scaffold_project(dir, "archive_test", "bk72xx", &crate::wizard::TemplateKind::HelloWorld).unwrap();
         // Add a second file
         let lua_dir = dir.join("lua");
         fs::write(lua_dir.join("helper.lua"), "-- helper\n").unwrap();

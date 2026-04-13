@@ -15,6 +15,7 @@ mod cmd_flash;
 mod cmd_fota;
 mod cmd_log;
 mod cmd_project;
+mod cmd_project_wizard;
 mod cmd_resource;
 mod cmd_serial;
 mod cmd_soc;
@@ -271,14 +272,55 @@ enum LogCommands {
 
 #[derive(Subcommand)]
 enum ProjectCommands {
-    /// Create a new LuatOS project
+    /// 向导式创建 LuatOS 项目（交互式引导选择型号、版本、模板等）
+    ///
+    /// 从 CDN 拉取固件清单，引导用户选择模组型号、固件版本、项目模板、
+    /// COM 口、soc_script 版本，并可选择立即下载固件和初始化 Git 仓库。
+    ///
+    /// 全参数时跳过交互，例如：
+    ///   project wizard --name my-app --model Air8101 --template helloworld --no-git
+    Wizard {
+        /// 项目名称（省略则交互输入）
+        #[arg(long)]
+        name: Option<String>,
+        /// 创建目录（默认 ./<name>）
+        #[arg(long)]
+        dir: Option<String>,
+        /// 模组型号（省略则交互选择，如 Air8101、Air780EPM）
+        #[arg(long)]
+        model: Option<String>,
+        /// 固件版本号（省略则交互选择，如 V2001）
+        #[arg(long)]
+        version: Option<String>,
+        /// 项目模板（helloworld / ui / empty，省略则交互选择）
+        #[arg(long)]
+        template: Option<String>,
+        /// 串口（省略则交互选择，"none" 表示不选）
+        #[arg(long)]
+        port: Option<String>,
+        /// soc_script 版本（latest / disable / 版本号，省略则交互选择）
+        #[arg(long)]
+        soc_script: Option<String>,
+        /// 跳过 git 初始化
+        #[arg(long)]
+        no_git: bool,
+        /// 跳过固件和 soc_script 下载
+        #[arg(long)]
+        no_download: bool,
+    },
+    /// 创建新 LuatOS 项目（非交互式，需指定 --chip；省略 --chip 时自动进入向导）
+    ///
+    /// 示例：
+    ///   project new my-app --chip air8101
+    ///   project new my-app                 # 省略 --chip 进入向导
     New {
-        /// Project name
+        /// 项目名称
         name: String,
-        /// Target chip (bk72xx, air6208, air8101, air8000, air101, ec7xx)
-        #[arg(long, default_value = "bk72xx")]
-        chip: String,
-        /// Directory to create project in (default: ./<name>)
+        /// 目标芯片族（bk72xx / air6208 / air8101 / air8000 / air101 / ec7xx）。
+        /// 省略时自动进入向导（等同于 project wizard --name <name>）。
+        #[arg(long)]
+        chip: Option<String>,
+        /// 项目目录（默认 ./<name>）
         #[arg(long)]
         dir: Option<String>,
     },
@@ -501,9 +543,52 @@ fn main() {
             LogCommands::Parse { path } => cmd_log::cmd_log_parse(&path, &cli.format),
         },
         Commands::Project { action } => match action {
+            ProjectCommands::Wizard {
+                name,
+                dir,
+                model,
+                version,
+                template,
+                port,
+                soc_script,
+                no_git,
+                no_download,
+            } => cmd_project_wizard::run_wizard(
+                cmd_project_wizard::WizardArgs {
+                    project_name: name,
+                    project_dir: dir,
+                    model,
+                    firmware_version: version,
+                    template,
+                    port,
+                    soc_script,
+                    no_git,
+                    no_download,
+                },
+                &cli.format,
+            ),
             ProjectCommands::New { name, chip, dir } => {
                 let dir = dir.unwrap_or_else(|| name.clone());
-                cmd_project::cmd_project_new(&dir, &name, &chip, &cli.format)
+                if let Some(chip) = chip {
+                    // 指定了 chip：非交互式创建
+                    cmd_project::cmd_project_new(&dir, &name, &chip, &cli.format)
+                } else {
+                    // 未指定 chip：进入向导（prefill 项目名）
+                    cmd_project_wizard::run_wizard(
+                        cmd_project_wizard::WizardArgs {
+                            project_name: Some(name),
+                            project_dir: Some(dir),
+                            model: None,
+                            firmware_version: None,
+                            template: None,
+                            port: None,
+                            soc_script: None,
+                            no_git: false,
+                            no_download: false,
+                        },
+                        &cli.format,
+                    )
+                }
             }
             ProjectCommands::Info { dir } => cmd_project::cmd_project_info(&dir, &cli.format),
             ProjectCommands::Config { dir, key, value } => cmd_project::cmd_project_config(&dir, key.as_deref(), value.as_deref(), &cli.format),
