@@ -234,10 +234,19 @@ fn extract_quoted_string(s: &str) -> Option<String> {
     Some(s[1..1 + end].to_string())
 }
 
+/// 版本控制目录名称，遍历文件时需跳过
+const VCS_DIRS: &[&str] = &[".git", ".svn", ".hg"];
+
+fn is_vcs_dir(name: &std::ffi::OsStr) -> bool {
+    let s = name.to_string_lossy();
+    VCS_DIRS.iter().any(|d| s.eq_ignore_ascii_case(d))
+}
+
 /// Collect all script files from directories and individual file paths.
 ///
 /// Returns a map of filename → full path. For directories, all `.lua` files
 /// are collected recursively. For individual files, they are added directly.
+/// 自动跳过 .git/.svn/.hg 等版本控制目录。
 pub fn collect_script_files(script_dirs: &[String], script_files: &[String]) -> Result<HashMap<String, PathBuf>> {
     let mut files = HashMap::new();
 
@@ -255,7 +264,7 @@ pub fn collect_script_files(script_dirs: &[String], script_files: &[String]) -> 
             }
             continue;
         }
-        for entry in WalkDir::new(dir).into_iter() {
+        for entry in WalkDir::new(dir).into_iter().filter_entry(|e| !e.file_type().is_dir() || !is_vcs_dir(e.file_name())) {
             let entry = entry?;
             if !entry.file_type().is_file() {
                 continue;

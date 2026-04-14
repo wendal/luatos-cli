@@ -206,13 +206,15 @@ fn build_config_interactive(
     };
 
     // ── 步骤 5：是否立即下载固件 ─────────────────────────
-    let download_firmware = if prefill.no_download || selected_version.is_none() {
+    let download_firmware = if prefill.no_download {
         false
-    } else {
+    } else if let Some(ref ver) = selected_version {
         Confirm::with_theme(&theme)
-            .with_prompt(format!("立即下载固件 {}？", selected_version.as_ref().unwrap().filename))
+            .with_prompt(format!("立即下载固件 {}？", ver.filename))
             .default(true)
             .interact()?
+    } else {
+        false
     };
 
     // ── 步骤 6：选择项目模板 ──────────────────────────────

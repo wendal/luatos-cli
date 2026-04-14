@@ -208,6 +208,39 @@ enum FlashCommands {
         #[arg(long)]
         port: String,
     },
+    /// Air6201 external SPI flash programming (write to script/fskv/lfs partition)
+    ExtFlash {
+        /// Serial port (e.g. COM3)
+        #[arg(long)]
+        port: String,
+        /// Baud rate (default: 2000000)
+        #[arg(long, default_value = "2000000")]
+        baud: u32,
+        /// Partition to flash: script, fskv, lfs
+        #[arg(long)]
+        partition: String,
+        /// Data file to write (binary)
+        #[arg(long)]
+        file: String,
+        /// Send EXT_PROG command to enter programming mode (for initial connection)
+        #[arg(long)]
+        ext_prog: bool,
+    },
+    /// Air6201 external SPI flash partition erase
+    ExtErase {
+        /// Serial port (e.g. COM3)
+        #[arg(long)]
+        port: String,
+        /// Baud rate (default: 2000000)
+        #[arg(long, default_value = "2000000")]
+        baud: u32,
+        /// Partition to erase: script, fskv, lfs
+        #[arg(long)]
+        partition: String,
+        /// Send EXT_PROG command to enter programming mode
+        #[arg(long)]
+        ext_prog: bool,
+    },
     /// Closed-loop flash test: flash → capture boot log → verify keywords → PASS/FAIL
     Test {
         /// Path to .soc file
@@ -436,6 +469,9 @@ enum BuildCommands {
         /// Add BK CRC16 framing (required for Air8101/bk72xx)
         #[arg(long)]
         bkcrc: bool,
+        /// 分区最大容量（KB），超出则报错
+        #[arg(long)]
+        max_size_kb: Option<u32>,
     },
 }
 
@@ -539,6 +575,14 @@ fn main() {
             FlashCommands::ClearFs { soc, port } => cmd_flash::cmd_flash_partition("clear-fs", &soc, &port, None, &cli.format),
             FlashCommands::FlashFs { soc, port, script } => cmd_flash::cmd_flash_partition("flash-fs", &soc, &port, Some(&script), &cli.format),
             FlashCommands::ClearKv { soc, port } => cmd_flash::cmd_flash_partition("clear-kv", &soc, &port, None, &cli.format),
+            FlashCommands::ExtFlash {
+                port,
+                baud,
+                partition,
+                file,
+                ext_prog,
+            } => cmd_flash::cmd_flash_ext_flash(&port, baud, &partition, &file, ext_prog, &cli.format),
+            FlashCommands::ExtErase { port, baud, partition, ext_prog } => cmd_flash::cmd_flash_ext_erase(&port, baud, &partition, ext_prog, &cli.format),
             FlashCommands::Test {
                 soc,
                 port,
@@ -615,7 +659,14 @@ fn main() {
         },
         Commands::Build { action } => match action {
             BuildCommands::Luac { src, output, bitw } => cmd_build::cmd_build_luac(&src, &output, bitw, &cli.format),
-            BuildCommands::Filesystem { src, output, luac, bitw, bkcrc } => cmd_build::cmd_build_filesystem(&src, &output, luac, bitw, bkcrc, &cli.format),
+            BuildCommands::Filesystem {
+                src,
+                output,
+                luac,
+                bitw,
+                bkcrc,
+                max_size_kb,
+            } => cmd_build::cmd_build_filesystem(&src, &output, luac, bitw, bkcrc, max_size_kb, &cli.format),
         },
         Commands::Resource { action } => match action {
             ResourceCommands::List { module } => cmd_resource::cmd_resource_list(module.as_deref(), &cli.format),

@@ -11,6 +11,9 @@ use walkdir::WalkDir;
 use crate::embedded_helpers::{ensure_embedded_helper, ensure_mklfs_helper};
 use crate::{add_bk_crc, pack_luadb, LuadbEntry};
 
+/// 版本控制目录名称，遍历文件时需跳过
+const VCS_DIRS: &[&str] = &[".git", ".svn", ".hg"];
+
 /// Compile Lua source bytes to bytecode using the embedded Lua 5.3 compiler.
 ///
 /// `chunk_name` is the name shown in error messages (typically `@filename.lua`).
@@ -65,17 +68,24 @@ pub fn compile_lua(src: &Path, dst: &Path, bitw: u32, strip: bool) -> Result<()>
     Ok(())
 }
 
+/// Check if a directory name belongs to a version control system.
+fn is_vcs_dir(name: &std::ffi::OsStr) -> bool {
+    let s = name.to_string_lossy();
+    VCS_DIRS.iter().any(|d| s.eq_ignore_ascii_case(d))
+}
+
 /// Compile all `.lua` files in `src_dir` to `.luac` in `out_dir`.
 ///
 /// Non-`.lua` files are copied as-is. The relative directory structure is
 /// preserved. When `strip` is true, debug info is removed from compiled output.
 /// Returns a list of all output file paths.
+/// 自动跳过 .git/.svn/.hg 等版本控制目录。
 pub fn compile_lua_dir(src_dir: &Path, out_dir: &Path, bitw: u32, strip: bool) -> Result<Vec<PathBuf>> {
     fs::create_dir_all(out_dir).context("failed to create output directory")?;
 
     let mut outputs = Vec::new();
 
-    for entry in WalkDir::new(src_dir).into_iter() {
+    for entry in WalkDir::new(src_dir).into_iter().filter_entry(|e| !e.file_type().is_dir() || !is_vcs_dir(e.file_name())) {
         let entry = entry?;
         if !entry.file_type().is_file() {
             continue;
@@ -105,21 +115,26 @@ pub fn compile_lua_dir(src_dir: &Path, out_dir: &Path, bitw: u32, strip: bool) -
 
 /// Walk multiple directories and create [`LuadbEntry`] items for every file.
 ///
-/// Only the filename (not the full path) is used as the entry name.
-/// If the same filename appears in multiple directories, the last one wins.
+/// Uses the relative path from each directory root as the entry name, with
+/// forward-slash separators to support subdirectory structures.
+/// If the same relative path appears in multiple directories, the last one wins.
 /// Entries are sorted so that `main.lua` / `main.luac` comes first.
+/// 自动跳过 .git/.svn/.hg 等版本控制目录。
 pub fn collect_script_entries(dirs: &[&Path]) -> Result<Vec<LuadbEntry>> {
     // Use a map to handle deduplication: later dirs override earlier ones.
     let mut map = std::collections::HashMap::<String, Vec<u8>>::new();
 
     for dir in dirs {
-        for entry in WalkDir::new(dir).into_iter() {
+        anyhow::ensure!(dir.exists(), "脚本目录不存在: {}", dir.display());
+        for entry in WalkDir::new(dir).into_iter().filter_entry(|e| !e.file_type().is_dir() || !is_vcs_dir(e.file_name())) {
             let entry = entry?;
             if !entry.file_type().is_file() {
                 continue;
             }
 
-            let filename = entry.path().file_name().context("entry has no filename")?.to_string_lossy().into_owned();
+            // 使用相对路径作为文件名，支持子目录结构
+            let rel_path = entry.path().strip_prefix(dir).context("failed to compute relative path")?;
+            let filename = rel_path.to_string_lossy().into_owned().replace('\\', "/");
 
             let data = fs::read(entry.path()).with_context(|| format!("failed to read {}", entry.path().display()))?;
 
@@ -140,7 +155,9 @@ pub fn collect_script_entries(dirs: &[&Path]) -> Result<Vec<LuadbEntry>> {
 }
 
 fn is_main(name: &str) -> bool {
-    name == "main.lua" || name == "main.luac"
+    // 支持根目录的 main.lua/main.luac，以及子目录中的
+    let basename = name.rsplit('/').next().unwrap_or(name);
+    (basename == "main.lua" || basename == "main.luac") && !name.contains('/')
 }
 
 /// High-level: compile (optional) → collect entries → pack LuaDB → add BK CRC (optional).
@@ -164,6 +181,7 @@ pub fn build_script_image(script_dirs: &[&Path], use_luac: bool, bitw: u32, use_
 
     let dir_refs: Vec<&Path> = collect_dirs.iter().map(|p| p.as_path()).collect();
     let entries = collect_script_entries(&dir_refs)?;
+    anyhow::ensure!(!entries.is_empty(), "脚本目录中没有找到任何文件");
     log::info!("packing {} entries into LuaDB image", entries.len());
 
     let image = pack_luadb(&entries)?;

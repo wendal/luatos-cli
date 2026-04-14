@@ -31,7 +31,7 @@ pub fn cmd_build_luac(src_dirs: &[String], output: &str, bitw: u32, format: &Out
     Ok(())
 }
 
-pub fn cmd_build_filesystem(src_dirs: &[String], output: &str, use_luac: bool, bitw: u32, bkcrc: bool, format: &OutputFormat) -> anyhow::Result<()> {
+pub fn cmd_build_filesystem(src_dirs: &[String], output: &str, use_luac: bool, bitw: u32, bkcrc: bool, max_size_kb: Option<u32>, format: &OutputFormat) -> anyhow::Result<()> {
     let paths: Vec<std::path::PathBuf> = src_dirs.iter().map(std::path::PathBuf::from).collect();
     let path_refs: Vec<&std::path::Path> = paths.iter().map(|p| p.as_path()).collect();
 
@@ -40,6 +40,23 @@ pub fn cmd_build_filesystem(src_dirs: &[String], output: &str, use_luac: bool, b
     }
 
     let image = luatos_luadb::build::build_script_image(&path_refs, use_luac, bitw, bkcrc, true)?;
+
+    // 检查镜像大小是否超过分区容量
+    if let Some(max_kb) = max_size_kb {
+        let max_bytes = max_kb as usize * 1024;
+        if image.len() > max_bytes {
+            let overflow = image.len() - max_bytes;
+            anyhow::bail!(
+                "脚本镜像大小（{} 字节, {:.1} KB）超过分区容量（{} 字节, {:.1} KB），超出 {} 字节（{:.1} KB）",
+                image.len(),
+                image.len() as f64 / 1024.0,
+                max_bytes,
+                max_bytes as f64 / 1024.0,
+                overflow,
+                overflow as f64 / 1024.0,
+            );
+        }
+    }
 
     let out_path = std::path::Path::new(output);
     if let Some(parent) = out_path.parent() {

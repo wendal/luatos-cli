@@ -439,6 +439,24 @@ pub fn cmd_project_analyze(dir: &str, soc_override: Option<&str>, format: &Outpu
                 }
             }
 
+            // — Core Library Warning —
+            // 核心库（sys, sysplus 等）应由底层固件提供，用户脚本中 require 这些模块
+            // 是正常的，但如果用户试图将它们作为独立脚本文件包含，则需要警告
+            const CORE_LIBS: &[&str] = &["sys", "sysplus"];
+            let core_lib_files: Vec<&String> = files
+                .keys()
+                .filter(|name| {
+                    let stem = name.strip_suffix(".lua").or_else(|| name.strip_suffix(".luac")).unwrap_or(name);
+                    CORE_LIBS.contains(&stem)
+                })
+                .collect();
+            if !core_lib_files.is_empty() {
+                println!("\n  ⚠ 检测到核心库文件（通常由固件内置提供，不需要作为脚本文件包含）:");
+                for n in &core_lib_files {
+                    println!("    ⚠ {n}");
+                }
+            }
+
             // — Space Usage —
             println!("\n── Space Usage ───────────────────────────────────────");
             let col_w = results.iter().map(|r| r.filename.len()).max().unwrap_or(8).max(8);
@@ -505,6 +523,14 @@ pub fn cmd_project_analyze(dir: &str, soc_override: Option<&str>, format: &Outpu
 
             let deps_map: serde_json::Map<String, serde_json::Value> = dep_graph.deps.iter().map(|(k, v)| (k.clone(), serde_json::json!(v))).collect();
 
+            let core_lib_warnings: Vec<&String> = files
+                .keys()
+                .filter(|name| {
+                    let stem = name.strip_suffix(".lua").or_else(|| name.strip_suffix(".luac")).unwrap_or(name);
+                    ["sys", "sysplus"].contains(&stem)
+                })
+                .collect();
+
             event::emit_result(
                 format,
                 "project.analyze",
@@ -518,6 +544,7 @@ pub fn cmd_project_analyze(dir: &str, soc_override: Option<&str>, format: &Outpu
                     "reachable": dep_graph.reachable,
                     "unreachable": unreachable_names,
                     "external_modules": dep_graph.external_modules,
+                    "core_lib_warnings": core_lib_warnings,
                     "image_size_bytes": image_size,
                     "partition_size_bytes": partition_size,
                     "remaining_bytes": match (image_size, partition_size) {
@@ -669,6 +696,7 @@ pub fn cmd_project_build(dir: &str, format: &crate::OutputFormat) -> anyhow::Res
         project.build.use_luac,
         project.build.bitw,
         false, // bkcrc 由芯片类型决定，此处保守处理
+        None,  // max_size_kb: 项目构建时无分区信息
         format,
     )
 }

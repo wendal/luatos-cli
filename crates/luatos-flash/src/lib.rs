@@ -4,7 +4,9 @@
 //   - BK7258 (Air8101): native UART ISP protocol
 //   - XT804 (Air6208/Air101): XMODEM-1K flash protocol
 //   - CCM4211 (Air1601): ISP + SOC framed download protocol
+//   - Air6201: external SPI flash UART protocol
 
+pub mod air6201;
 pub mod bk7258;
 pub mod ccm4211;
 pub mod device;

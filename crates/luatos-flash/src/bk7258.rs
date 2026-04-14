@@ -213,7 +213,7 @@ fn erase_sector(port: &mut dyn serialport::SerialPort, addr: u32, sz_cmd: u8) ->
     let _ = port.clear(serialport::ClearBuffer::Input);
     port.write_all(&tx)?;
     port.flush()?;
-    let timeout = if sz_cmd == 0xD8 { Duration::from_secs(8) } else { Duration::from_secs(3) };
+    let timeout = if sz_cmd == 0xD8 { Duration::from_secs(15) } else { Duration::from_secs(5) };
     let mut buf = [0u8; 16];
     match read_exact_timeout(port, &mut buf, timeout) {
         Ok(_) => {}
@@ -242,7 +242,7 @@ fn write_sector_4k(port: &mut dyn serialport::SerialPort, addr: u32, data: &[u8;
     port.flush()?;
 
     let mut buf = [0u8; 15];
-    match read_exact_timeout(port, &mut buf, Duration::from_secs(5)) {
+    match read_exact_timeout(port, &mut buf, Duration::from_secs(8)) {
         Ok(_) => {}
         Err(e) => {
             log::warn!("Write timeout at 0x{:08x}: {}", addr, e);

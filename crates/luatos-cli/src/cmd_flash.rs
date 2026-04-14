@@ -1,7 +1,27 @@
+use anyhow::Context;
+
 use crate::{
     event::{self, MessageLevel},
     OutputFormat,
 };
+
+/// 检查脚本镜像大小是否超过分区容量，超出则报错并给出详细信息
+fn check_script_size(image_len: usize, partition_size: usize) -> anyhow::Result<()> {
+    if image_len > partition_size {
+        let overflow = image_len - partition_size;
+        anyhow::bail!(
+            "脚本镜像大小（{} 字节, {:.1} KB）超过分区容量（{} 字节, {:.1} KB），超出 {} 字节（{:.1} KB）。\
+             请减少脚本文件数量或大小",
+            image_len,
+            image_len as f64 / 1024.0,
+            partition_size,
+            partition_size as f64 / 1024.0,
+            overflow,
+            overflow as f64 / 1024.0,
+        );
+    }
+    Ok(())
+}
 
 pub fn cmd_flash_run(soc: &str, port: &str, baud: Option<u32>, script_folders: Option<&[String]>, format: &OutputFormat) -> anyhow::Result<()> {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -156,6 +176,7 @@ pub fn cmd_flash_partition(op: &str, soc: &str, port: &str, script_folders: Opti
                     info.use_bkcrc(),
                     true, // strip debug info
                 )?;
+                check_script_size(script_data.len(), info.script_size())?;
                 luatos_flash::ccm4211::flash_script_ccm4211(soc, port, &script_data, &on_progress, cancel)?;
             }
             "clear-fs" => {
@@ -178,6 +199,7 @@ pub fn cmd_flash_partition(op: &str, soc: &str, port: &str, script_folders: Opti
                     info.use_bkcrc(),
                     true, // strip debug info
                 )?;
+                check_script_size(script_data.len(), info.script_size())?;
                 let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress)?;
                 luatos_flash::ec718::flash_script_ec718(soc, &boot_port, &script_data, &on_progress, cancel)?;
             }
@@ -203,21 +225,83 @@ pub fn cmd_flash_partition(op: &str, soc: &str, port: &str, script_folders: Opti
 }
 
 /// Collect script files from multiple folders (*.lua, *.luac, *.json, etc.)
+/// 自动跳过 .git/.svn/.hg 等版本控制目录。
 fn collect_script_files(folders: &[String]) -> anyhow::Result<Vec<String>> {
+    const VCS_DIRS: &[&str] = &[".git", ".svn", ".hg"];
+
     let mut files = Vec::new();
     for folder in folders {
-        for entry in std::fs::read_dir(folder)? {
+        let dir = std::path::Path::new(folder);
+        anyhow::ensure!(dir.exists(), "脚本目录不存在: {}", folder);
+        anyhow::ensure!(dir.is_dir(), "指定路径不是目录: {}", folder);
+        for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
+            // 跳过版本控制目录
+            if path.is_dir() {
+                if let Some(name) = path.file_name() {
+                    let s = name.to_string_lossy();
+                    if VCS_DIRS.iter().any(|d| s.eq_ignore_ascii_case(d)) {
+                        continue;
+                    }
+                }
+            }
             if path.is_file() {
                 files.push(path.to_string_lossy().to_string());
             }
         }
     }
     if files.is_empty() {
-        anyhow::bail!("No script files found in {:?}", folders);
+        anyhow::bail!("脚本目录中没有找到任何文件: {:?}", folders);
     }
     Ok(files)
+}
+
+/// Air6201 外置 SPI Flash 烧录
+pub fn cmd_flash_ext_flash(port: &str, baud: u32, partition: &str, file: &str, ext_prog: bool, format: &OutputFormat) -> anyhow::Result<()> {
+    let data = std::fs::read(file).with_context(|| format!("无法读取文件: {file}"))?;
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let format_clone = *format;
+
+    let cancel_clone = cancel.clone();
+    let _ = ctrlc::set_handler(move || {
+        if let Err(e) = event::emit_message(&format_clone, "flash.ext-flash", MessageLevel::Warn, "Cancelling...") {
+            log::warn!("输出取消事件失败: {e}");
+        }
+        cancel_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+
+    let on_progress = make_progress_callback(format, "flash.ext-flash");
+    luatos_flash::air6201::flash_partition(port, baud, partition, &data, ext_prog, &on_progress, cancel)?;
+
+    match format {
+        OutputFormat::Text => println!("External flash write completed."),
+        OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.ext-flash", "ok", serde_json::json!({ "partition": partition, "size": data.len() }))?,
+    }
+    Ok(())
+}
+
+/// Air6201 外置 SPI Flash 分区擦除
+pub fn cmd_flash_ext_erase(port: &str, baud: u32, partition: &str, ext_prog: bool, format: &OutputFormat) -> anyhow::Result<()> {
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let format_clone = *format;
+
+    let cancel_clone = cancel.clone();
+    let _ = ctrlc::set_handler(move || {
+        if let Err(e) = event::emit_message(&format_clone, "flash.ext-erase", MessageLevel::Warn, "Cancelling...") {
+            log::warn!("输出取消事件失败: {e}");
+        }
+        cancel_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+
+    let on_progress = make_progress_callback(format, "flash.ext-erase");
+    luatos_flash::air6201::erase_ext_partition(port, baud, partition, ext_prog, &on_progress, cancel)?;
+
+    match format {
+        OutputFormat::Text => println!("External flash erase completed."),
+        OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.ext-erase", "ok", serde_json::json!({ "partition": partition }))?,
+    }
+    Ok(())
 }
 
 /// Closed-loop flash test: flash firmware → capture boot log → check keywords → PASS/FAIL.

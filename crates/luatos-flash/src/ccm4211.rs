@@ -462,11 +462,16 @@ fn soc_send_cmd(port: &mut Box<dyn SerialPort>, parser: &mut SocFrameParser, cmd
 }
 
 /// Download a binary to a flash address via SOC protocol.
+///
+/// 根据波特率自适应调整 sub-chunk 大小和超时时间：
+/// - ≤2M 波特率: section_len=3072, timeout=500ms
+/// - >2M 波特率 (如 6M): section_len=400, timeout=100ms
 #[allow(clippy::too_many_arguments)]
 fn soc_download_file(
     port: &mut Box<dyn SerialPort>,
     parser: &mut SocFrameParser,
     sn: &mut u16,
+    baud: u32,
     address: u32,
     data: &[u8],
     block_len: u32,
@@ -488,7 +493,12 @@ fn soc_download_file(
         soc_send_cmd(port, parser, SOC_CMD_SET_CODE_DATA_START, cur_addr, &orig_len_bytes, sn, Duration::from_secs(1)).context("SOC set code data start failed")?;
 
         // CMD 0x0B: send data in sub-chunks (no compression)
-        let sect_len = 3 * 1024; // 3KB chunks like Python reference
+        // 根据波特率自适应调整 sub-chunk 大小和超时
+        let (sect_len, cmd_timeout) = if baud > 2_000_000 {
+            (400usize, Duration::from_millis(100))
+        } else {
+            (3 * 1024, Duration::from_millis(500))
+        };
         let mut s_len = 0;
         while s_len < send_len {
             let ss_len = std::cmp::min(sect_len, send_len - s_len);
@@ -497,7 +507,7 @@ fn soc_download_file(
             // Retry up to 10 times (CMD 11 can fail with synchronous I/O)
             let mut last_err = None;
             for retry in 0..10 {
-                match soc_send_cmd(port, parser, SOC_CMD_SET_CODE_DATA, 0, sub_chunk, sn, Duration::from_millis(500)) {
+                match soc_send_cmd(port, parser, SOC_CMD_SET_CODE_DATA, 0, sub_chunk, sn, cmd_timeout) {
                     Ok(_) => {
                         last_err = None;
                         break;
@@ -644,7 +654,19 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
     if bl_path.exists() {
         let bl_data = std::fs::read(&bl_path).context("Failed to read bootloader.bin")?;
         on_progress(&FlashProgress::info("Bootloader", 20.0, "Downloading bootloader"));
-        soc_download_file(&mut port, &mut parser, &mut sn, bl_addr, &bl_data, block_len, on_progress, "Bootloader", 20.0, 40.0)?;
+        soc_download_file(
+            &mut port,
+            &mut parser,
+            &mut sn,
+            dl_baud,
+            bl_addr,
+            &bl_data,
+            block_len,
+            on_progress,
+            "Bootloader",
+            20.0,
+            40.0,
+        )?;
         on_progress(&FlashProgress::info("Bootloader", 40.0, "Bootloader OK"));
     }
 
@@ -656,7 +678,7 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
     if core_path.exists() {
         let core_data = std::fs::read(&core_path).with_context(|| format!("Failed to read {}", info.rom.file))?;
         on_progress(&FlashProgress::info("Core", 40.0, "Downloading core firmware"));
-        soc_download_file(&mut port, &mut parser, &mut sn, core_addr, &core_data, block_len, on_progress, "Core", 40.0, 80.0)?;
+        soc_download_file(&mut port, &mut parser, &mut sn, dl_baud, core_addr, &core_data, block_len, on_progress, "Core", 40.0, 80.0)?;
         on_progress(&FlashProgress::info("Core", 80.0, "Core firmware OK"));
     }
 
@@ -668,7 +690,19 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
     if script_path.exists() {
         let script_data = std::fs::read(&script_path).context("Failed to read script")?;
         on_progress(&FlashProgress::info("Script", 80.0, "Downloading script"));
-        soc_download_file(&mut port, &mut parser, &mut sn, script_addr, &script_data, block_len, on_progress, "Script", 80.0, 95.0)?;
+        soc_download_file(
+            &mut port,
+            &mut parser,
+            &mut sn,
+            dl_baud,
+            script_addr,
+            &script_data,
+            block_len,
+            on_progress,
+            "Script",
+            80.0,
+            95.0,
+        )?;
         on_progress(&FlashProgress::info("Script", 95.0, "Script OK"));
     }
 
@@ -739,7 +773,19 @@ pub fn flash_script_ccm4211(soc_path: &str, port_name: &str, script_data: &[u8],
 
     let script_addr = info.script_addr();
     on_progress(&FlashProgress::info("Script", 20.0, "Downloading script"));
-    soc_download_file(&mut port, &mut parser, &mut sn, script_addr, script_data, block_len, on_progress, "Script", 20.0, 90.0)?;
+    soc_download_file(
+        &mut port,
+        &mut parser,
+        &mut sn,
+        dl_baud,
+        script_addr,
+        script_data,
+        block_len,
+        on_progress,
+        "Script",
+        20.0,
+        90.0,
+    )?;
 
     on_progress(&FlashProgress::info("Reset", 95.0, "Resetting device"));
     soc_reset_device(&mut port)?;
