@@ -502,7 +502,9 @@ pub fn extract_models(manifest: &ResourceManifest) -> Vec<ModelInfo> {
         if category.name.eq_ignore_ascii_case("public") {
             continue;
         }
-        let Some(core) = find_child(category, "core") else { continue };
+        // CDN 子项命名规则：LuatOS_{型号名}，如 LuatOS_Air8101
+        let child_name = format!("LuatOS_{}", category.name);
+        let Some(core) = find_child(category, &child_name) else { continue };
 
         let versions: Vec<VersionEntry> = core
             .versions
@@ -564,7 +566,7 @@ mod tests {
             "resouces": [
                 {
                     "name": "Air8101",
-                    "childrens": [{"name": "core", "versions": [
+                    "childrens": [{"name": "LuatOS_Air8101", "versions": [
                         {"name": "V2001", "files": [
                             ["底层固件", "LuatOS-SoC_V2001_Air8101.soc", "abc123", 2097152, "/Air8101/V2001/LuatOS-SoC_V2001_Air8101.soc"]
                         ]}
@@ -572,7 +574,7 @@ mod tests {
                 },
                 {
                     "name": "Air780E",
-                    "childrens": [{"name": "core", "versions": [
+                    "childrens": [{"name": "LuatOS_Air780E", "versions": [
                         {"name": "V3003", "files": [
                             ["底层固件", "LuatOS-SoC_V3003_Air780E.soc", "def456", 3145728, "/Air780E/V3003/LuatOS-SoC_V3003_Air780E.soc"]
                         ]}
