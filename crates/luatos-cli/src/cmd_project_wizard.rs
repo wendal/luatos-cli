@@ -174,7 +174,7 @@ fn build_config_interactive(
             .cloned()
             .with_context(|| format!("未找到型号: {model_name}"))?
     } else {
-        let model_labels: Vec<String> = models.iter().map(|m| format!("{} ({})", m.name, m.chip)).collect();
+        let model_labels: Vec<String> = models.iter().map(|m| m.name.clone()).collect();
         let idx = FuzzySelect::with_theme(&theme)
             .with_prompt("选择模组型号（可输入关键字过滤）")
             .items(&model_labels)
@@ -185,7 +185,7 @@ fn build_config_interactive(
 
     // ── 步骤 4：选择固件版本 ──────────────────────────────
     let selected_version: Option<VersionEntry> = if model.versions.is_empty() {
-        println!("⚠  该型号暂无版本信息（离线模式），跳过固件版本选择");
+        println!("⚠  该型号暂无可用固件版本，跳过固件版本选择");
         None
     } else if let Some(ref ver_name) = prefill.firmware_version {
         model.versions.iter().find(|v| v.version_name.eq_ignore_ascii_case(ver_name)).cloned()
@@ -276,7 +276,7 @@ fn build_config_interactive(
     println!("\n─── 配置预览 ──────────────────────────────────────");
     println!("  项目名称:   {project_name}");
     println!("  目录:       {}", project_dir.display());
-    println!("  型号:       {} (chip={})", model.name, model.chip);
+    println!("  型号:       {}", model.name);
     if let Some(ref v) = selected_version {
         println!("  固件版本:   {} — {}", v.version_name, v.filename);
     } else {
@@ -343,7 +343,7 @@ fn execute_wizard(config: WizardConfig, manifest: &ResourceManifest, format: &Ou
         OutputFormat::Text => {
             println!("\n✅ 项目创建成功！");
             println!("  目录:  {}", dir.display());
-            println!("  型号:  {} ({})", config.model.name, config.model.chip);
+            println!("  型号:  {}", config.model.name);
             println!("  模板:  {}", config.template.display_name());
             if config.git_init {
                 println!("  Git:   已初始化（含 .gitignore）");
