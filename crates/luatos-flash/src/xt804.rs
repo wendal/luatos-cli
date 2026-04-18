@@ -285,6 +285,12 @@ fn xmodem_transfer(port: &mut dyn serialport::SerialPort, data: &[u8], cancel: &
     let total_blocks = data.len().div_ceil(XMODEM_DATA_SIZE_1K);
     let mut block_num: u8 = 1; // XMODEM block numbers start at 1
 
+    // 清空 RX 缓冲区中残留的 'C' 字节（设备在 XMODEM 就绪阶段持续发送）。
+    // wm_tool.c 在 wm_tool_xmodem_download 入口处也执行相同操作（wm_tool_uart_clear）。
+    // 若不清空，这些 'C' 会被误作 ACK/NAK 的响应读取，触发重传并产生连锁的脏 ACK，
+    // 导致第 3 个及后续 block 的 XMODEM 状态混乱，设备发送 CAN 终止传输。
+    serial_drain(port);
+
     let _ = port.set_timeout(Duration::from_millis(100));
 
     for (i, chunk) in data.chunks(XMODEM_DATA_SIZE_1K).enumerate() {
