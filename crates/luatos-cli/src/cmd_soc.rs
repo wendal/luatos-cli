@@ -21,6 +21,12 @@ pub fn cmd_soc_info(path: &str, format: &OutputFormat) -> anyhow::Result<()> {
                 println!("  Script Addr:{addr}");
             }
             println!("  BK CRC:     {}", info.use_bkcrc());
+            if let Some((fs_addr, fs_size)) = info.filesystem_partition() {
+                println!("  FS Addr:    0x{fs_addr:08X}  ({} KB)", fs_size / 1024);
+            }
+            if let Some((kv_addr, kv_size)) = info.kv_partition() {
+                println!("  KV Addr:    0x{kv_addr:08X}  ({} KB)", kv_size / 1024);
+            }
         }
         OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "soc.info", "ok", &info)?,
     }

@@ -170,6 +170,25 @@ mod tests {
         println!("log_br: {}", info.log_baud_rate());
     }
 
+    /// 验证更新后的 Air6208 SOC 文件包含 fs/kv 分区信息
+    #[test]
+    fn read_air6208_soc_fs_kv_partitions() {
+        let soc = r"d:\github\luatos-cli\refs\soc_files\LuatOS-SoC_V2001_Air6208_101.soc";
+        if !Path::new(soc).exists() {
+            eprintln!("Skipping: {soc} not found");
+            return;
+        }
+        let info = read_soc_info(soc).expect("read_soc_info");
+
+        let (fs_addr, fs_size) = info.filesystem_partition().expect("Air6208 SOC 应包含 filesystem 分区");
+        assert_eq!(fs_addr, 0x084B0000, "FS 分区地址");
+        assert_eq!(fs_size, 3328 * 1024, "FS 分区大小应为 3328 KB");
+
+        let (kv_addr, kv_size) = info.kv_partition().expect("Air6208 SOC 应包含 kv 分区");
+        assert_eq!(kv_addr, 0x08420000, "KV 分区地址");
+        assert_eq!(kv_size, 64 * 1024, "KV 分区大小应为 64 KB");
+    }
+
     #[test]
     fn list_air8101_files() {
         let soc = r"d:\github\luatos-cli\refs\soc_files\LuatOS-SoC_V2013_Air8101.soc";

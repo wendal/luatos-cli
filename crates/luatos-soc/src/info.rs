@@ -279,4 +279,46 @@ mod tests {
         assert_eq!(info.flash_baud_rate(), 2_000_000);
         assert_eq!(info.log_baud_rate(), 921_600);
     }
+
+    /// 验证 Air6208 SOC info.json 中 fs/kv 分区的解析（size 单位为 KB）
+    #[test]
+    fn parse_filesystem_and_kv_partition() {
+        let json = r#"{
+            "version": 1,
+            "chip": {"type": "air6208"},
+            "rom": {
+                "file": "AIR6208.fls",
+                "fs": {
+                    "filesystem": {"offset": "0x084B0000", "size": 3328, "type": "lfs"},
+                    "kv": {"offset": "0x08420000", "size": 64, "type": "fskv"}
+                }
+            },
+            "script": {"file": "script.img"},
+            "download": {}
+        }"#;
+        let info: SocInfo = serde_json::from_str(json).unwrap();
+
+        let (fs_addr, fs_size) = info.filesystem_partition().unwrap();
+        assert_eq!(fs_addr, 0x084B0000);
+        assert_eq!(fs_size, 3328 * 1024);
+
+        let (kv_addr, kv_size) = info.kv_partition().unwrap();
+        assert_eq!(kv_addr, 0x08420000);
+        assert_eq!(kv_size, 64 * 1024);
+    }
+
+    /// 无 fs 字段时，filesystem_partition 和 kv_partition 应返回 None
+    #[test]
+    fn partition_absent_when_no_fs_field() {
+        let json = r#"{
+            "version": 1,
+            "chip": {"type": "air6208"},
+            "rom": {"file": "AIR6208.fls"},
+            "script": {"file": "script.img"},
+            "download": {}
+        }"#;
+        let info: SocInfo = serde_json::from_str(json).unwrap();
+        assert!(info.filesystem_partition().is_none());
+        assert!(info.kv_partition().is_none());
+    }
 }
