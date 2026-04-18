@@ -2,7 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.7.0] - 2026-04-13
+## [1.7.0] - 2026-04-18
+
+### Features
+
+#### Air6208 分区操作完整支持 (luatos-flash)
+- **修复 XMODEM block 3 CAN 问题** — `xmodem_transfer` 入口添加 `serial_drain`，清除 `sync_bootloader` 阶段积累的 stale `'C'` 字节
+  - 根因：设备在 XMODEM 就绪阶段持续发送 `'C'`，旧实现未清空缓冲区，导致 block 3 前后发生脏 ACK 链式消耗，设备等待超时后发送 CAN 中止传输
+  - 修复后与 `wm_tool.c` 的 `uart_clear()` 行为一致
+- **`flash clear-kv`** — 清除 Air6208 KV 分区（64 KB / 65 blocks，实机验证通过）
+- **`flash clear-fs`** — 清除 Air6208 文件系统分区（3328 KB / 3329 blocks，实机验证通过）
+- **`flash flash-fs`** — 打包 LuaDB 并烧录到 Air6208 文件系统分区（3329 blocks，实机验证通过）
+
+#### SOC 信息展示增强 (luatos-soc / luatos-cli)
+- **`soc info` 新增 FS/KV 分区信息** — 文本模式输出 FS Addr / KV Addr，JSON 模式在 `data` 中携带 `filesystem` 和 `kv` 字段
 
 ### Features
 

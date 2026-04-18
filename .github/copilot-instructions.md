@@ -60,6 +60,13 @@ Flash operations report progress via `ProgressCallback = Box<dyn Fn(&FlashProgre
 2. Add `#[arg(...)]` fields for options.
 3. Handle the variant in the existing `match` block, accepting `&OutputFormat` for dual-format output.
 
+### After adding new features
+每次新增功能（新命令、新芯片支持、已有命令扩展）后，必须检查并更新以下内容：
+1. **README.md 的"功能特性"部分** — 如有面向用户的新能力，补充一行说明
+2. **README.md 的"快速开始"示例** — 如有新命令或新参数，添加用法示例
+3. **README.md 的"支持的模组"表格** — 如有已验证通过的新芯片/新分区操作，将对应格从 `—` 更新为 `✅`，并在详细展开表中补充测试条目
+4. **CHANGELOG.md** — 新增版本条目，记录变更内容
+
 ### Adding a new chip flash protocol
 1. Create a new module under `luatos-flash/src/` exposing a public flash function that takes serial port config, SOC info, and a `ProgressCallback`.
 2. Wire it in through `luatos-cli` (add subcommand variant + match arm).

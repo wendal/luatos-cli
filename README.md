@@ -65,6 +65,9 @@ luatos-cli flash script --soc firmware.soc --port COM6 --script lua/ --script li
 luatos-cli flash clear-fs --soc firmware.soc --port COM6
 luatos-cli flash clear-kv --soc firmware.soc --port COM6
 
+# 烧录文件系统（将脚本目录打包为 LuaDB 并写入 FS 分区）
+luatos-cli flash flash-fs --soc firmware.soc --port COM7 --script lua/
+
 # 闭环刷机测试 (刷机 → 抓日志 → 验证关键字 → PASS/FAIL)
 luatos-cli flash test --soc firmware.soc --port COM6 --timeout 15 --keyword "LuatOS@"
 
@@ -204,12 +207,12 @@ target/release/luatos-mcp.exe
 
 ## 支持的模组
 
-> 以下结果基于 2026-04-12 实机测试验证
+> 以下结果基于 2026-04-18 实机测试验证
 
 | 模组 | 芯片 | 刷机 | 脚本区 | 文件系统 | FSKV | 日志 | 闭环测试 |
 |------|------|:----:|:------:|:--------:|:----:|:----:|:--------:|
 | Air8101 | BK7258 (bk72xx) | ✅ | ✅ | ✅ | ✅ | 文本 | ✅ |
-| Air6208 | XT804 (air6208) | ✅ | ✅ | — | — | 二进制 | ✅ |
+| Air6208 | XT804 (air6208) | ✅ | ✅ | ✅ | ✅ | 二进制 | ✅ |
 | Air101/103 | XT804 | ✅ | ✅ | — | — | 二进制 | ✅ |
 | Air1601 | CCM4211 | ✅ | ✅ | ✅ | ✅ | 二进制 (--probe) | ✅ |
 | Air8000 | EC718HM (ec7xx) | ✅ | ✅ | — | — | 二进制 (--probe) | ✅ |
@@ -229,6 +232,9 @@ target/release/luatos-mcp.exe
 | Air8101 | ``log view`` (文本日志) | ✅ | 2000000 baud 实时查看 |
 | Air6208 | ``flash run`` (全量刷机) | ✅ | XMODEM-1K, 1974 块, 2M baud |
 | Air6208 | ``flash script`` (刷脚本区) | ✅ | LuaDB 566B, luac bitw=64 |
+| Air6208 | ``flash clear-kv`` (清 FSKV) | ✅ | 65 blocks, 2M baud |
+| Air6208 | ``flash clear-fs`` (清文件系统) | ✅ | 3329 blocks, 2M baud |
+| Air6208 | ``flash flash-fs`` (烧文件系统) | ✅ | 3329 blocks, LuaDB 打包写入 FS 分区 |
 | Air6208 | ``flash test`` (闭环测试) | ✅ | 二进制日志中部分文本匹配 |
 | Air6208 | ``log view-binary`` (二进制日志) | ✅ | SOC 二进制帧解码正确 |
 | Air1601 | ``flash run`` (全量刷机) | ✅ | ISP→SOC 协议，bootloader+core MD5 校验 |
