@@ -217,7 +217,7 @@ target/release/luatos-mcp.exe
 | Air1601 | CCM4211 | ✅ | ✅ | ✅ | ✅ | 二进制 (--probe) | ✅ |
 | Air8000 | EC718HM (ec7xx) | ✅ | ✅ | — | — | 二进制 (--probe) | ✅ |
 | Air780E系列 | EC718 (ec7xx) | ✅ | ✅ | — | — | 二进制 (--probe) | ✅ |
-| Air8101(SF32) | SF32LB58 | ✅ | ✅ | — | — | — | — |
+| Air8101(SF32) | SF32LB58 | ✅ | ✅ | — | — | 文本 | — |
 
 <details>
 <summary>详细测试结果 (点击展开)</summary>
@@ -248,8 +248,9 @@ target/release/luatos-mcp.exe
 | Air8000 | ``flash script`` (刷脚本区) | ✅ | FlexFile类型, 594B脚本, addr=0xC8E000 |
 | Air8000 | ``flash test`` (闭环测试) | ✅ | 0x7E HDLC日志解码, 921600 baud |
 | Air8000 | ``log view-binary --probe`` | ✅ | USB接口2(x.2), DTR/RTS HIGH |
-| Air8101(SF32) | ``flash run`` (全量刷机) | ✅ | sftool-lib, 手动进入 ROM BL, NAND+NOR |
+| Air8101(SF32) | ``flash run`` (全量刷机) | ✅ | sftool-lib, 手动进入 ROM BL, bootloader(44KB)+ftab(11KB)+app(579KB) |
 | Air8101(SF32) | ``flash script`` (刷脚本区) | ✅ | sftool-lib, NAND @ 0x69800000 |
+| Air8101(SF32) | ``log view`` (文本日志) | ✅ | COM12 @ 1000000 bps，LittleFS 挂载、Lua 脚本正常执行 |
 
 </details>
 
