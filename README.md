@@ -58,6 +58,12 @@ luatos-cli flash run --soc firmware.soc --port COM13
 # 全量刷机 (Air8101/SF32LB58 — CH340X 改装，自动进入/退出 ROM BL)
 luatos-cli flash run --soc firmware.soc --port COM13 --auto-reset
 
+# 全量刷机 (Air8101/SF32LB58 — stub 加载后协商 3M 波特率，加速传输)
+luatos-cli flash run --soc firmware.soc --port COM13 --baud 3000000
+
+# 仅刷脚本区 (Air8101/SF32LB58 — 协商 3M 波特率)
+luatos-cli flash script --soc firmware.soc --port COM13 --baud 3000000 --script lua/
+
 
 luatos-cli flash run --soc firmware.soc --port auto
 
@@ -227,7 +233,7 @@ target/release/luatos-mcp.exe
 | Air1601 | CCM4211 | ✅ | ✅ | ✅ | ✅ | 二进制 (--probe) | ✅ | |
 | Air8000 | EC718HM (ec7xx) | ✅ | ✅ | — | — | 二进制 (--probe) | ✅ | |
 | Air780E系列 | EC718 (ec7xx) | ✅ | ✅ | — | — | 二进制 (--probe) | ✅ | |
-| Air8101(SF32) | SF32LB58 | ✅ | ✅ | — | — | 文本 | — | `--auto-reset` 支持 CH340X 改装一键下载 |
+| Air8101(SF32) | SF32LB58 | ✅ | ✅ | — | — | 文本 | — | `--auto-reset` 支持 CH340X 改装一键下载；`--baud 3000000` 协商高速波特率（CH342K 支持）|
 
 <details>
 <summary>详细测试结果 (点击展开)</summary>
@@ -260,8 +266,10 @@ target/release/luatos-mcp.exe
 | Air8000 | ``log view-binary --probe`` | ✅ | USB接口2(x.2), DTR/RTS HIGH |
 | Air8101(SF32) | ``flash run`` (全量刷机) | ✅ | sftool-lib, 手动进入 ROM BL, bootloader(44KB)+ftab(11KB)+app(579KB) |
 | Air8101(SF32) | ``flash run --auto-reset`` (CH340X自动下载) | ✅ | CH340X 增强 DTR 改装，DTR→BOOT0, RTS#→RESET，一键刷机 |
+| Air8101(SF32) | ``flash run --baud 3000000`` (高速刷机) | ⚠️ | stub 加载后协商 3M 波特率，CH342K 硬件支持，需实机验证 |
 | Air8101(SF32) | ``flash script`` (刷脚本区) | ✅ | sftool-lib, NAND @ 0x69800000 |
 | Air8101(SF32) | ``flash script --auto-reset`` (CH340X自动下载) | ✅ | 同上，自动进入/退出 ROM BL |
+| Air8101(SF32) | ``flash script --baud 3000000`` (高速刷脚本) | ⚠️ | stub 加载后协商 3M 波特率，需实机验证 |
 | Air8101(SF32) | ``log view`` (文本日志) | ✅ | COM13 @ 1000000 bps（最新固件下载口与日志口同一串口），LittleFS 挂载、Lua 脚本正常执行 |
 
 </details>

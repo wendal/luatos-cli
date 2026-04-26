@@ -207,6 +207,9 @@ enum FlashCommands {
         /// Serial port (e.g. COM6)
         #[arg(long)]
         port: String,
+        /// 刷写波特率（stub 加载后协商，CH342K 支持最高 3000000；默认不切换）
+        #[arg(long)]
+        baud: Option<u32>,
         /// Script folders containing .lua files (can specify multiple)
         #[arg(long)]
         script: Vec<String>,
@@ -643,6 +646,7 @@ fn main() {
             FlashCommands::Script {
                 soc,
                 port,
+                baud,
                 script,
                 auto_reset,
                 dtr_boot,
@@ -661,11 +665,11 @@ fn main() {
                 } else {
                     None
                 };
-                cmd_flash::cmd_flash_partition("script", &soc, &port, Some(&script), progress_step, &cli.format, reset_config)
+                cmd_flash::cmd_flash_partition("script", &soc, &port, Some(&script), progress_step, &cli.format, reset_config, baud)
             }
-            FlashCommands::ClearFs { soc, port } => cmd_flash::cmd_flash_partition("clear-fs", &soc, &port, None, progress_step, &cli.format, None),
-            FlashCommands::FlashFs { soc, port, script } => cmd_flash::cmd_flash_partition("flash-fs", &soc, &port, Some(&script), progress_step, &cli.format, None),
-            FlashCommands::ClearKv { soc, port } => cmd_flash::cmd_flash_partition("clear-kv", &soc, &port, None, progress_step, &cli.format, None),
+            FlashCommands::ClearFs { soc, port } => cmd_flash::cmd_flash_partition("clear-fs", &soc, &port, None, progress_step, &cli.format, None, None),
+            FlashCommands::FlashFs { soc, port, script } => cmd_flash::cmd_flash_partition("flash-fs", &soc, &port, Some(&script), progress_step, &cli.format, None, None),
+            FlashCommands::ClearKv { soc, port } => cmd_flash::cmd_flash_partition("clear-kv", &soc, &port, None, progress_step, &cli.format, None, None),
             FlashCommands::ExtFlash {
                 port,
                 baud,

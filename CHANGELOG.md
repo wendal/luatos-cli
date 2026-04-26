@@ -6,6 +6,16 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
+#### SF32LB58 刷机波特率协商支持（sftool-lib 本地化 + luatos-flash + luatos-cli）
+
+将 sftool-lib 纳入 workspace 本地管理（`crates/sftool-lib/`），通过 `[patch]` 覆盖 git 依赖，支持对底层协议库独立修改。
+
+- **实现 `set_speed`** — 修复 `SF32LB58Tool::set_speed` 原为 `todo!()`，现委托 `SpeedOps`：发送 `burn_speed` 命令后切换串口波特率，并等待 `msh >` 确认
+- **`flash run --baud <N>`** — 全量刷机时，ROM BL 仍以默认 1M 连接，stub 加载完成后协商至指定波特率再传输固件
+- **`flash script --baud <N>`** — 脚本区刷写同样支持波特率协商
+- **CH342K 支持 3M** — CH342K USB 转串口最高支持 3Mbps，推荐值 `--baud 3000000`
+- **向后兼容** — 不加 `--baud` 时行为完全不变，保持 1M
+
 #### SF32LB58 (Air8101/SF32) CH340X 增强 DTR 一键下载支持（luatos-flash + luatos-cli）
 
 通过改装 CH340X 6# 脚（外接 4.7kΩ 下拉电阻）启用增强 DTR 模式，实现 SF32LB58 一键自动进入/退出 ROM BL，无需手动短接 MODE 跳线。

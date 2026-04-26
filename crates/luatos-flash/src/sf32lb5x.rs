@@ -247,6 +247,8 @@ fn make_sifli_base(port: &str, progress_sink: Arc<dyn ProgressSink>) -> SifliToo
 /// 刷机前需进入 ROM BL 模式：
 ///   - 手动操作：短接 MODE 引脚 + 按 RESET 键（reset_config = None）
 ///   - 自动操作：传入 `Some(&config)`，通过 CH340X 增强 DTR 自动控制
+///
+/// `baud` 为 stub 加载后的协商波特率（None 保持默认 1M）。CH342K 支持最高 3M。
 pub fn flash_sf32lb5x(
     soc: &str,
     port: &str,
@@ -254,6 +256,7 @@ pub fn flash_sf32lb5x(
     on_progress: ProgressCallback,
     _cancel: Arc<AtomicBool>,
     reset_config: Option<&Sf32ResetConfig>,
+    baud: Option<u32>,
 ) -> Result<()> {
     // 先读取 SOC 地址信息，用于构建地址→区域名映射
     let soc_info = luatos_soc::read_soc_info(soc).context("读取 SOC 信息失败")?;
@@ -334,7 +337,13 @@ pub fn flash_sf32lb5x(
     let base = make_sifli_base(port, sink);
     let mut tool = create_sifli_tool(ChipType::SF32LB58, base);
 
-    sink_impl.emit("connect", 8.0, "等待 ROM BL 连接...");
+    // stub 加载完成后，协商更高波特率以加速传输
+    if let Some(b) = baud {
+        sink_impl.emit("speed", 9.0, &format!("协商波特率 {b}..."));
+        tool.set_speed(b).context("波特率协商失败")?;
+    }
+
+    sink_impl.emit("connect", 10.0, "开始写入...");
     let params = WriteFlashParams {
         files: flash_files,
         verify: false,
@@ -360,6 +369,8 @@ pub fn flash_sf32lb5x(
 /// 刷机前需进入 ROM BL 模式：
 ///   - 手动操作：短接 MODE 引脚 + 按 RESET 键（reset_config = None）
 ///   - 自动操作：传入 `Some(&config)`，通过 CH340X 增强 DTR 自动控制
+///
+/// `baud` 为 stub 加载后的协商波特率（None 保持默认 1M）。CH342K 支持最高 3M。
 pub fn flash_script_sf32lb5x(
     soc: &str,
     port: &str,
@@ -367,6 +378,7 @@ pub fn flash_script_sf32lb5x(
     on_progress: ProgressCallback,
     _cancel: Arc<AtomicBool>,
     reset_config: Option<&Sf32ResetConfig>,
+    baud: Option<u32>,
 ) -> Result<()> {
     let info = luatos_soc::read_soc_info(soc).context("读取 SOC 信息失败")?;
     let script_addr = info.script_addr();
@@ -395,7 +407,13 @@ pub fn flash_script_sf32lb5x(
     let base = make_sifli_base(port, sink);
     let mut tool = create_sifli_tool(ChipType::SF32LB58, base);
 
-    sink_impl.emit("connect", 15.0, "等待 ROM BL 连接...");
+    // stub 加载完成后，协商更高波特率以加速传输
+    if let Some(b) = baud {
+        sink_impl.emit("speed", 16.0, &format!("协商波特率 {b}..."));
+        tool.set_speed(b).context("波特率协商失败")?;
+    }
+
+    sink_impl.emit("connect", 18.0, "开始写入...");
     let params = WriteFlashParams {
         files: flash_files,
         verify: false,

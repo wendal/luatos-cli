@@ -10,6 +10,7 @@ members = [
     "crates/luatos-project",
     "crates/luatos-log",
     "crates/luatos-resource",
+    "crates/sftool-lib",
     # "crates/luatos-gui/src-tauri",  # GUI 暂时禁用
 ]
 
@@ -42,3 +43,6 @@ crc32fast = "1"
 
 [profile.release]
 lto = "fat"
+
+[patch."https://github.com/wendal/sftool"]
+sftool-lib = { path = "crates/sftool-lib" }
