@@ -153,10 +153,12 @@ impl ProgressSink for SifliProgressSink {
 /// SF32LB58 自动复位配置（用于 CH340X 增强 DTR 改装硬件）。
 ///
 /// 允许自定义 DTR/RTS 电平方向和各阶段等待时长，方便调试不同硬件接法。
+///
+/// 实测有效默认值：dtr_boot=false（DTR LOW → BOOT0 拉高），rts_reset=true（RTS HIGH → CH340X RTS#=LOW → RESET）
 #[derive(Debug, Clone)]
 pub struct Sf32ResetConfig {
-    /// 进入 boot 模式时 DTR 的电平（true=HIGH → BOOT0 拉高；false=LOW → BOOT0 拉低）
-    /// 默认 true：CH340X 增强 DTR，DTR 输出 HIGH → BOOT0 = HIGH
+    /// 进入 boot 模式时 DTR 的电平（false=LOW → BOOT0 拉高；true=HIGH → BOOT0 拉低）
+    /// 默认 false：实测 CH340X 改装后 DTR 低电平时 BOOT0 有效（具体取决于外部电路接法）
     pub dtr_boot: bool,
     /// 触发复位时 RTS 的电平（true=HIGH → CH340X RTS# 拉低 → RESET 有效）
     /// 默认 true：CH340X RTS# 为倒相输出，软件 HIGH → 引脚 LOW → RESET
@@ -172,7 +174,7 @@ pub struct Sf32ResetConfig {
 impl Default for Sf32ResetConfig {
     fn default() -> Self {
         Self {
-            dtr_boot: true,
+            dtr_boot: false, // 实测：DTR LOW 时 BOOT0 有效
             rts_reset: true,
             reset_ms: 100,
             boot_wait_ms: 500,
@@ -184,7 +186,7 @@ impl Default for Sf32ResetConfig {
 /// 通过 CH340X 增强 DTR 模式将 SF32 进入 ROM BL 刷机状态。
 ///
 /// 时序（默认配置）：
-///   DTR=HIGH（BOOT0↑）→ RTS=HIGH（RTS#↓ = RESET 有效）→ reset_ms
+///   DTR=LOW（BOOT0↑）→ RTS=HIGH（RTS#↓ = RESET 有效）→ reset_ms
 ///   → RTS=LOW（RTS#↑ = RESET 释放）→ boot_wait_ms（等待 ROM BL 初始化）
 ///
 /// 函数返回后串口已释放，供 sftool-lib 接管。

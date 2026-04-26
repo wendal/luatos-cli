@@ -262,7 +262,7 @@ target/release/luatos-mcp.exe
 | Air8101(SF32) | ``flash run --auto-reset`` (CH340X自动下载) | ✅ | CH340X 增强 DTR 改装，DTR→BOOT0, RTS#→RESET，一键刷机 |
 | Air8101(SF32) | ``flash script`` (刷脚本区) | ✅ | sftool-lib, NAND @ 0x69800000 |
 | Air8101(SF32) | ``flash script --auto-reset`` (CH340X自动下载) | ✅ | 同上，自动进入/退出 ROM BL |
-| Air8101(SF32) | ``log view`` (文本日志) | ✅ | COM12 @ 1000000 bps，LittleFS 挂载、Lua 脚本正常执行 |
+| Air8101(SF32) | ``log view`` (文本日志) | ✅ | COM13 @ 1000000 bps（最新固件下载口与日志口同一串口），LittleFS 挂载、Lua 脚本正常执行 |
 
 </details>
 

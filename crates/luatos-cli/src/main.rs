@@ -186,8 +186,8 @@ enum FlashCommands {
         /// 自动控制 DTR/RTS 进入/退出 ROM BL（适用于 CH340X 增强 DTR 改装硬件，仅 SF32LB58）
         #[arg(long)]
         auto_reset: bool,
-        /// 进入 boot 时 DTR 的电平（high=BOOT0拉高，low=BOOT0拉低，默认 high）
-        #[arg(long, value_enum, default_value = "high")]
+        /// 进入 boot 时 DTR 的电平（high=BOOT0拉高，low=BOOT0拉低，默认 low）
+        #[arg(long, value_enum, default_value = "low")]
         dtr_boot: SignalLevel,
         /// 触发复位时 RTS 的电平（high=CH340X RTS#拉低=RESET有效，默认 high）
         #[arg(long, value_enum, default_value = "high")]
@@ -213,8 +213,8 @@ enum FlashCommands {
         /// 自动控制 DTR/RTS 进入/退出 ROM BL（适用于 CH340X 增强 DTR 改装硬件，仅 SF32LB58）
         #[arg(long)]
         auto_reset: bool,
-        /// 进入 boot 时 DTR 的电平（high=BOOT0拉高，low=BOOT0拉低，默认 high）
-        #[arg(long, value_enum, default_value = "high")]
+        /// 进入 boot 时 DTR 的电平（high=BOOT0拉高，low=BOOT0拉低，默认 low）
+        #[arg(long, value_enum, default_value = "low")]
         dtr_boot: SignalLevel,
         /// 触发复位时 RTS 的电平（high=CH340X RTS#拉低=RESET有效，默认 high）
         #[arg(long, value_enum, default_value = "high")]

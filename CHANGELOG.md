@@ -14,8 +14,10 @@ All notable changes to this project will be documented in this file.
 - **`flash script --auto-reset`** — 脚本分区刷写同样支持自动复位序列
 - **DTR/RTS 电平可配置** — 新增 `--dtr-boot <high|low>`、`--rts-reset <high|low>` 参数，支持调试不同极性的硬件接法
 - **时序可调** — 新增 `--reset-ms <N>`（复位脉冲宽度，默认 100ms）、`--boot-wait-ms <N>`（进入 boot 后等待时长，默认 500ms）
+- **默认值修正** — `--dtr-boot` 默认值由 `high` 修正为 `low`（实测 DTR LOW 时 BOOT0 有效，符合 CH340X 改装电路实际行为）
 - **向后兼容** — 不加 `--auto-reset` 时行为完全不变，仍需手动操作 MODE 跳线
-- **协议文档** — 更新 `docs/sf32lb58-flash-protocol.md`，补充 CH340X 改装接线图、时序表、CLI 用法
+- **下载口与日志口统一** — 最新版 LuatOS-SF32LB58 固件下载口和日志口为同一串口，刷机和查看日志无需切换端口
+- **协议文档** — 更新 `docs/sf32lb58-flash-protocol.md`，修正 DTR 极性说明，补充统一串口说明
 
 #### 刷机进度步进控制（luatos-cli）
 
