@@ -5,6 +5,9 @@
 //   2. 按下 RESET 按键后松开
 //   3. 拔掉 MODE 短接帽
 //
+// ROM BL 进入方式（CH340X 增强 DTR 自动，需改装硬件）：
+//   使用 --auto-reset 参数，通过 DTR/RTS 自动控制 BOOT0 和 RESET。
+//
 // 详细协议说明见 docs/sf32lb58-flash-protocol.md。
 
 use std::fs::File;
@@ -12,6 +15,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use sftool_lib::{
@@ -144,7 +148,43 @@ impl ProgressSink for SifliProgressSink {
     }
 }
 
-// ─── 辅助函数 ────────────────────────────────────────────────────────────────
+// ─── CH340X 增强 DTR 自动复位 ────────────────────────────────────────────────
+
+/// 通过 CH340X 增强 DTR 模式将 SF32 进入 ROM BL 刷机状态。
+///
+/// 时序：DTR=HIGH（BOOT0↑）→ RTS=HIGH（RTS#↓ = RESET 有效）→ 100ms
+///       → RTS=LOW（RTS#↑ = RESET 释放）→ 500ms（等待 ROM BL 初始化）
+///
+/// 函数返回后串口已释放，供 sftool-lib 接管。
+pub fn enter_boot_mode_dtr(port_name: &str) -> Result<()> {
+    let mut port = serialport::new(port_name, 115200)
+        .timeout(Duration::from_millis(200))
+        .open()
+        .with_context(|| format!("打开串口 {port_name} 失败（进入 ROM BL 模式）"))?;
+    port.write_data_terminal_ready(true).context("设置 DTR 失败")?;
+    port.write_request_to_send(true).context("设置 RTS 失败")?; // RTS#=LOW → RESET 拉低
+    std::thread::sleep(Duration::from_millis(100));
+    port.write_request_to_send(false).context("释放 RTS 失败")?; // RTS#=HIGH → 释放 RESET
+    std::thread::sleep(Duration::from_millis(500)); // 等待 ROM BL 初始化
+                                                    // port drop → 串口释放
+    Ok(())
+}
+
+/// 通过 CH340X 增强 DTR 模式将 SF32 恢复正常运行。
+///
+/// 时序：DTR=LOW（BOOT0↓）→ RTS=HIGH（RTS#↓ = RESET 有效）→ 100ms
+///       → RTS=LOW（RTS#↑ = RESET 释放）→ MCU 以 BOOT0=LOW 正常启动
+///
+/// 失败时静默忽略（刷机已完成，复位失败不影响结果）。
+fn exit_boot_mode_dtr(port_name: &str) {
+    if let Ok(mut port) = serialport::new(port_name, 115200).timeout(Duration::from_millis(200)).open() {
+        let _ = port.write_data_terminal_ready(false); // BOOT0 拉低
+        let _ = port.write_request_to_send(true); // RTS#=LOW → RESET 拉低
+        std::thread::sleep(Duration::from_millis(100));
+        let _ = port.write_request_to_send(false); // RTS#=HIGH → 释放 RESET
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
 
 /// 打开文件、计算 CRC32，文件指针保持在开头以供 sftool-lib 读取。
 fn make_flash_file(path: &Path, address: u32) -> Result<WriteFlashFile> {
@@ -173,8 +213,10 @@ fn make_sifli_base(port: &str, progress_sink: Arc<dyn ProgressSink>) -> SifliToo
 
 /// SF32LB58 全量刷机：bootloader（NOR）+ ftab（NOR）+ app（NAND）+ script（NAND）。
 ///
-/// 刷机前需手动进入 ROM BL 模式（短接 MODE 引脚 + 按 RESET 键）。
-pub fn flash_sf32lb5x(soc: &str, port: &str, script_dirs: Option<&[&str]>, on_progress: ProgressCallback, _cancel: Arc<AtomicBool>) -> Result<()> {
+/// 刷机前需进入 ROM BL 模式：
+///   - 手动操作：短接 MODE 引脚 + 按 RESET 键
+///   - 自动操作：传入 `auto_reset = true`，通过 CH340X 增强 DTR 自动控制
+pub fn flash_sf32lb5x(soc: &str, port: &str, script_dirs: Option<&[&str]>, on_progress: ProgressCallback, _cancel: Arc<AtomicBool>, auto_reset: bool) -> Result<()> {
     // 先读取 SOC 地址信息，用于构建地址→区域名映射
     let soc_info = luatos_soc::read_soc_info(soc).context("读取 SOC 信息失败")?;
     let address_regions: Vec<(u32, String)> = {
@@ -245,6 +287,12 @@ pub fn flash_sf32lb5x(soc: &str, port: &str, script_dirs: Option<&[&str]>, on_pr
         make_flash_file(&script_path, script_addr)?,
     ];
 
+    // 自动复位：进入 ROM BL
+    if auto_reset {
+        sink_impl.emit("reset", 7.0, "自动进入 ROM BL 模式（DTR/RTS）...");
+        enter_boot_mode_dtr(port)?;
+    }
+
     let base = make_sifli_base(port, sink);
     let mut tool = create_sifli_tool(ChipType::SF32LB58, base);
 
@@ -257,14 +305,24 @@ pub fn flash_sf32lb5x(soc: &str, port: &str, script_dirs: Option<&[&str]>, on_pr
     };
     tool.write_flash(&params).context("刷机失败")?;
     let _ = tool.soft_reset();
+    drop(tool); // 释放串口，供后续复位操作使用
+
+    // 自动复位：恢复正常运行（DTR 拉低 + 再次硬件复位）
+    if auto_reset {
+        std::thread::sleep(Duration::from_millis(300)); // 等待 soft_reset 完成
+        exit_boot_mode_dtr(port);
+    }
+
     sink_impl.emit_done("刷机完成！");
     Ok(())
 }
 
 /// SF32LB58 仅刷脚本分区（NAND @ script_addr）。
 ///
-/// 刷机前需手动进入 ROM BL 模式（短接 MODE 引脚 + 按 RESET 键）。
-pub fn flash_script_sf32lb5x(soc: &str, port: &str, script_dirs: &[&str], on_progress: ProgressCallback, _cancel: Arc<AtomicBool>) -> Result<()> {
+/// 刷机前需进入 ROM BL 模式：
+///   - 手动操作：短接 MODE 引脚 + 按 RESET 键
+///   - 自动操作：传入 `auto_reset = true`，通过 CH340X 增强 DTR 自动控制
+pub fn flash_script_sf32lb5x(soc: &str, port: &str, script_dirs: &[&str], on_progress: ProgressCallback, _cancel: Arc<AtomicBool>, auto_reset: bool) -> Result<()> {
     let info = luatos_soc::read_soc_info(soc).context("读取 SOC 信息失败")?;
     let script_addr = info.script_addr();
 
@@ -283,6 +341,12 @@ pub fn flash_script_sf32lb5x(soc: &str, port: &str, script_dirs: &[&str], on_pro
 
     let flash_files = vec![make_flash_file(&script_path, script_addr)?];
 
+    // 自动复位：进入 ROM BL
+    if auto_reset {
+        sink_impl.emit("reset", 12.0, "自动进入 ROM BL 模式（DTR/RTS）...");
+        enter_boot_mode_dtr(port)?;
+    }
+
     let base = make_sifli_base(port, sink);
     let mut tool = create_sifli_tool(ChipType::SF32LB58, base);
 
@@ -295,6 +359,14 @@ pub fn flash_script_sf32lb5x(soc: &str, port: &str, script_dirs: &[&str], on_pro
     };
     tool.write_flash(&params).context("刷脚本失败")?;
     let _ = tool.soft_reset();
+    drop(tool); // 释放串口
+
+    // 自动复位：恢复正常运行
+    if auto_reset {
+        std::thread::sleep(Duration::from_millis(300));
+        exit_boot_mode_dtr(port);
+    }
+
     sink_impl.emit_done("脚本刷写完成！");
     Ok(())
 }

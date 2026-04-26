@@ -168,6 +168,9 @@ enum FlashCommands {
         /// Script folder (optional, can specify multiple)
         #[arg(long)]
         script: Vec<String>,
+        /// 自动控制 DTR/RTS 进入/退出 ROM BL（适用于 CH340X 增强 DTR 改装硬件，仅 SF32LB58）
+        #[arg(long)]
+        auto_reset: bool,
     },
     /// Flash script partition only (most common during development)
     Script {
@@ -180,6 +183,9 @@ enum FlashCommands {
         /// Script folders containing .lua files (can specify multiple)
         #[arg(long)]
         script: Vec<String>,
+        /// 自动控制 DTR/RTS 进入/退出 ROM BL（适用于 CH340X 增强 DTR 改装硬件，仅 SF32LB58）
+        #[arg(long)]
+        auto_reset: bool,
     },
     /// Clear filesystem partition (erase to 0xFF)
     ClearFs {
@@ -570,14 +576,20 @@ fn main() {
             SocCommands::Combine { soc, bin, addr, output } => cmd_soc::cmd_soc_combine(&soc, &bin, &addr, output.as_deref(), &cli.format),
         },
         Commands::Flash { action, progress_step } => match action {
-            FlashCommands::Run { soc, port, baud, script } => {
+            FlashCommands::Run {
+                soc,
+                port,
+                baud,
+                script,
+                auto_reset,
+            } => {
                 let script_opt = if script.is_empty() { None } else { Some(script.as_slice()) };
-                cmd_flash::cmd_flash_run(&soc, &port, baud, script_opt, progress_step, &cli.format)
+                cmd_flash::cmd_flash_run(&soc, &port, baud, script_opt, progress_step, &cli.format, auto_reset)
             }
-            FlashCommands::Script { soc, port, script } => cmd_flash::cmd_flash_partition("script", &soc, &port, Some(&script), progress_step, &cli.format),
-            FlashCommands::ClearFs { soc, port } => cmd_flash::cmd_flash_partition("clear-fs", &soc, &port, None, progress_step, &cli.format),
-            FlashCommands::FlashFs { soc, port, script } => cmd_flash::cmd_flash_partition("flash-fs", &soc, &port, Some(&script), progress_step, &cli.format),
-            FlashCommands::ClearKv { soc, port } => cmd_flash::cmd_flash_partition("clear-kv", &soc, &port, None, progress_step, &cli.format),
+            FlashCommands::Script { soc, port, script, auto_reset } => cmd_flash::cmd_flash_partition("script", &soc, &port, Some(&script), progress_step, &cli.format, auto_reset),
+            FlashCommands::ClearFs { soc, port } => cmd_flash::cmd_flash_partition("clear-fs", &soc, &port, None, progress_step, &cli.format, false),
+            FlashCommands::FlashFs { soc, port, script } => cmd_flash::cmd_flash_partition("flash-fs", &soc, &port, Some(&script), progress_step, &cli.format, false),
+            FlashCommands::ClearKv { soc, port } => cmd_flash::cmd_flash_partition("clear-kv", &soc, &port, None, progress_step, &cli.format, false),
             FlashCommands::ExtFlash {
                 port,
                 baud,

@@ -6,6 +6,15 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
+#### SF32LB58 (Air8101/SF32) CH340X 增强 DTR 一键下载支持（luatos-flash + luatos-cli）
+
+通过改装 CH340X 6# 脚（外接 4.7kΩ 下拉电阻）启用增强 DTR 模式，实现 SF32LB58 一键自动进入/退出 ROM BL，无需手动短接 MODE 跳线。
+
+- **`flash run --auto-reset`** — 全量刷机前自动控制 DTR（BOOT0）/ RTS#（RESET）进入 ROM BL，刷机后自动恢复正常运行
+- **`flash script --auto-reset`** — 脚本分区刷写同样支持自动复位序列
+- **向后兼容** — 不加 `--auto-reset` 时行为完全不变，仍需手动操作 MODE 跳线
+- **协议文档** — 更新 `docs/sf32lb58-flash-protocol.md`，补充 CH340X 改装接线图、时序表、CLI 用法
+
 #### 刷机进度步进控制（luatos-cli）
 
 - **`flash --progress-step <N>`** — 控制进度输出频率，默认每 10% 输出一次，范围 1~50%

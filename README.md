@@ -52,7 +52,13 @@ luatos-cli flash run --soc firmware.soc --port COM6
 # 全量刷机 (Air1601/CCM4211)
 luatos-cli flash run --soc firmware.soc --port COM11
 
-# 全量刷机 (Air8000/EC718 — 自动检测USB端口并重启进入下载模式)
+# 全量刷机 (Air8101/SF32LB58 — 手动进入 ROM BL 模式)
+luatos-cli flash run --soc firmware.soc --port COM13
+
+# 全量刷机 (Air8101/SF32LB58 — CH340X 改装，自动进入/退出 ROM BL)
+luatos-cli flash run --soc firmware.soc --port COM13 --auto-reset
+
+
 luatos-cli flash run --soc firmware.soc --port auto
 
 # 单刷脚本区 (开发最常用)
@@ -213,15 +219,15 @@ target/release/luatos-mcp.exe
 
 > 以下结果基于 2026-04-26 实机测试验证
 
-| 模组 | 芯片 | 刷机 | 脚本区 | 文件系统 | FSKV | 日志 | 闭环测试 |
-|------|------|:----:|:------:|:--------:|:----:|:----:|:--------:|
-| Air8101 | BK7258 (bk72xx) | ✅ | ✅ | ✅ | ✅ | 文本 | ✅ |
-| Air6208 | XT804 (air6208) | ✅ | ✅ | ✅ | ✅ | 二进制 | ✅ |
-| Air101/103 | XT804 | ✅ | ✅ | — | — | 二进制 | ✅ |
-| Air1601 | CCM4211 | ✅ | ✅ | ✅ | ✅ | 二进制 (--probe) | ✅ |
-| Air8000 | EC718HM (ec7xx) | ✅ | ✅ | — | — | 二进制 (--probe) | ✅ |
-| Air780E系列 | EC718 (ec7xx) | ✅ | ✅ | — | — | 二进制 (--probe) | ✅ |
-| Air8101(SF32) | SF32LB58 | ✅ | ✅ | — | — | 文本 | — |
+| 模组 | 芯片 | 刷机 | 脚本区 | 文件系统 | FSKV | 日志 | 闭环测试 | 备注 |
+|------|------|:----:|:------:|:--------:|:----:|:----:|:--------:|------|
+| Air8101 | BK7258 (bk72xx) | ✅ | ✅ | ✅ | ✅ | 文本 | ✅ | |
+| Air6208 | XT804 (air6208) | ✅ | ✅ | ✅ | ✅ | 二进制 | ✅ | |
+| Air101/103 | XT804 | ✅ | ✅ | — | — | 二进制 | ✅ | |
+| Air1601 | CCM4211 | ✅ | ✅ | ✅ | ✅ | 二进制 (--probe) | ✅ | |
+| Air8000 | EC718HM (ec7xx) | ✅ | ✅ | — | — | 二进制 (--probe) | ✅ | |
+| Air780E系列 | EC718 (ec7xx) | ✅ | ✅ | — | — | 二进制 (--probe) | ✅ | |
+| Air8101(SF32) | SF32LB58 | ✅ | ✅ | — | — | 文本 | — | `--auto-reset` 支持 CH340X 改装一键下载 |
 
 <details>
 <summary>详细测试结果 (点击展开)</summary>
@@ -253,7 +259,9 @@ target/release/luatos-mcp.exe
 | Air8000 | ``flash test`` (闭环测试) | ✅ | 0x7E HDLC日志解码, 921600 baud |
 | Air8000 | ``log view-binary --probe`` | ✅ | USB接口2(x.2), DTR/RTS HIGH |
 | Air8101(SF32) | ``flash run`` (全量刷机) | ✅ | sftool-lib, 手动进入 ROM BL, bootloader(44KB)+ftab(11KB)+app(579KB) |
+| Air8101(SF32) | ``flash run --auto-reset`` (CH340X自动下载) | ✅ | CH340X 增强 DTR 改装，DTR→BOOT0, RTS#→RESET，一键刷机 |
 | Air8101(SF32) | ``flash script`` (刷脚本区) | ✅ | sftool-lib, NAND @ 0x69800000 |
+| Air8101(SF32) | ``flash script --auto-reset`` (CH340X自动下载) | ✅ | 同上，自动进入/退出 ROM BL |
 | Air8101(SF32) | ``log view`` (文本日志) | ✅ | COM12 @ 1000000 bps，LittleFS 挂载、Lua 脚本正常执行 |
 
 </details>
