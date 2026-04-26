@@ -152,6 +152,21 @@ enum SocCommands {
     },
 }
 
+/// DTR/RTS 引脚电平选择（用于 SF32LB58 CH340X 改装硬件调试）
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum SignalLevel {
+    /// 高电平
+    High,
+    /// 低电平
+    Low,
+}
+
+impl SignalLevel {
+    fn as_bool(self) -> bool {
+        matches!(self, SignalLevel::High)
+    }
+}
+
 #[derive(Subcommand)]
 enum FlashCommands {
     /// Full firmware flash (ROM + optional script)
@@ -171,6 +186,18 @@ enum FlashCommands {
         /// 自动控制 DTR/RTS 进入/退出 ROM BL（适用于 CH340X 增强 DTR 改装硬件，仅 SF32LB58）
         #[arg(long)]
         auto_reset: bool,
+        /// 进入 boot 时 DTR 的电平（high=BOOT0拉高，low=BOOT0拉低，默认 high）
+        #[arg(long, value_enum, default_value = "high")]
+        dtr_boot: SignalLevel,
+        /// 触发复位时 RTS 的电平（high=CH340X RTS#拉低=RESET有效，默认 high）
+        #[arg(long, value_enum, default_value = "high")]
+        rts_reset: SignalLevel,
+        /// 复位脉冲宽度（毫秒，默认 100）
+        #[arg(long, default_value = "100")]
+        reset_ms: u64,
+        /// 进入 boot 后等待 ROM BL 初始化的时长（毫秒，默认 500）
+        #[arg(long, default_value = "500")]
+        boot_wait_ms: u64,
     },
     /// Flash script partition only (most common during development)
     Script {
@@ -186,6 +213,18 @@ enum FlashCommands {
         /// 自动控制 DTR/RTS 进入/退出 ROM BL（适用于 CH340X 增强 DTR 改装硬件，仅 SF32LB58）
         #[arg(long)]
         auto_reset: bool,
+        /// 进入 boot 时 DTR 的电平（high=BOOT0拉高，low=BOOT0拉低，默认 high）
+        #[arg(long, value_enum, default_value = "high")]
+        dtr_boot: SignalLevel,
+        /// 触发复位时 RTS 的电平（high=CH340X RTS#拉低=RESET有效，默认 high）
+        #[arg(long, value_enum, default_value = "high")]
+        rts_reset: SignalLevel,
+        /// 复位脉冲宽度（毫秒，默认 100）
+        #[arg(long, default_value = "100")]
+        reset_ms: u64,
+        /// 进入 boot 后等待 ROM BL 初始化的时长（毫秒，默认 500）
+        #[arg(long, default_value = "500")]
+        boot_wait_ms: u64,
     },
     /// Clear filesystem partition (erase to 0xFF)
     ClearFs {
@@ -582,14 +621,51 @@ fn main() {
                 baud,
                 script,
                 auto_reset,
+                dtr_boot,
+                rts_reset,
+                reset_ms,
+                boot_wait_ms,
             } => {
                 let script_opt = if script.is_empty() { None } else { Some(script.as_slice()) };
-                cmd_flash::cmd_flash_run(&soc, &port, baud, script_opt, progress_step, &cli.format, auto_reset)
+                let reset_config = if auto_reset {
+                    Some(luatos_flash::sf32lb5x::Sf32ResetConfig {
+                        dtr_boot: dtr_boot.as_bool(),
+                        rts_reset: rts_reset.as_bool(),
+                        reset_ms,
+                        boot_wait_ms,
+                        ..Default::default()
+                    })
+                } else {
+                    None
+                };
+                cmd_flash::cmd_flash_run(&soc, &port, baud, script_opt, progress_step, &cli.format, reset_config)
             }
-            FlashCommands::Script { soc, port, script, auto_reset } => cmd_flash::cmd_flash_partition("script", &soc, &port, Some(&script), progress_step, &cli.format, auto_reset),
-            FlashCommands::ClearFs { soc, port } => cmd_flash::cmd_flash_partition("clear-fs", &soc, &port, None, progress_step, &cli.format, false),
-            FlashCommands::FlashFs { soc, port, script } => cmd_flash::cmd_flash_partition("flash-fs", &soc, &port, Some(&script), progress_step, &cli.format, false),
-            FlashCommands::ClearKv { soc, port } => cmd_flash::cmd_flash_partition("clear-kv", &soc, &port, None, progress_step, &cli.format, false),
+            FlashCommands::Script {
+                soc,
+                port,
+                script,
+                auto_reset,
+                dtr_boot,
+                rts_reset,
+                reset_ms,
+                boot_wait_ms,
+            } => {
+                let reset_config = if auto_reset {
+                    Some(luatos_flash::sf32lb5x::Sf32ResetConfig {
+                        dtr_boot: dtr_boot.as_bool(),
+                        rts_reset: rts_reset.as_bool(),
+                        reset_ms,
+                        boot_wait_ms,
+                        ..Default::default()
+                    })
+                } else {
+                    None
+                };
+                cmd_flash::cmd_flash_partition("script", &soc, &port, Some(&script), progress_step, &cli.format, reset_config)
+            }
+            FlashCommands::ClearFs { soc, port } => cmd_flash::cmd_flash_partition("clear-fs", &soc, &port, None, progress_step, &cli.format, None),
+            FlashCommands::FlashFs { soc, port, script } => cmd_flash::cmd_flash_partition("flash-fs", &soc, &port, Some(&script), progress_step, &cli.format, None),
+            FlashCommands::ClearKv { soc, port } => cmd_flash::cmd_flash_partition("clear-kv", &soc, &port, None, progress_step, &cli.format, None),
             FlashCommands::ExtFlash {
                 port,
                 baud,

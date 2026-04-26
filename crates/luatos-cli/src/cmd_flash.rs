@@ -23,7 +23,15 @@ fn check_script_size(image_len: usize, partition_size: usize) -> anyhow::Result<
     Ok(())
 }
 
-pub fn cmd_flash_run(soc: &str, port: &str, baud: Option<u32>, script_folders: Option<&[String]>, step: u8, format: &OutputFormat, auto_reset: bool) -> anyhow::Result<()> {
+pub fn cmd_flash_run(
+    soc: &str,
+    port: &str,
+    baud: Option<u32>,
+    script_folders: Option<&[String]>,
+    step: u8,
+    format: &OutputFormat,
+    reset_config: Option<luatos_flash::sf32lb5x::Sf32ResetConfig>,
+) -> anyhow::Result<()> {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let format_clone = *format;
 
@@ -89,7 +97,7 @@ pub fn cmd_flash_run(soc: &str, port: &str, baud: Option<u32>, script_folders: O
         }
         "sf32lb58" => {
             let folders_refs: Option<Vec<&str>> = script_folders.map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
-            luatos_flash::sf32lb5x::flash_sf32lb5x(soc, port, folders_refs.as_deref(), on_progress, cancel, auto_reset)?;
+            luatos_flash::sf32lb5x::flash_sf32lb5x(soc, port, folders_refs.as_deref(), on_progress, cancel, reset_config.as_ref())?;
             match format {
                 OutputFormat::Text => {
                     println!("SF32LB58 flash completed successfully.");
@@ -138,7 +146,15 @@ pub fn make_progress_callback(format: &OutputFormat, command: impl Into<String>,
     })
 }
 
-pub fn cmd_flash_partition(op: &str, soc: &str, port: &str, script_folders: Option<&[String]>, step: u8, format: &OutputFormat, auto_reset: bool) -> anyhow::Result<()> {
+pub fn cmd_flash_partition(
+    op: &str,
+    soc: &str,
+    port: &str,
+    script_folders: Option<&[String]>,
+    step: u8,
+    format: &OutputFormat,
+    reset_config: Option<luatos_flash::sf32lb5x::Sf32ResetConfig>,
+) -> anyhow::Result<()> {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let command = format!("flash.{op}");
     let cancel_command = command.clone();
@@ -247,7 +263,7 @@ pub fn cmd_flash_partition(op: &str, soc: &str, port: &str, script_folders: Opti
             "script" => {
                 let folders = script_folders.expect("script folder required");
                 let refs: Vec<&str> = folders.iter().map(|s| s.as_str()).collect();
-                luatos_flash::sf32lb5x::flash_script_sf32lb5x(soc, port, &refs, on_progress, cancel, auto_reset)?;
+                luatos_flash::sf32lb5x::flash_script_sf32lb5x(soc, port, &refs, on_progress, cancel, reset_config.as_ref())?;
             }
             "clear-kv" => {
                 anyhow::bail!("SF32LB58 不支持 clear-kv：LuatOS KV 存储在 LittleFS 文件系统内，请使用 clear-fs");

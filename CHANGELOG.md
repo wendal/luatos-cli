@@ -12,6 +12,8 @@ All notable changes to this project will be documented in this file.
 
 - **`flash run --auto-reset`** — 全量刷机前自动控制 DTR（BOOT0）/ RTS#（RESET）进入 ROM BL，刷机后自动恢复正常运行
 - **`flash script --auto-reset`** — 脚本分区刷写同样支持自动复位序列
+- **DTR/RTS 电平可配置** — 新增 `--dtr-boot <high|low>`、`--rts-reset <high|low>` 参数，支持调试不同极性的硬件接法
+- **时序可调** — 新增 `--reset-ms <N>`（复位脉冲宽度，默认 100ms）、`--boot-wait-ms <N>`（进入 boot 后等待时长，默认 500ms）
 - **向后兼容** — 不加 `--auto-reset` 时行为完全不变，仍需手动操作 MODE 跳线
 - **协议文档** — 更新 `docs/sf32lb58-flash-protocol.md`，补充 CH340X 改装接线图、时序表、CLI 用法
 
