@@ -2,31 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.8.0] - 2026-04-26
 
 ### Features
 
-#### SF32LB58 刷机支持（luatos-flash）
+#### SF32LB58 (Air8101) 刷机支持（luatos-flash）
 
-- **新增 `sf32lb5x` 刷机模块** — 基于 `sftool-lib`（纯 Rust 实现，Apache-2.0），跨平台无需 `ImgDownUart.exe`
-- **`flash run`** — 全量刷机（bootloader/NOR + ftab/NOR + app/NAND + script/NAND）
+基于 `sftool-lib`（纯 Rust 实现，Apache-2.0），无需 `ImgDownUart.exe`，跨平台支持。  
+**实机验证通过**（2026-04-26，Air8101/SF32LB58 开发板）。
+
+- **`flash run`** — 全量刷机：bootloader(NOR) + ftab(NOR) + app(NAND) + script(NAND)
+  - 分区：bootloader @ `0x1C020000`，ftab @ `0x1C000000`，app @ `0x68000000`，script @ `0x69800000`
+  - 实测写入：44 KB + 11 KB + 579 KB，设备成功启动
 - **`flash script`** — 仅刷脚本分区（NAND @ `0x69800000`），速度更快
-- **ROM BL 说明** — `device_enter_boot("sf32lb58")` 打印 MODE 引脚 + RESET 手动操作步骤
-- **sftool-lib 进度适配** — `SifliProgressSink` 将 sftool 结构化事件映射到 `FlashProgress` 回调
+- **ROM BL 进入提示** — `device_enter_boot("sf32lb58")` 打印 MODE 引脚 + RESET 手动操作步骤
+- **进度适配** — `SifliProgressSink` 将 sftool-lib 结构化事件映射到 `FlashProgress` 回调
 
 #### luatos-soc schema 扩展
 
-- **`SocFileEntry` 结构体** — `{ name: String, file: String }` 表示多 bin SOC 中的单个文件
+- **`SocFileEntry` 结构体** — `{ name, file }` 表示多 bin SOC 中的单个文件
 - **`SocRom.files`** — `Option<Vec<SocFileEntry>>`，支持 SF32 等多文件 SOC 格式
 - **`SocDownload.ftab_addr`** — `Option<String>`，NOR Flash 分区表地址
-- **`SocInfo::ftab_addr()`** — 解析并返回 ftab 地址
-- **`SocInfo::extra_file(name)`** — 按名称在 `rom.files` 中查找文件路径
+- **`SocInfo::ftab_addr()`** / **`SocInfo::extra_file(name)`** — 新 helper 方法
 
 #### pack_soc.py 修复（luatos-sdk-sf32lb5x）
 
-- **补充 `bl_addr`** — bootloader NOR 地址 `0x1C020000`
-- **补充 `ftab_addr`** — Flash 分区表 NOR 地址 `0x1C000000`
-- **补充 `force_br`** — 强制波特率 `1000000`（与 ROM BL 协议匹配）
+- 补充 `bl_addr = "0x1C020000"`、`ftab_addr = "0x1C000000"`、`force_br = "1000000"`
 
 ## [1.7.0] - 2026-04-18
 

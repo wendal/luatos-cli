@@ -1212,7 +1212,7 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "luatos-cli"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1242,7 +1242,7 @@ dependencies = [
 
 [[package]]
 name = "luatos-flash"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "anyhow",
  "crc32fast",
@@ -1264,7 +1264,7 @@ dependencies = [
 
 [[package]]
 name = "luatos-log"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1275,7 +1275,7 @@ dependencies = [
 
 [[package]]
 name = "luatos-luadb"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "anyhow",
  "cc",
@@ -1289,7 +1289,7 @@ dependencies = [
 
 [[package]]
 name = "luatos-mcp"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "anyhow",
  "luatos-flash",
@@ -1310,7 +1310,7 @@ dependencies = [
 
 [[package]]
 name = "luatos-project"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "anyhow",
  "log",
@@ -1324,7 +1324,7 @@ dependencies = [
 
 [[package]]
 name = "luatos-resource"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "anyhow",
  "log",
@@ -1338,7 +1338,7 @@ dependencies = [
 
 [[package]]
 name = "luatos-serial"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1349,7 +1349,7 @@ dependencies = [
 
 [[package]]
 name = "luatos-soc"
-version = "1.7.0"
+version = "1.8.0"
 dependencies = [
  "anyhow",
  "log",
