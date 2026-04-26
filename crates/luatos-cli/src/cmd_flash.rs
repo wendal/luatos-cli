@@ -87,6 +87,16 @@ pub fn cmd_flash_run(soc: &str, port: &str, baud: Option<u32>, script_folders: O
                 OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": chip }))?,
             }
         }
+        "sf32lb58" => {
+            let folders_refs: Option<Vec<&str>> = script_folders.map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
+            luatos_flash::sf32lb5x::flash_sf32lb5x(soc, port, folders_refs.as_deref(), on_progress, cancel)?;
+            match format {
+                OutputFormat::Text => {
+                    println!("SF32LB58 flash completed successfully.");
+                }
+                OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": chip }))?,
+            }
+        }
         _ => {
             anyhow::bail!("Unsupported chip type: {chip}. Supported: bk72xx, air6208, air101, air1601, ec7xx");
         }
@@ -209,6 +219,20 @@ pub fn cmd_flash_partition(op: &str, soc: &str, port: &str, script_folders: Opti
                      Use 'flash run' for full firmware flash."
                 );
             }
+        },
+        "sf32lb58" => match op {
+            "script" => {
+                let folders = script_folders.expect("script folder required");
+                let refs: Vec<&str> = folders.iter().map(|s| s.as_str()).collect();
+                luatos_flash::sf32lb5x::flash_script_sf32lb5x(soc, port, &refs, on_progress, cancel)?;
+            }
+            "clear-kv" => {
+                anyhow::bail!("SF32LB58 不支持 clear-kv：LuatOS KV 存储在 LittleFS 文件系统内，请使用 clear-fs");
+            }
+            "clear-fs" | "flash-fs" => {
+                anyhow::bail!("SF32LB58 {op} 暂不支持，请手动使用 ImgDownUart 或其他工具操作分区");
+            }
+            _ => unreachable!(),
         },
         _ => {
             anyhow::bail!("Unsupported chip type: {chip}");

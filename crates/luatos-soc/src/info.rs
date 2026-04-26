@@ -24,12 +24,21 @@ pub struct SocChip {
     pub ram: Option<serde_json::Value>,
 }
 
+/// SF32 系列多 bin 文件描述（rom.files 数组条目）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SocFileEntry {
+    pub name: String,
+    pub file: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SocRom {
     pub file: String,
     pub fs: Option<SocFs>,
     #[serde(rename = "version-bsp")]
     pub version_bsp: Option<String>,
+    /// SF32 系列多 bin 文件列表（bootloader/main/ftab/script）
+    pub files: Option<Vec<SocFileEntry>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +145,8 @@ pub struct SocDownload {
     pub fs_addr: Option<String>,
     pub fskv_addr: Option<String>,
     pub nvm_addr: Option<String>,
+    // SF32LB58 specific fields
+    pub ftab_addr: Option<String>,
     // EC718 specific fields
     pub partition_addr: Option<String>,
     pub extra_param: Option<String>,
@@ -203,9 +214,19 @@ impl SocInfo {
         }
     }
 
-    /// Get the bootloader address (CCM4211/Air1601).
+    /// Get the bootloader address (CCM4211/Air1601, SF32LB58).
     pub fn bl_addr(&self) -> Option<u32> {
         parse_addr(self.download.bl_addr.as_deref()?).map(|v| v as u32)
+    }
+
+    /// Get the ftab (flash partition table) address (SF32LB58 NOR Flash).
+    pub fn ftab_addr(&self) -> Option<u32> {
+        parse_addr(self.download.ftab_addr.as_deref()?).map(|v| v as u32)
+    }
+
+    /// Look up a file path from rom.files by name (SF32 multi-bin SOC).
+    pub fn extra_file(&self, name: &str) -> Option<&str> {
+        self.rom.files.as_ref()?.iter().find(|e| e.name == name).map(|e| e.file.as_str())
     }
 
     /// Get the application/core address.

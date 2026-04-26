@@ -5,6 +5,7 @@
 //   - xt804 / air6208 / air101 / air103 / air601 : RTS+DTR 时序进入 boot；DTR 脉冲重启
 //   - ec718 / ec7xx / air8000 / air780* : USB AT 口发送 AT+ECRST / DIAG boot 帧
 //   - ccm4211 / air1601  : ISP 时序进入 boot；DTR+RTS 双信号复位
+//   - sf32lb58           : ROM BL 需手动操作（MODE 引脚 + RESET），软件仅打印说明
 //   - 通用               : DTR 脉冲（最佳努力）
 
 use std::time::Duration;
@@ -192,6 +193,12 @@ pub fn device_reboot(port_name: Option<&str>, chip: &str) -> Result<()> {
             let port = port_name.ok_or_else(|| anyhow::anyhow!("ccm4211/air1601 需要指定 --port"))?;
             dtr_rts_pulse_reboot(port)
         }
+        "sf32lb58" => {
+            // SF32LB58 ROM BL 需要手动进入，软件无法触发；DTR 脉冲尽力而为
+            let port = port_name.ok_or_else(|| anyhow::anyhow!("sf32lb58 需要指定 --port"))?;
+            let _ = dtr_pulse_reboot(port);
+            Ok(())
+        }
         _ => {
             // bk72xx/air8101/xt804/air6208/air101/air103/air601 及通用：DTR 脉冲
             let port = port_name.ok_or_else(|| anyhow::anyhow!("请使用 --port 指定串口"))?;
@@ -219,6 +226,14 @@ pub fn device_enter_boot(port_name: Option<&str>, chip: &str) -> Result<()> {
         "ccm4211" | "air1601" => {
             let port = port_name.ok_or_else(|| anyhow::anyhow!("ccm4211/air1601 需要指定 --port"))?;
             ccm4211_enter_boot(port)
+        }
+        "sf32lb58" => {
+            // SF32LB58 ROM BL 进入需手动操作，无法通过软件触发
+            eprintln!("SF32LB58 需要手动进入 ROM BL 模式：");
+            eprintln!("  1. 短接 MODE 跳线（3-pin 排针）");
+            eprintln!("  2. 按下 RESET 按键后松开");
+            eprintln!("  3. 拔掉 MODE 短接帽");
+            Ok(())
         }
         _ => {
             // 通用：DTR+RTS 双信号脉冲

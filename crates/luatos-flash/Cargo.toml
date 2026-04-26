@@ -20,6 +20,7 @@ md5 = "0.7"
 sha2.workspace = true
 crc32fast = "1"
 sevenz-rust2.workspace = true
+sftool-lib = { git = "https://github.com/wendal/sftool", branch = "remove-probe-rs-dep" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

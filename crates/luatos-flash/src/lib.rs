@@ -11,6 +11,7 @@ pub mod bk7258;
 pub mod ccm4211;
 pub mod device;
 pub mod ec718;
+pub mod sf32lb5x;
 pub mod xt804;
 
 use serde::Serialize;

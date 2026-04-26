@@ -1,0 +1,253 @@
+// SF32LB58 刷机模块 — 基于 sftool-lib 原生 Rust 实现（Apache-2.0）。
+//
+// ROM BL 进入方式（手动操作）：
+//   1. 短接 MODE 引脚（3-pin 排针）
+//   2. 按下 RESET 按键后松开
+//   3. 拔掉 MODE 短接帽
+//
+// 详细协议说明见 docs/sf32lb58-flash-protocol.md。
+
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+use anyhow::{bail, Context, Result};
+use sftool_lib::{
+    create_sifli_tool,
+    progress::{ProgressEvent, ProgressOperation, ProgressSink, ProgressStatus, ProgressType},
+    BeforeOperation, ChipType, SifliToolBase, WriteFlashFile, WriteFlashParams,
+};
+
+use crate::{FlashProgress, ProgressCallback};
+
+// ─── 进度适配器 ──────────────────────────────────────────────────────────────
+
+/// 将 sftool-lib 的结构化进度事件适配到 LuatOS 的 FlashProgress 回调。
+struct SifliProgressSink {
+    callback: Mutex<ProgressCallback>,
+    total_bytes: AtomicU64,
+    written_bytes: AtomicU64,
+    current_addr: Mutex<u32>,
+}
+
+impl SifliProgressSink {
+    fn new(callback: ProgressCallback) -> Self {
+        Self {
+            callback: Mutex::new(callback),
+            total_bytes: AtomicU64::new(0),
+            written_bytes: AtomicU64::new(0),
+            current_addr: Mutex::new(0),
+        }
+    }
+
+    fn emit(&self, stage: &str, pct: f32, msg: &str) {
+        if let Ok(cb) = self.callback.lock() {
+            cb(&FlashProgress::info(stage, pct, msg));
+        }
+    }
+
+    fn emit_done(&self, msg: &str) {
+        if let Ok(cb) = self.callback.lock() {
+            cb(&FlashProgress::done_ok(msg));
+        }
+    }
+}
+
+impl ProgressSink for SifliProgressSink {
+    fn on_event(&self, event: ProgressEvent) {
+        match event {
+            ProgressEvent::Start { ctx, .. } => match &ctx.operation {
+                ProgressOperation::Connect => {
+                    self.emit("connect", 0.0, "正在连接 ROM BL...");
+                }
+                ProgressOperation::DownloadStub { .. } => {
+                    self.emit("stub", 5.0, "正在下载 RAM stub...");
+                }
+                ProgressOperation::CheckRedownload { address, .. } => {
+                    self.emit("check", 8.0, &format!("检查 0x{address:08X}..."));
+                }
+                ProgressOperation::WriteFlash { address, size } => {
+                    let total = if let ProgressType::Bar { total } = &ctx.progress_type { *total } else { *size };
+                    self.total_bytes.store(total, Ordering::Relaxed);
+                    self.written_bytes.store(0, Ordering::Relaxed);
+                    if let Ok(mut a) = self.current_addr.lock() {
+                        *a = *address;
+                    }
+                    self.emit("flash", 10.0, &format!("写入 0x{:08X} ({} KB)...", address, size / 1024));
+                }
+                ProgressOperation::EraseFlash { address, .. } => {
+                    self.emit("erase", 2.0, &format!("擦除 0x{address:08X}..."));
+                }
+                ProgressOperation::Verify { address, .. } => {
+                    self.emit("verify", 95.0, &format!("校验 0x{address:08X}..."));
+                }
+                _ => {}
+            },
+            ProgressEvent::Advance { delta, .. } => {
+                let written = self.written_bytes.fetch_add(delta, Ordering::Relaxed) + delta;
+                let total = self.total_bytes.load(Ordering::Relaxed);
+                let addr = self.current_addr.lock().map(|a| *a).unwrap_or(0);
+                if total > 0 {
+                    let pct = 10.0 + (written as f32 / total as f32 * 85.0).min(85.0);
+                    self.emit("flash", pct, &format!("写入 0x{:08X}: {} / {} KB", addr, written / 1024, total / 1024));
+                }
+            }
+            ProgressEvent::Finish { status, .. } => match status {
+                ProgressStatus::Success => {
+                    let addr = self.current_addr.lock().map(|a| *a).unwrap_or(0);
+                    self.emit("flash", 99.0, &format!("写入完成 0x{addr:08X}"));
+                }
+                ProgressStatus::Skipped => {
+                    let addr = self.current_addr.lock().map(|a| *a).unwrap_or(0);
+                    self.emit("flash", 99.0, &format!("跳过 0x{addr:08X}（内容相同）"));
+                }
+                ProgressStatus::Failed(msg) => {
+                    if let Ok(cb) = self.callback.lock() {
+                        cb(&FlashProgress::done_err(&msg));
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+}
+
+// ─── 辅助函数 ────────────────────────────────────────────────────────────────
+
+/// 打开文件、计算 CRC32，文件指针保持在开头以供 sftool-lib 读取。
+fn make_flash_file(path: &Path, address: u32) -> Result<WriteFlashFile> {
+    let mut file = File::open(path).with_context(|| format!("打开刷机文件失败: {}", path.display()))?;
+    let mut data = Vec::new();
+    file.read_to_end(&mut data)?;
+    let crc32 = crc32fast::hash(&data);
+    file.seek(SeekFrom::Start(0))?;
+    Ok(WriteFlashFile { address, file, crc32 })
+}
+
+/// 构建 SF32LB58 的 SifliToolBase（NAND 模式，手动进入 ROM BL）。
+fn make_sifli_base(port: &str, progress_sink: Arc<dyn ProgressSink>) -> SifliToolBase {
+    SifliToolBase::new_with_progress(
+        port.to_string(),
+        BeforeOperation::NoReset, // 用户已手动进入 ROM BL 模式
+        "nand".to_string(),
+        1_000_000,
+        3,
+        false,
+        progress_sink,
+    )
+}
+
+// ─── 公共 API ────────────────────────────────────────────────────────────────
+
+/// SF32LB58 全量刷机：bootloader（NOR）+ ftab（NOR）+ app（NAND）+ script（NAND）。
+///
+/// 刷机前需手动进入 ROM BL 模式（短接 MODE 引脚 + 按 RESET 键）。
+pub fn flash_sf32lb5x(soc: &str, port: &str, script_dirs: Option<&[&str]>, on_progress: ProgressCallback, _cancel: Arc<AtomicBool>) -> Result<()> {
+    let sink_impl = Arc::new(SifliProgressSink::new(on_progress));
+    let sink: Arc<dyn ProgressSink> = sink_impl.clone();
+
+    sink_impl.emit("unpack", 0.0, "解压 SOC 文件...");
+    let tempdir = tempfile::tempdir().context("创建临时目录失败")?;
+    let soc_dir = tempdir.path();
+    let unpacked = luatos_soc::unpack_soc(soc, soc_dir).context("解压 SOC 失败")?;
+    let info = &unpacked.info;
+
+    // 获取刷机地址
+    let bl_addr = info.bl_addr().context("SOC info.json 缺少 bl_addr（bootloader 地址），请用最新 pack_soc.py 重新打包")?;
+    let ftab_addr = info.ftab_addr().context("SOC info.json 缺少 ftab_addr（分区表地址），请用最新 pack_soc.py 重新打包")?;
+    let app_addr = info.app_addr().context("SOC info.json 缺少 app_addr")?;
+    let script_addr = info.script_addr();
+
+    // 从 rom.files 查找各 bin 文件路径（回退到默认路径）
+    let bl_rel = info.extra_file("bootloader").unwrap_or("bootloader/bootloader.bin");
+    let ftab_rel = info.extra_file("ftab").unwrap_or("ftab/ftab.bin");
+    let bl_path = soc_dir.join(bl_rel);
+    let ftab_path = soc_dir.join(ftab_rel);
+    let app_path = soc_dir.join(&info.rom.file);
+
+    // 如果提供了脚本目录，重新构建 script.bin（覆盖 SOC 中预置版本）
+    let script_path = soc_dir.join("script.bin");
+    if let Some(dirs) = script_dirs {
+        sink_impl.emit("build", 3.0, "编译 Lua 脚本...");
+        let dir_paths: Vec<std::path::PathBuf> = dirs.iter().map(std::path::PathBuf::from).collect();
+        let path_refs: Vec<&std::path::Path> = dir_paths.iter().map(|p| p.as_path()).collect();
+        let script_data = luatos_luadb::build::build_script_image(&path_refs, info.script_use_luac(), info.script_bitw(), info.use_bkcrc(), info.script_strip_debug())?;
+        std::fs::write(&script_path, &script_data).context("写入 script.bin 失败")?;
+    }
+
+    // 验证所有刷机文件存在
+    for (name, path) in [
+        ("bootloader.bin", &bl_path),
+        ("ftab.bin", &ftab_path),
+        ("main.bin", &app_path),
+        ("script.bin", &script_path),
+    ] {
+        if !path.exists() {
+            bail!("SOC 中缺少 {name}: {}", path.display());
+        }
+    }
+
+    sink_impl.emit("prepare", 5.0, "准备刷机文件...");
+    // 写入顺序：NOR（bootloader + ftab）→ NAND（app + script）
+    let flash_files = vec![
+        make_flash_file(&bl_path, bl_addr)?,
+        make_flash_file(&ftab_path, ftab_addr)?,
+        make_flash_file(&app_path, app_addr)?,
+        make_flash_file(&script_path, script_addr)?,
+    ];
+
+    let base = make_sifli_base(port, sink);
+    let mut tool = create_sifli_tool(ChipType::SF32LB58, base);
+
+    sink_impl.emit("connect", 8.0, "等待 ROM BL 连接...");
+    let params = WriteFlashParams {
+        files: flash_files,
+        verify: false,
+        no_compress: false,
+        erase_all: false,
+    };
+    tool.write_flash(&params).context("刷机失败")?;
+    let _ = tool.soft_reset();
+    sink_impl.emit_done("刷机完成！");
+    Ok(())
+}
+
+/// SF32LB58 仅刷脚本分区（NAND @ script_addr）。
+///
+/// 刷机前需手动进入 ROM BL 模式（短接 MODE 引脚 + 按 RESET 键）。
+pub fn flash_script_sf32lb5x(soc: &str, port: &str, script_dirs: &[&str], on_progress: ProgressCallback, _cancel: Arc<AtomicBool>) -> Result<()> {
+    let sink_impl = Arc::new(SifliProgressSink::new(on_progress));
+    let sink: Arc<dyn ProgressSink> = sink_impl.clone();
+
+    let info = luatos_soc::read_soc_info(soc).context("读取 SOC 信息失败")?;
+    let script_addr = info.script_addr();
+
+    sink_impl.emit("build", 0.0, "编译 Lua 脚本...");
+    let dir_paths: Vec<std::path::PathBuf> = script_dirs.iter().map(std::path::PathBuf::from).collect();
+    let path_refs: Vec<&std::path::Path> = dir_paths.iter().map(|p| p.as_path()).collect();
+    let script_data = luatos_luadb::build::build_script_image(&path_refs, info.script_use_luac(), info.script_bitw(), info.use_bkcrc(), info.script_strip_debug())?;
+
+    let tempdir = tempfile::tempdir().context("创建临时目录失败")?;
+    let script_path = tempdir.path().join("script.bin");
+    std::fs::write(&script_path, &script_data).context("写入 script.bin 失败")?;
+
+    let flash_files = vec![make_flash_file(&script_path, script_addr)?];
+
+    let base = make_sifli_base(port, sink);
+    let mut tool = create_sifli_tool(ChipType::SF32LB58, base);
+
+    sink_impl.emit("connect", 15.0, "等待 ROM BL 连接...");
+    let params = WriteFlashParams {
+        files: flash_files,
+        verify: false,
+        no_compress: false,
+        erase_all: false,
+    };
+    tool.write_flash(&params).context("刷脚本失败")?;
+    let _ = tool.soft_reset();
+    sink_impl.emit_done("脚本刷写完成！");
+    Ok(())
+}
