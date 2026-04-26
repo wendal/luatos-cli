@@ -61,6 +61,10 @@ luatos-cli flash script --soc firmware.soc --port COM6 --script lua/
 # 多目录脚本刷写
 luatos-cli flash script --soc firmware.soc --port COM6 --script lua/ --script lib/
 
+# 控制进度输出频率（默认每 10% 打印一次，可选 1~50）
+luatos-cli flash --progress-step 1 run --soc firmware.soc --port COM6    # 每 1% 输出一次
+luatos-cli flash --progress-step 25 run --soc firmware.soc --port COM6   # 每 25% 输出一次
+
 # 清除文件系统 / FSKV
 luatos-cli flash clear-fs --soc firmware.soc --port COM6
 luatos-cli flash clear-kv --soc firmware.soc --port COM6

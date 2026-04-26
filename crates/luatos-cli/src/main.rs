@@ -54,6 +54,9 @@ enum Commands {
     },
     /// Flash firmware to device
     Flash {
+        /// 进度输出步进（1-50%，默认每 10% 输出一次）
+        #[arg(long, default_value = "10", value_parser = clap::value_parser!(u8).range(1..=50))]
+        progress_step: u8,
         #[command(subcommand)]
         action: FlashCommands,
     },
@@ -566,23 +569,23 @@ fn main() {
             SocCommands::Pack { dir, output } => cmd_soc::cmd_soc_pack(&dir, &output, &cli.format),
             SocCommands::Combine { soc, bin, addr, output } => cmd_soc::cmd_soc_combine(&soc, &bin, &addr, output.as_deref(), &cli.format),
         },
-        Commands::Flash { action } => match action {
+        Commands::Flash { action, progress_step } => match action {
             FlashCommands::Run { soc, port, baud, script } => {
                 let script_opt = if script.is_empty() { None } else { Some(script.as_slice()) };
-                cmd_flash::cmd_flash_run(&soc, &port, baud, script_opt, &cli.format)
+                cmd_flash::cmd_flash_run(&soc, &port, baud, script_opt, progress_step, &cli.format)
             }
-            FlashCommands::Script { soc, port, script } => cmd_flash::cmd_flash_partition("script", &soc, &port, Some(&script), &cli.format),
-            FlashCommands::ClearFs { soc, port } => cmd_flash::cmd_flash_partition("clear-fs", &soc, &port, None, &cli.format),
-            FlashCommands::FlashFs { soc, port, script } => cmd_flash::cmd_flash_partition("flash-fs", &soc, &port, Some(&script), &cli.format),
-            FlashCommands::ClearKv { soc, port } => cmd_flash::cmd_flash_partition("clear-kv", &soc, &port, None, &cli.format),
+            FlashCommands::Script { soc, port, script } => cmd_flash::cmd_flash_partition("script", &soc, &port, Some(&script), progress_step, &cli.format),
+            FlashCommands::ClearFs { soc, port } => cmd_flash::cmd_flash_partition("clear-fs", &soc, &port, None, progress_step, &cli.format),
+            FlashCommands::FlashFs { soc, port, script } => cmd_flash::cmd_flash_partition("flash-fs", &soc, &port, Some(&script), progress_step, &cli.format),
+            FlashCommands::ClearKv { soc, port } => cmd_flash::cmd_flash_partition("clear-kv", &soc, &port, None, progress_step, &cli.format),
             FlashCommands::ExtFlash {
                 port,
                 baud,
                 partition,
                 file,
                 ext_prog,
-            } => cmd_flash::cmd_flash_ext_flash(&port, baud, &partition, &file, ext_prog, &cli.format),
-            FlashCommands::ExtErase { port, baud, partition, ext_prog } => cmd_flash::cmd_flash_ext_erase(&port, baud, &partition, ext_prog, &cli.format),
+            } => cmd_flash::cmd_flash_ext_flash(&port, baud, &partition, &file, ext_prog, progress_step, &cli.format),
+            FlashCommands::ExtErase { port, baud, partition, ext_prog } => cmd_flash::cmd_flash_ext_erase(&port, baud, &partition, ext_prog, progress_step, &cli.format),
             FlashCommands::Test {
                 soc,
                 port,
@@ -592,7 +595,7 @@ fn main() {
                 keyword,
             } => {
                 let script_opt = if script.is_empty() { None } else { Some(script.as_slice()) };
-                cmd_flash::cmd_flash_test(&soc, &port, baud, script_opt, timeout, &keyword, &cli.format)
+                cmd_flash::cmd_flash_test(&soc, &port, baud, script_opt, timeout, &keyword, progress_step, &cli.format)
             }
         },
         Commands::Log { action } => match action {

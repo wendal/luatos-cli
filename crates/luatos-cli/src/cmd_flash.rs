@@ -23,7 +23,7 @@ fn check_script_size(image_len: usize, partition_size: usize) -> anyhow::Result<
     Ok(())
 }
 
-pub fn cmd_flash_run(soc: &str, port: &str, baud: Option<u32>, script_folders: Option<&[String]>, format: &OutputFormat) -> anyhow::Result<()> {
+pub fn cmd_flash_run(soc: &str, port: &str, baud: Option<u32>, script_folders: Option<&[String]>, step: u8, format: &OutputFormat) -> anyhow::Result<()> {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let format_clone = *format;
 
@@ -36,7 +36,7 @@ pub fn cmd_flash_run(soc: &str, port: &str, baud: Option<u32>, script_folders: O
         cancel_clone.store(true, std::sync::atomic::Ordering::Relaxed);
     })?;
 
-    let on_progress = make_progress_callback(format, "flash.run");
+    let on_progress = make_progress_callback(format, "flash.run", step);
 
     // Detect chip type from SOC info.json
     let info = luatos_soc::read_soc_info(soc)?;
@@ -105,17 +105,40 @@ pub fn cmd_flash_run(soc: &str, port: &str, baud: Option<u32>, script_folders: O
     Ok(())
 }
 
-pub fn make_progress_callback(format: &OutputFormat, command: impl Into<String>) -> luatos_flash::ProgressCallback {
+pub fn make_progress_callback(format: &OutputFormat, command: impl Into<String>, step: u8) -> luatos_flash::ProgressCallback {
     let format_clone = *format;
     let command = command.into();
+    let step = step as f32;
+    // 追踪上次输出的 (percent, stage)，用于步进过滤
+    let state = std::sync::Mutex::new((f32::NEG_INFINITY, String::new()));
     Box::new(move |p| {
-        if let Err(e) = event::emit_flash_progress(&format_clone, &command, p) {
-            log::warn!("输出进度事件失败: {e}");
+        let should_emit = {
+            let mut s = state.lock().unwrap();
+            let (last_pct, last_stage) = &mut *s;
+            if p.done || p.error {
+                // 完成/错误事件始终输出
+                true
+            } else {
+                let stage_changed = p.stage != *last_stage;
+                let pct_step_reached = (p.percent - *last_pct).abs() >= step;
+                if stage_changed || pct_step_reached {
+                    *last_pct = p.percent;
+                    *last_stage = p.stage.clone();
+                    true
+                } else {
+                    false
+                }
+            }
+        };
+        if should_emit {
+            if let Err(e) = event::emit_flash_progress(&format_clone, &command, p) {
+                log::warn!("输出进度事件失败: {e}");
+            }
         }
     })
 }
 
-pub fn cmd_flash_partition(op: &str, soc: &str, port: &str, script_folders: Option<&[String]>, format: &OutputFormat) -> anyhow::Result<()> {
+pub fn cmd_flash_partition(op: &str, soc: &str, port: &str, script_folders: Option<&[String]>, step: u8, format: &OutputFormat) -> anyhow::Result<()> {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let command = format!("flash.{op}");
     let cancel_command = command.clone();
@@ -129,7 +152,7 @@ pub fn cmd_flash_partition(op: &str, soc: &str, port: &str, script_folders: Opti
         cancel_clone.store(true, std::sync::atomic::Ordering::Relaxed);
     });
 
-    let on_progress = make_progress_callback(format, command.clone());
+    let on_progress = make_progress_callback(format, command.clone(), step);
 
     // Detect chip type
     let info = luatos_soc::read_soc_info(soc)?;
@@ -282,7 +305,7 @@ fn collect_script_files(folders: &[String]) -> anyhow::Result<Vec<String>> {
 }
 
 /// Air6201 外置 SPI Flash 烧录
-pub fn cmd_flash_ext_flash(port: &str, baud: u32, partition: &str, file: &str, ext_prog: bool, format: &OutputFormat) -> anyhow::Result<()> {
+pub fn cmd_flash_ext_flash(port: &str, baud: u32, partition: &str, file: &str, ext_prog: bool, step: u8, format: &OutputFormat) -> anyhow::Result<()> {
     let data = std::fs::read(file).with_context(|| format!("无法读取文件: {file}"))?;
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let format_clone = *format;
@@ -295,7 +318,7 @@ pub fn cmd_flash_ext_flash(port: &str, baud: u32, partition: &str, file: &str, e
         cancel_clone.store(true, std::sync::atomic::Ordering::Relaxed);
     });
 
-    let on_progress = make_progress_callback(format, "flash.ext-flash");
+    let on_progress = make_progress_callback(format, "flash.ext-flash", step);
     luatos_flash::air6201::flash_partition(port, baud, partition, &data, ext_prog, &on_progress, cancel)?;
 
     match format {
@@ -306,7 +329,7 @@ pub fn cmd_flash_ext_flash(port: &str, baud: u32, partition: &str, file: &str, e
 }
 
 /// Air6201 外置 SPI Flash 分区擦除
-pub fn cmd_flash_ext_erase(port: &str, baud: u32, partition: &str, ext_prog: bool, format: &OutputFormat) -> anyhow::Result<()> {
+pub fn cmd_flash_ext_erase(port: &str, baud: u32, partition: &str, ext_prog: bool, step: u8, format: &OutputFormat) -> anyhow::Result<()> {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let format_clone = *format;
 
@@ -318,7 +341,7 @@ pub fn cmd_flash_ext_erase(port: &str, baud: u32, partition: &str, ext_prog: boo
         cancel_clone.store(true, std::sync::atomic::Ordering::Relaxed);
     });
 
-    let on_progress = make_progress_callback(format, "flash.ext-erase");
+    let on_progress = make_progress_callback(format, "flash.ext-erase", step);
     luatos_flash::air6201::erase_ext_partition(port, baud, partition, ext_prog, &on_progress, cancel)?;
 
     match format {
@@ -336,6 +359,7 @@ pub fn cmd_flash_test(
     script_folders: Option<&[String]>,
     timeout_secs: u64,
     keywords: &[String],
+    step: u8,
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
     use std::sync::{
@@ -354,7 +378,7 @@ pub fn cmd_flash_test(
         cancel_clone.store(true, Ordering::Relaxed);
     });
 
-    let on_progress = make_progress_callback(format, "flash.test");
+    let on_progress = make_progress_callback(format, "flash.test", step);
 
     // Step 1: Flash the firmware
     let info = luatos_soc::read_soc_info(soc)?;
@@ -373,17 +397,17 @@ pub fn cmd_flash_test(
             luatos_flash::bk7258::flash_bk7258(soc, folders_refs.as_deref(), port, baud, cancel.clone(), on_progress)?
         }
         "air6208" | "air101" | "air103" | "air601" => {
-            let on_progress2 = make_progress_callback(format, "flash.test");
+            let on_progress2 = make_progress_callback(format, "flash.test", step);
             luatos_flash::xt804::flash_xt804(soc, port, on_progress2, cancel.clone())?;
             Vec::new() // XT804 does not return boot lines from flash
         }
         "air1601" | "ccm4211" => {
-            let on_progress2 = make_progress_callback(format, "flash.test");
+            let on_progress2 = make_progress_callback(format, "flash.test", step);
             luatos_flash::ccm4211::flash_ccm4211(soc, port, &on_progress2, cancel.clone())?;
             Vec::new()
         }
         "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" => {
-            let on_progress2 = make_progress_callback(format, "flash.test");
+            let on_progress2 = make_progress_callback(format, "flash.test", step);
             let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress2)?;
             luatos_flash::ec718::flash_ec718(soc, &boot_port, &on_progress2, cancel.clone())?;
             Vec::new()

@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Features
+
+#### 刷机进度步进控制（luatos-cli）
+
+- **`flash --progress-step <N>`** — 控制进度输出频率，默认每 10% 输出一次，范围 1~50%
+  - 新阶段切换（Connecting → Erasing → Writing 等）始终输出，无论步进值
+  - `done` / `error` 事件始终输出
+  - 适用于所有 flash 子命令：`run`、`script`、`clear-fs`、`flash-fs`、`clear-kv`、`ext-flash`、`ext-erase`、`test`
+
 ## [1.8.0] - 2026-04-26
 
 ### Features
