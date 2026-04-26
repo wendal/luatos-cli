@@ -532,7 +532,7 @@ fn soc_download_file(
         cur_addr += send_len as u32;
 
         let pct = pct_start + (done as f32 / total_len as f32) * (pct_end - pct_start);
-        on_progress(&FlashProgress::info(stage_name, pct, &format!("{done}/{total_len} bytes")));
+        on_progress(&FlashProgress::info(stage_name, pct, &format!("{done}/{total_len} bytes")).with_region(&stage_name.to_lowercase()));
     }
 
     // CMD 0x0D: MD5 verify (10s timeout for large files)
@@ -653,7 +653,7 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
     // Download bootloader
     if bl_path.exists() {
         let bl_data = std::fs::read(&bl_path).context("Failed to read bootloader.bin")?;
-        on_progress(&FlashProgress::info("Bootloader", 20.0, "Downloading bootloader"));
+        on_progress(&FlashProgress::info("Bootloader", 20.0, "Downloading bootloader").with_region("bootloader"));
         soc_download_file(
             &mut port,
             &mut parser,
@@ -667,7 +667,7 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
             20.0,
             40.0,
         )?;
-        on_progress(&FlashProgress::info("Bootloader", 40.0, "Bootloader OK"));
+        on_progress(&FlashProgress::info("Bootloader", 40.0, "Bootloader OK").with_region("bootloader"));
     }
 
     if cancel.load(Ordering::Relaxed) {
@@ -677,9 +677,9 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
     // Download core firmware
     if core_path.exists() {
         let core_data = std::fs::read(&core_path).with_context(|| format!("Failed to read {}", info.rom.file))?;
-        on_progress(&FlashProgress::info("Core", 40.0, "Downloading core firmware"));
+        on_progress(&FlashProgress::info("Core", 40.0, "Downloading core firmware").with_region("core"));
         soc_download_file(&mut port, &mut parser, &mut sn, dl_baud, core_addr, &core_data, block_len, on_progress, "Core", 40.0, 80.0)?;
-        on_progress(&FlashProgress::info("Core", 80.0, "Core firmware OK"));
+        on_progress(&FlashProgress::info("Core", 80.0, "Core firmware OK").with_region("core"));
     }
 
     if cancel.load(Ordering::Relaxed) {
@@ -689,7 +689,7 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
     // Download script (if exists)
     if script_path.exists() {
         let script_data = std::fs::read(&script_path).context("Failed to read script")?;
-        on_progress(&FlashProgress::info("Script", 80.0, "Downloading script"));
+        on_progress(&FlashProgress::info("Script", 80.0, "Downloading script").with_region("script"));
         soc_download_file(
             &mut port,
             &mut parser,
@@ -703,7 +703,7 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
             80.0,
             95.0,
         )?;
-        on_progress(&FlashProgress::info("Script", 95.0, "Script OK"));
+        on_progress(&FlashProgress::info("Script", 95.0, "Script OK").with_region("script"));
     }
 
     // Reset device
@@ -772,7 +772,7 @@ pub fn flash_script_ccm4211(soc_path: &str, port_name: &str, script_data: &[u8],
     }
 
     let script_addr = info.script_addr();
-    on_progress(&FlashProgress::info("Script", 20.0, "Downloading script"));
+    on_progress(&FlashProgress::info("Script", 20.0, "Downloading script").with_region("script"));
     soc_download_file(
         &mut port,
         &mut parser,

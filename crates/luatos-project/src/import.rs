@@ -89,14 +89,13 @@ pub fn parse_luatools_ini(content: &str) -> Result<LuatoolsProject> {
                 Some("info") => {
                     info.insert(key, value);
                 }
-                Some(_) => {
+                Some(_)
                     // In a script section: key is the filename, value is usually empty
-                    if !key.is_empty() {
+                    if !key.is_empty() => {
                         current_files.push(key);
                     }
-                }
-                None => {
-                    // Before any section — ignore
+                Some(_) | None => {
+                    // Before any section or empty key — ignore
                 }
             }
         }

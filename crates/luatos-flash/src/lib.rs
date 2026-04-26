@@ -20,6 +20,8 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize)]
 pub struct FlashProgress {
     pub stage: String,
+    /// 正在操作的分区/区域名称，如 "ap"、"cp"、"bootloader"、"script"、"fs"、"kv"。
+    pub region: Option<String>,
     pub percent: f32,
     pub message: String,
     pub done: bool,
@@ -30,6 +32,7 @@ impl FlashProgress {
     pub fn info(stage: &str, pct: f32, msg: &str) -> Self {
         Self {
             stage: stage.into(),
+            region: None,
             percent: pct,
             message: msg.into(),
             done: false,
@@ -37,9 +40,16 @@ impl FlashProgress {
         }
     }
 
+    /// 设置正在操作的分区区域名称（构建器方法）。
+    pub fn with_region(mut self, region: &str) -> Self {
+        self.region = Some(region.into());
+        self
+    }
+
     pub fn done_ok(msg: &str) -> Self {
         Self {
             stage: "Done".into(),
+            region: None,
             percent: 100.0,
             message: msg.into(),
             done: true,
@@ -50,6 +60,7 @@ impl FlashProgress {
     pub fn done_err(msg: &str) -> Self {
         Self {
             stage: "Error".into(),
+            region: None,
             percent: 0.0,
             message: msg.into(),
             done: true,

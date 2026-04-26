@@ -413,14 +413,14 @@ fn flash_data(
             return false;
         }
         let pct = pct_start + (erase_end - pct_start) * (done as f32 / total as f32);
-        on_progress(&FlashProgress::info("Erasing", pct, &format!("{label} – erasing {done}/{total}")));
+        on_progress(&FlashProgress::info("Erasing", pct, &format!("{label} – erasing {done}/{total}")).with_region(label));
         true
     })?;
 
     if cancel.load(Ordering::Relaxed) {
         bail!("Flash cancelled by user");
     }
-    on_progress(&FlashProgress::info("Writing", erase_end, &format!("{label} – erase done, writing…")));
+    on_progress(&FlashProgress::info("Writing", erase_end, &format!("{label} – erase done, writing…")).with_region(label));
 
     // Write phase
     for i in 0..num_sectors {
@@ -454,7 +454,7 @@ fn flash_data(
         }
 
         let pct = erase_end + (pct_end - erase_end) * ((i + 1) as f32 / num_sectors as f32);
-        on_progress(&FlashProgress::info("Writing", pct, &format!("{label} – writing {}/{num_sectors}", i + 1)));
+        on_progress(&FlashProgress::info("Writing", pct, &format!("{label} – writing {}/{num_sectors}", i + 1)).with_region(label));
     }
     Ok(())
 }

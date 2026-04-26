@@ -5,6 +5,7 @@
 //!
 //! CLI 和 GUI 共用此 crate 的 API，各自负责渲染/格式化输出。
 
+use std::cmp::Reverse;
 use std::io::{Read, Write};
 use std::path::Path;
 
@@ -296,7 +297,7 @@ pub fn download_files(module: &str, files: &[FileEntry], mirrors: &[Mirror], out
 
     // 按速度降序排列镜像
     let mut sorted_mirrors = mirrors.to_vec();
-    sorted_mirrors.sort_by(|a, b| b.speed.unwrap_or(0).cmp(&a.speed.unwrap_or(0)));
+    sorted_mirrors.sort_by_key(|b| Reverse(b.speed.unwrap_or(0)));
 
     for (idx, entry) in files.iter().enumerate() {
         let dest = output_dir.join(&entry.path);

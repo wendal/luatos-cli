@@ -915,7 +915,7 @@ fn burn_img(
         remain -= data_len;
 
         let pct = base_pct + pct_range * (data_offset as f32 / total as f32);
-        on_progress(&FlashProgress::info("Flashing", pct, &format!("{}: {}/{}KB", tag, data_offset / 1024, total / 1024)));
+        on_progress(&FlashProgress::info("Flashing", pct, &format!("{}: {}/{}KB", tag, data_offset / 1024, total / 1024)).with_region(tag));
     }
 
     let ret = lpc_get_burn_status(port)?;
@@ -1378,11 +1378,14 @@ pub fn flash_ec718(soc_path: &str, port: &str, on_progress: &ProgressCallback, c
         let base_pct = 15.0 + (idx as f32 / num_entries as f32) * 80.0;
         let pct_range = 80.0 / num_entries as f32;
 
-        on_progress(&FlashProgress::info(
-            "Flashing",
-            base_pct,
-            &format!("[{}/{}] {} ({}KB @ 0x{:X})", idx + 1, num_entries, entry.name, data.len() / 1024, burn_addr,),
-        ));
+        on_progress(
+            &FlashProgress::info(
+                "Flashing",
+                base_pct,
+                &format!("[{}/{}] {} ({}KB @ 0x{:X})", idx + 1, num_entries, entry.name, data.len() / 1024, burn_addr,),
+            )
+            .with_region(&entry.name),
+        );
 
         burn_img(serial.as_mut(), data, img_type, stor_type, burn_addr, &entry.name, on_progress, base_pct, pct_range)?;
     }

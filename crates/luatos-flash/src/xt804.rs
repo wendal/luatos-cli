@@ -281,7 +281,7 @@ fn erase_flash(port: &mut dyn serialport::SerialPort, cancel: &AtomicBool) -> Re
 /// Transfer firmware image using XMODEM-1K protocol.
 ///
 /// Frame format: [STX, blk#, 255-blk#, 1024_data, CRC16_HI, CRC16_LO]
-fn xmodem_transfer(port: &mut dyn serialport::SerialPort, data: &[u8], cancel: &AtomicBool, on_progress: &ProgressCallback) -> Result<()> {
+fn xmodem_transfer(port: &mut dyn serialport::SerialPort, data: &[u8], cancel: &AtomicBool, on_progress: &ProgressCallback, region: &str) -> Result<()> {
     let total_blocks = data.len().div_ceil(XMODEM_DATA_SIZE_1K);
     let mut block_num: u8 = 1; // XMODEM block numbers start at 1
 
@@ -358,7 +358,7 @@ fn xmodem_transfer(port: &mut dyn serialport::SerialPort, data: &[u8], cancel: &
 
         // Report progress
         let pct = ((i + 1) as f32 / total_blocks as f32) * 100.0;
-        on_progress(&FlashProgress::info("Write", pct, &format!("Block {}/{total_blocks}", i + 1)));
+        on_progress(&FlashProgress::info("Write", pct, &format!("Block {}/{total_blocks}", i + 1)).with_region(region));
     }
 
     // Send EOT to end transfer.
@@ -510,9 +510,9 @@ pub fn flash_xt804(soc_path: &str, port: &str, on_progress: ProgressCallback, ca
     on_progress(&FlashProgress::info("Erase", 40.0, "Flash erased"));
 
     // Transfer via XMODEM
-    on_progress(&FlashProgress::info("Write", 40.0, "Starting XMODEM transfer..."));
-    xmodem_transfer(serial.as_mut(), &image_data, &cancel, &on_progress)?;
-    on_progress(&FlashProgress::info("Write", 95.0, "Transfer complete"));
+    on_progress(&FlashProgress::info("Write", 40.0, "Starting XMODEM transfer...").with_region("firmware"));
+    xmodem_transfer(serial.as_mut(), &image_data, &cancel, &on_progress, "firmware")?;
+    on_progress(&FlashProgress::info("Write", 95.0, "Transfer complete").with_region("firmware"));
 
     // Reset device
     on_progress(&FlashProgress::info("Reset", 98.0, "Resetting device..."));
@@ -616,8 +616,8 @@ pub fn flash_script_only(soc_path: &str, port: &str, script_files: &[String], on
     // No erase for script-only flash — only the target partition is overwritten.
     // The XT804 bootloader uses the image header's run_img_addr to determine
     // where to write, so erasing the entire flash is unnecessary and destructive.
-    on_progress(&FlashProgress::info("Write", 40.0, "Writing script..."));
-    xmodem_transfer(serial.as_mut(), &final_data, &cancel, &on_progress)?;
+    on_progress(&FlashProgress::info("Write", 40.0, "Writing script...").with_region("script"));
+    xmodem_transfer(serial.as_mut(), &final_data, &cancel, &on_progress, "script")?;
 
     // Reset
     reset_device(serial.as_mut())?;
@@ -656,8 +656,8 @@ pub fn flash_filesystem(soc_path: &str, port: &str, fs_dirs: &[String], on_progr
     // Connect to bootloader
     let mut serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
 
-    on_progress(&FlashProgress::info("Write", 40.0, "Writing filesystem..."));
-    xmodem_transfer(serial.as_mut(), &final_data, &cancel, &on_progress)?;
+    on_progress(&FlashProgress::info("Write", 40.0, "Writing filesystem...").with_region("fs"));
+    xmodem_transfer(serial.as_mut(), &final_data, &cancel, &on_progress, "fs")?;
 
     reset_device(serial.as_mut())?;
     on_progress(&FlashProgress::done_ok("Filesystem flash completed"));
@@ -679,8 +679,8 @@ pub fn clear_filesystem(soc_path: &str, port: &str, on_progress: ProgressCallbac
 
     let mut serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
 
-    on_progress(&FlashProgress::info("Write", 40.0, "Clearing filesystem..."));
-    xmodem_transfer(serial.as_mut(), &final_data, &cancel, &on_progress)?;
+    on_progress(&FlashProgress::info("Write", 40.0, "Clearing filesystem...").with_region("fs"));
+    xmodem_transfer(serial.as_mut(), &final_data, &cancel, &on_progress, "fs")?;
 
     reset_device(serial.as_mut())?;
     on_progress(&FlashProgress::done_ok("Filesystem cleared"));
@@ -700,8 +700,8 @@ pub fn clear_kv(soc_path: &str, port: &str, on_progress: ProgressCallback, cance
 
     let mut serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
 
-    on_progress(&FlashProgress::info("Write", 40.0, "Clearing KV store..."));
-    xmodem_transfer(serial.as_mut(), &final_data, &cancel, &on_progress)?;
+    on_progress(&FlashProgress::info("Write", 40.0, "Clearing KV store...").with_region("kv"));
+    xmodem_transfer(serial.as_mut(), &final_data, &cancel, &on_progress, "kv")?;
 
     reset_device(serial.as_mut())?;
     on_progress(&FlashProgress::done_ok("KV store cleared"));

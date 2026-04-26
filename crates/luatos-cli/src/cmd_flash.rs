@@ -352,6 +352,7 @@ pub fn cmd_flash_ext_erase(port: &str, baud: u32, partition: &str, ext_prog: boo
 }
 
 /// Closed-loop flash test: flash firmware → capture boot log → check keywords → PASS/FAIL.
+#[allow(clippy::too_many_arguments)]
 pub fn cmd_flash_test(
     soc: &str,
     port: &str,

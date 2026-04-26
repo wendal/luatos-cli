@@ -289,7 +289,8 @@ fn erase_partition(port: &mut dyn SerialPort, part: &Partition) -> Result<()> {
 }
 
 /// 写入数据到指定地址
-fn write_data(port: &mut dyn SerialPort, addr: u32, data: &[u8], cancel: &AtomicBool, on_progress: &ProgressCallback, pct_start: f32, pct_end: f32) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+fn write_data(port: &mut dyn SerialPort, addr: u32, data: &[u8], cancel: &AtomicBool, on_progress: &ProgressCallback, pct_start: f32, pct_end: f32, region: &str) -> Result<()> {
     let total = data.len();
     let mut offset = 0;
 
@@ -331,11 +332,7 @@ fn write_data(port: &mut dyn SerialPort, addr: u32, data: &[u8], cancel: &Atomic
 
         offset += chunk_len;
         let pct = pct_start + (pct_end - pct_start) * (offset as f32 / total as f32);
-        on_progress(&FlashProgress::info(
-            "Writing",
-            pct,
-            &format!("写入中 {}/{} ({:.0}%)", offset, total, offset as f64 / total as f64 * 100.0),
-        ));
+        on_progress(&FlashProgress::info("Writing", pct, &format!("写入中 {}/{} ({:.0}%)", offset, total, offset as f64 / total as f64 * 100.0)).with_region(region));
 
         // 块间延时，等待 Flash 页编程完成
         if offset < total {
@@ -347,7 +344,8 @@ fn write_data(port: &mut dyn SerialPort, addr: u32, data: &[u8], cancel: &Atomic
 }
 
 /// 校验数据
-fn verify_data(port: &mut dyn SerialPort, addr: u32, data: &[u8], cancel: &AtomicBool, on_progress: &ProgressCallback, pct_start: f32, pct_end: f32) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+fn verify_data(port: &mut dyn SerialPort, addr: u32, data: &[u8], cancel: &AtomicBool, on_progress: &ProgressCallback, pct_start: f32, pct_end: f32, region: &str) -> Result<()> {
     let total = data.len();
     let mut offset = 0;
 
@@ -400,11 +398,7 @@ fn verify_data(port: &mut dyn SerialPort, addr: u32, data: &[u8], cancel: &Atomi
 
         offset += chunk_len;
         let pct = pct_start + (pct_end - pct_start) * (offset as f32 / total as f32);
-        on_progress(&FlashProgress::info(
-            "Verify",
-            pct,
-            &format!("校验中 {}/{} ({:.0}%)", offset, total, offset as f64 / total as f64 * 100.0),
-        ));
+        on_progress(&FlashProgress::info("Verify", pct, &format!("校验中 {}/{} ({:.0}%)", offset, total, offset as f64 / total as f64 * 100.0)).with_region(region));
     }
 
     Ok(())
@@ -487,7 +481,7 @@ pub fn flash_partition(
 
     // 写入数据
     on_progress(&FlashProgress::info("Write", 25.0, &format!("写入 {} 字节…", data.len())));
-    write_data(port.as_mut(), part.addr, data, &cancel, on_progress, 25.0, 75.0)?;
+    write_data(port.as_mut(), part.addr, data, &cancel, on_progress, 25.0, 75.0, part.name)?;
     on_progress(&FlashProgress::info("Write", 75.0, "写入完成"));
 
     if cancel.load(Ordering::Relaxed) {
@@ -496,7 +490,7 @@ pub fn flash_partition(
 
     // 校验
     on_progress(&FlashProgress::info("Verify", 75.0, "校验数据…"));
-    verify_data(port.as_mut(), part.addr, data, &cancel, on_progress, 75.0, 95.0)?;
+    verify_data(port.as_mut(), part.addr, data, &cancel, on_progress, 75.0, 95.0, part.name)?;
     on_progress(&FlashProgress::info("Verify", 95.0, "校验通过"));
 
     // 复位设备

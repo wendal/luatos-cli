@@ -30,15 +30,20 @@ struct SifliProgressSink {
     total_bytes: AtomicU64,
     written_bytes: AtomicU64,
     current_addr: Mutex<u32>,
+    /// 当前正在写入的分区名称（地址→区域名映射，在写入开始时更新）。
+    current_region: Mutex<Option<String>>,
+    address_regions: Vec<(u32, String)>,
 }
 
 impl SifliProgressSink {
-    fn new(callback: ProgressCallback) -> Self {
+    fn new(callback: ProgressCallback, address_regions: Vec<(u32, String)>) -> Self {
         Self {
             callback: Mutex::new(callback),
             total_bytes: AtomicU64::new(0),
             written_bytes: AtomicU64::new(0),
             current_addr: Mutex::new(0),
+            current_region: Mutex::new(None),
+            address_regions,
         }
     }
 
@@ -75,7 +80,16 @@ impl ProgressSink for SifliProgressSink {
                     if let Ok(mut a) = self.current_addr.lock() {
                         *a = *address;
                     }
-                    self.emit("flash", 10.0, &format!("写入 0x{:08X} ({} KB)...", address, size / 1024));
+                    // 根据地址查找区域名称
+                    let region = self.address_regions.iter().find(|(a, _)| *a == *address).map(|(_, name)| name.clone());
+                    if let Ok(mut r) = self.current_region.lock() {
+                        *r = region.clone();
+                    }
+                    let progress = FlashProgress::info("flash", 10.0, &format!("写入 0x{:08X} ({} KB)...", address, size / 1024));
+                    let progress = if let Some(r) = region { progress.with_region(&r) } else { progress };
+                    if let Ok(cb) = self.callback.lock() {
+                        cb(&progress);
+                    }
                 }
                 ProgressOperation::EraseFlash { address, .. } => {
                     self.emit("erase", 2.0, &format!("擦除 0x{address:08X}..."));
@@ -89,19 +103,34 @@ impl ProgressSink for SifliProgressSink {
                 let written = self.written_bytes.fetch_add(delta, Ordering::Relaxed) + delta;
                 let total = self.total_bytes.load(Ordering::Relaxed);
                 let addr = self.current_addr.lock().map(|a| *a).unwrap_or(0);
+                let region = self.current_region.lock().ok().and_then(|r| r.clone());
                 if total > 0 {
                     let pct = 10.0 + (written as f32 / total as f32 * 85.0).min(85.0);
-                    self.emit("flash", pct, &format!("写入 0x{:08X}: {} / {} KB", addr, written / 1024, total / 1024));
+                    let progress = FlashProgress::info("flash", pct, &format!("写入 0x{:08X}: {} / {} KB", addr, written / 1024, total / 1024));
+                    let progress = if let Some(r) = region { progress.with_region(&r) } else { progress };
+                    if let Ok(cb) = self.callback.lock() {
+                        cb(&progress);
+                    }
                 }
             }
             ProgressEvent::Finish { status, .. } => match status {
                 ProgressStatus::Success => {
                     let addr = self.current_addr.lock().map(|a| *a).unwrap_or(0);
-                    self.emit("flash", 99.0, &format!("写入完成 0x{addr:08X}"));
+                    let region = self.current_region.lock().ok().and_then(|r| r.clone());
+                    let progress = FlashProgress::info("flash", 99.0, &format!("写入完成 0x{addr:08X}"));
+                    let progress = if let Some(r) = region { progress.with_region(&r) } else { progress };
+                    if let Ok(cb) = self.callback.lock() {
+                        cb(&progress);
+                    }
                 }
                 ProgressStatus::Skipped => {
                     let addr = self.current_addr.lock().map(|a| *a).unwrap_or(0);
-                    self.emit("flash", 99.0, &format!("跳过 0x{addr:08X}（内容相同）"));
+                    let region = self.current_region.lock().ok().and_then(|r| r.clone());
+                    let progress = FlashProgress::info("flash", 99.0, &format!("跳过 0x{addr:08X}（内容相同）"));
+                    let progress = if let Some(r) = region { progress.with_region(&r) } else { progress };
+                    if let Ok(cb) = self.callback.lock() {
+                        cb(&progress);
+                    }
                 }
                 ProgressStatus::Failed(msg) => {
                     if let Ok(cb) = self.callback.lock() {
@@ -146,7 +175,24 @@ fn make_sifli_base(port: &str, progress_sink: Arc<dyn ProgressSink>) -> SifliToo
 ///
 /// 刷机前需手动进入 ROM BL 模式（短接 MODE 引脚 + 按 RESET 键）。
 pub fn flash_sf32lb5x(soc: &str, port: &str, script_dirs: Option<&[&str]>, on_progress: ProgressCallback, _cancel: Arc<AtomicBool>) -> Result<()> {
-    let sink_impl = Arc::new(SifliProgressSink::new(on_progress));
+    // 先读取 SOC 地址信息，用于构建地址→区域名映射
+    let soc_info = luatos_soc::read_soc_info(soc).context("读取 SOC 信息失败")?;
+    let address_regions: Vec<(u32, String)> = {
+        let mut v = Vec::new();
+        if let Some(a) = soc_info.bl_addr() {
+            v.push((a, "bootloader".to_string()));
+        }
+        if let Some(a) = soc_info.ftab_addr() {
+            v.push((a, "ftab".to_string()));
+        }
+        if let Some(a) = soc_info.app_addr() {
+            v.push((a, "app".to_string()));
+        }
+        v.push((soc_info.script_addr(), "script".to_string()));
+        v
+    };
+
+    let sink_impl = Arc::new(SifliProgressSink::new(on_progress, address_regions));
     let sink: Arc<dyn ProgressSink> = sink_impl.clone();
 
     sink_impl.emit("unpack", 0.0, "解压 SOC 文件...");
@@ -219,11 +265,12 @@ pub fn flash_sf32lb5x(soc: &str, port: &str, script_dirs: Option<&[&str]>, on_pr
 ///
 /// 刷机前需手动进入 ROM BL 模式（短接 MODE 引脚 + 按 RESET 键）。
 pub fn flash_script_sf32lb5x(soc: &str, port: &str, script_dirs: &[&str], on_progress: ProgressCallback, _cancel: Arc<AtomicBool>) -> Result<()> {
-    let sink_impl = Arc::new(SifliProgressSink::new(on_progress));
-    let sink: Arc<dyn ProgressSink> = sink_impl.clone();
-
     let info = luatos_soc::read_soc_info(soc).context("读取 SOC 信息失败")?;
     let script_addr = info.script_addr();
+
+    let address_regions = vec![(script_addr, "script".to_string())];
+    let sink_impl = Arc::new(SifliProgressSink::new(on_progress, address_regions));
+    let sink: Arc<dyn ProgressSink> = sink_impl.clone();
 
     sink_impl.emit("build", 0.0, "编译 Lua 脚本...");
     let dir_paths: Vec<std::path::PathBuf> = script_dirs.iter().map(std::path::PathBuf::from).collect();

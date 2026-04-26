@@ -35,7 +35,11 @@ pub fn emit_flash_progress(format: &OutputFormat, command: &str, progress: &luat
     match format {
         OutputFormat::Text => {
             if progress.percent >= 0.0 {
-                eprintln!("[{:>6.1}%] {} — {}", progress.percent, progress.stage, progress.message);
+                if let Some(region) = &progress.region {
+                    eprintln!("[{:>6.1}%] {} [{}] — {}", progress.percent, progress.stage, region, progress.message);
+                } else {
+                    eprintln!("[{:>6.1}%] {} — {}", progress.percent, progress.stage, progress.message);
+                }
             } else {
                 eprintln!("          {}", progress.message);
             }
@@ -131,6 +135,7 @@ fn progress_event(command: &str, progress: &luatos_flash::FlashProgress) -> Valu
         "type": "progress",
         "command": command,
         "stage": progress.stage,
+        "region": progress.region,
         "percent": progress.percent,
         "message": progress.message,
         "done": progress.done,
