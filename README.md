@@ -233,7 +233,7 @@ target/release/luatos-mcp.exe
 | Air1601 | CCM4211 | ✅ | ✅ | ✅ | ✅ | 二进制 (--probe) | ✅ | |
 | Air8000 | EC718HM (ec7xx) | ✅ | ✅ | — | — | 二进制 (--probe) | ✅ | |
 | Air780E系列 | EC718 (ec7xx) | ✅ | ✅ | — | — | 二进制 (--probe) | ✅ | |
-| Air8101(SF32) | SF32LB58 | ✅ | ✅ | — | — | 文本 | — | `--auto-reset` 支持 CH340X 改装一键下载；`--baud 3000000` 协商高速波特率（CH342K 支持）|
+| Air8101(SF32) | SF32LB58 | ✅ | ✅ | — | ✅ | 文本 | — | `--auto-reset` 支持 CH340X 改装一键下载；`--baud 3000000` 协商高速波特率（CH342K 支持）|
 
 <details>
 <summary>详细测试结果 (点击展开)</summary>
@@ -270,6 +270,7 @@ target/release/luatos-mcp.exe
 | Air8101(SF32) | ``flash script`` (刷脚本区) | ✅ | sftool-lib, NAND @ 0x69800000 |
 | Air8101(SF32) | ``flash script --auto-reset`` (CH340X自动下载) | ✅ | 同上，自动进入/退出 ROM BL |
 | Air8101(SF32) | ``flash script --baud 3000000`` (高速刷脚本) | ⚠️ | stub 加载后协商 3M 波特率，需实机验证 |
+| Air8101(SF32) | ``flash clear-kv`` (清 FSKV/KV 区) | ⚠️ | sftool-lib erase_region，需 info.json 含 kv 分区信息，需实机验证 |
 | Air8101(SF32) | ``log view`` (文本日志) | ✅ | COM13 @ 1000000 bps（最新固件下载口与日志口同一串口），LittleFS 挂载、Lua 脚本正常执行 |
 
 </details>

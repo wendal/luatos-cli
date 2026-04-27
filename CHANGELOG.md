@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
+#### SF32LB58 `flash clear-kv` KV 区清除支持（luatos-flash + luatos-cli）
+
+- **`flash clear-kv --soc <path> --port <port>`** — 支持 SF32LB58 通过 sftool-lib `erase_region` 擦除 KV（Key-Value）分区，需 info.json 中 `rom.fs.kv` 包含 `offset` 和 `size` 字段
+- **`--auto-reset` / `--baud` 支持** — `clear-kv` 子命令新增 `--baud`、`--auto-reset`、`--dtr-boot`、`--rts-reset`、`--reset-ms`、`--boot-wait-ms` 参数，与 `flash script` 命令完全对齐，支持 CH340X 改装硬件一键进入/退出 ROM BL
+- **进度上报** — 清除过程全程上报进度（prepare → erase → done），支持 JSON 格式输出
+
 #### SF32LB58 刷机波特率协商支持（sftool-lib 本地化 + luatos-flash + luatos-cli）
 
 将 sftool-lib 纳入 workspace 本地管理（`crates/sftool-lib/`），通过 `[patch]` 覆盖 git 依赖，支持对底层协议库独立修改。

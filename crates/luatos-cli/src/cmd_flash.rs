@@ -267,7 +267,7 @@ pub fn cmd_flash_partition(
                 luatos_flash::sf32lb5x::flash_script_sf32lb5x(soc, port, &refs, on_progress, cancel, reset_config.as_ref(), baud)?;
             }
             "clear-kv" => {
-                anyhow::bail!("SF32LB58 不支持 clear-kv：LuatOS KV 存储在 LittleFS 文件系统内，请使用 clear-fs");
+                luatos_flash::sf32lb5x::clear_kv_sf32lb5x(soc, port, on_progress, cancel, reset_config.as_ref(), baud)?;
             }
             "clear-fs" | "flash-fs" => {
                 anyhow::bail!("SF32LB58 {op} 暂不支持，请手动使用 ImgDownUart 或其他工具操作分区");

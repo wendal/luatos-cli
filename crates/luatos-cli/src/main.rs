@@ -258,6 +258,24 @@ enum FlashCommands {
         /// Serial port (e.g. COM6)
         #[arg(long)]
         port: String,
+        /// 刷写波特率（stub 加载后协商，仅 SF32LB58；默认不切换）
+        #[arg(long)]
+        baud: Option<u32>,
+        /// 自动控制 DTR/RTS 进入/退出 ROM BL（适用于 CH340X 增强 DTR 改装硬件，仅 SF32LB58）
+        #[arg(long)]
+        auto_reset: bool,
+        /// 进入 boot 时 DTR 的电平（high=BOOT0拉高，low=BOOT0拉低，默认 low）
+        #[arg(long, value_enum, default_value = "low")]
+        dtr_boot: SignalLevel,
+        /// 触发复位时 RTS 的电平（high=CH340X RTS#拉低=RESET有效，默认 high）
+        #[arg(long, value_enum, default_value = "high")]
+        rts_reset: SignalLevel,
+        /// 复位脉冲宽度（毫秒，默认 100）
+        #[arg(long, default_value = "100")]
+        reset_ms: u64,
+        /// 进入 boot 后等待 ROM BL 初始化的时长（毫秒，默认 500）
+        #[arg(long, default_value = "500")]
+        boot_wait_ms: u64,
     },
     /// Air6201 external SPI flash programming (write to script/fskv/lfs partition)
     ExtFlash {
@@ -669,7 +687,29 @@ fn main() {
             }
             FlashCommands::ClearFs { soc, port } => cmd_flash::cmd_flash_partition("clear-fs", &soc, &port, None, progress_step, &cli.format, None, None),
             FlashCommands::FlashFs { soc, port, script } => cmd_flash::cmd_flash_partition("flash-fs", &soc, &port, Some(&script), progress_step, &cli.format, None, None),
-            FlashCommands::ClearKv { soc, port } => cmd_flash::cmd_flash_partition("clear-kv", &soc, &port, None, progress_step, &cli.format, None, None),
+            FlashCommands::ClearKv {
+                soc,
+                port,
+                baud,
+                auto_reset,
+                dtr_boot,
+                rts_reset,
+                reset_ms,
+                boot_wait_ms,
+            } => {
+                let reset_config = if auto_reset {
+                    Some(luatos_flash::sf32lb5x::Sf32ResetConfig {
+                        dtr_boot: dtr_boot.as_bool(),
+                        rts_reset: rts_reset.as_bool(),
+                        reset_ms,
+                        boot_wait_ms,
+                        ..Default::default()
+                    })
+                } else {
+                    None
+                };
+                cmd_flash::cmd_flash_partition("clear-kv", &soc, &port, None, progress_step, &cli.format, reset_config, baud)
+            }
             FlashCommands::ExtFlash {
                 port,
                 baud,

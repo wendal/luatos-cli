@@ -21,7 +21,7 @@ use anyhow::{bail, Context, Result};
 use sftool_lib::{
     create_sifli_tool,
     progress::{ProgressEvent, ProgressOperation, ProgressSink, ProgressStatus, ProgressType},
-    BeforeOperation, ChipType, SifliToolBase, WriteFlashFile, WriteFlashParams,
+    BeforeOperation, ChipType, EraseRegionFile, EraseRegionParams, SifliToolBase, WriteFlashFile, WriteFlashParams,
 };
 
 use crate::{FlashProgress, ProgressCallback};
@@ -431,5 +431,62 @@ pub fn flash_script_sf32lb5x(
     }
 
     sink_impl.emit_done("脚本刷写完成！");
+    Ok(())
+}
+
+/// SF32LB58 清除 KV（Key-Value）分区。
+///
+/// 从 info.json 的 `rom.fs.kv` 字段读取分区地址和大小，通过 sftool-lib 的
+/// `erase_region` 擦除对应 Flash 区域（整块填充 0xFF）。
+///
+/// 刷机前需进入 ROM BL 模式：
+///   - 手动操作：短接 MODE 引脚 + 按 RESET 键（reset_config = None）
+///   - 自动操作：传入 `Some(&config)`，通过 CH340X 增强 DTR 自动控制
+pub fn clear_kv_sf32lb5x(soc: &str, port: &str, on_progress: ProgressCallback, _cancel: Arc<AtomicBool>, reset_config: Option<&Sf32ResetConfig>, baud: Option<u32>) -> Result<()> {
+    let info = luatos_soc::read_soc_info(soc).context("读取 SOC 信息失败")?;
+    let (kv_addr, kv_size) = info
+        .kv_partition()
+        .context("SOC info.json 中未找到 KV 分区（rom.fs.kv.offset / rom.fs.kv.size），请确认 info.json 已添加 kv 区信息")?;
+
+    let address_regions = vec![(kv_addr, "kv".to_string())];
+    let sink_impl = Arc::new(SifliProgressSink::new(on_progress, address_regions));
+    let sink: Arc<dyn ProgressSink> = sink_impl.clone();
+
+    sink_impl.emit("prepare", 0.0, &format!("KV 分区：0x{kv_addr:08X}，{} KB", kv_size / 1024));
+
+    // 自动复位：进入 ROM BL
+    if let Some(cfg) = reset_config {
+        sink_impl.emit("reset", 5.0, "自动进入 ROM BL 模式（DTR/RTS）...");
+        enter_boot_mode_dtr(port, cfg)?;
+    }
+
+    let base = make_sifli_base(port, sink);
+    let mut tool = create_sifli_tool(ChipType::SF32LB58, base);
+
+    // stub 加载完成后，协商更高波特率
+    if let Some(b) = baud {
+        sink_impl.emit("speed", 15.0, &format!("协商波特率 {b}..."));
+        tool.set_speed(b).context("波特率协商失败")?;
+    }
+
+    sink_impl.emit("erase", 20.0, &format!("擦除 KV 分区 0x{kv_addr:08X}（{} KB）...", kv_size / 1024));
+    let params = EraseRegionParams {
+        regions: vec![EraseRegionFile {
+            address: kv_addr,
+            size: kv_size as u32,
+        }],
+    };
+    tool.erase_region(&params).context("KV 分区擦除失败")?;
+
+    let _ = tool.soft_reset();
+    drop(tool);
+
+    // 自动复位：恢复正常运行
+    if let Some(cfg) = reset_config {
+        std::thread::sleep(Duration::from_millis(300));
+        exit_boot_mode_dtr(port, cfg);
+    }
+
+    sink_impl.emit_done("KV 区已清除！");
     Ok(())
 }
