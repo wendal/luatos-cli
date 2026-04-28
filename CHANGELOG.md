@@ -4,7 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### Features
+### Bug Fixes
+
+#### Air1601 (CCM4211) SOC 下载数据块参数修复，兼容 V1013 固件 6M 波特率
+
+- **修复 `soc_download_file` 数据块参数** — 移除基于波特率的条件判断（旧代码在 >2M 时使用 400 字节子块/100ms 超时），统一改为 3KB/100ms，与 Python 参考实现 (`efe356f`) 保持一致
+- **兼容 V1013 SOC 文件** — V1013 新版 Air1601 固件下载波特率从 2M 升级至 6M（`download.force_br=6000000`），KV 分区地址迁移至 `0x101F0000`；SOC 文件内置 `ramrun.bin`（优先使用），以上均由程序自动识别，无需额外配置
+- **不影响 V1009** — V1009 SOC 文件（2M 波特率）行为与修复前完全一致
 
 #### SF32LB58 `flash clear-kv` KV 区清除支持（luatos-flash + luatos-cli）
 

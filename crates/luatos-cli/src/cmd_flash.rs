@@ -146,6 +146,7 @@ pub fn make_progress_callback(format: &OutputFormat, command: impl Into<String>,
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn cmd_flash_partition(
     op: &str,
     soc: &str,

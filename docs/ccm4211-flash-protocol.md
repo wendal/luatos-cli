@@ -13,8 +13,10 @@ Air1601 模组使用 CCM4211 芯片，刷机流程分为三个阶段：
 | 阶段 | 波特率 | 校验位 | 数据位 | 停止位 |
 |------|--------|--------|--------|--------|
 | ISP  | 115200 → 1000000 | EVEN | 8 | 1 |
-| SOC 下载 | 2000000 | NONE | 8 | 1 |
-| SOC 日志 | 2000000 | NONE | 8 | 1 |
+| SOC 下载 | 2000000 (V1009) / **6000000 (V1013+)** | NONE | 8 | 1 |
+| SOC 日志 | 2000000 (V1009) / **6000000 (V1013+)** | NONE | 8 | 1 |
+
+> **注：** SOC 下载/日志波特率从 `info.json` 的 `download.force_br` / `user.log_br` 字段读取，程序自动适配。
 
 ## SOC 文件结构
 
@@ -27,26 +29,38 @@ LuatOS-SoC_V1009_Air1601.soc (7z archive)
 ├── luatos.bin         # LuatOS 核心固件 (~995KB)
 ├── *.elf              # 调试用 ELF 文件
 └── *.map              # 调试用 MAP 文件
+
+LuatOS-SoC_V1013_Air1601.soc (7z archive)
+├── info.json          # 芯片信息、地址配置（force_br=6000000）
+├── bootloader.bin     # Bootloader 固件 (~41KB)
+├── luatos.bin         # LuatOS 核心固件 (~3.1MB)
+├── ramrun.bin         # 随固件附带的 ramrun（V1013 新增）
+├── *.elf              # 调试用 ELF 文件
+└── *.map              # 调试用 MAP 文件
 ```
 
-### info.json 关键字段
+> **ramrun 选择逻辑：** 若 SOC 包内含有 `ramrun.bin`（如 V1013），优先使用；否则使用同目录下的 `ccm4211_ramrun_default.bin` 作为后备。
+
+### info.json 关键字段（V1013 示例）
 
 ```json
 {
   "chip": { "type": "air1601" },
-  "rom": {
-    "file": "luatos.bin",
-    "addr": "0x14000000",
-    "fs": { "addr": "0x14d00000" }
+  "download": {
+    "bl_addr":     "10000000",
+    "app_addr":    "14000000",
+    "script_addr": "14700000",
+    "fs_addr":     "14d00000",
+    "nvm_addr":    "101f0000",
+    "force_br":    "6000000"
   },
-  "bl": { "addr": "0x10000000" },
-  "script": { "addr": "0x14700000", "bitw": 64 },
-  "download": { "baud_rate": 2000000 },
-  "log": { "baud_rate": 2000000 }
+  "user": { "log_br": "6000000" }
 }
 ```
 
 ### 地址映射
+
+#### V1009（2M 波特率）
 
 | 分区 | 起始地址 | 说明 |
 |------|----------|------|
@@ -55,6 +69,16 @@ LuatOS-SoC_V1009_Air1601.soc (7z archive)
 | Script | 0x14700000 | Lua 脚本（LuaDB 格式）|
 | Filesystem | 0x14D00000 | 文件系统分区 |
 | NVM/FSKV | 0x14FF0000 | 键值存储分区 |
+
+#### V1013（6M 波特率）
+
+| 分区 | 起始地址 | 说明 |
+|------|----------|------|
+| Bootloader | 0x10000000 | 启动加载程序 |
+| Core (App) | 0x14000000 | LuatOS 核心固件 |
+| Script | 0x14700000 | Lua 脚本（LuaDB 格式）|
+| Filesystem | 0x14D00000 | 文件系统分区 |
+| NVM/FSKV | **0x101F0000** | 键值存储分区（地址变更）|
 
 ---
 
@@ -212,7 +236,7 @@ fn crc16(data: &[u8]) -> u16 {
 | 0x08 | FLASH_ERASE_BLOCK | 分区地址 | 空 | 确认 | 10s |
 | 0x09 | GET_DOWNLOAD_INFO | 0 | 空 | block_len (u32 LE) | 500ms |
 | 0x0A | SET_CODE_DATA_START | Flash 地址 | orig_len (u32 LE) | 确认 | 1s |
-| 0x0B | SET_CODE_DATA | 0 | 数据块 (≤3KB) | 确认 | 500ms |
+| 0x0B | SET_CODE_DATA | 0 | 数据块 (≤3KB) | 确认 | 100ms |
 | 0x0C | SET_CODE_END | 0 | is_lzma (u8, 0=无压缩) | 确认 | 3s |
 | 0x0D | CHECK_CODE | 起始地址 | total_len (u32 LE) | MD5 (16B) | 10s |
 | 0x0F | FORCE_RESET | 0 | 空 | 无 | — |
@@ -238,7 +262,7 @@ ISP 阶段:
   5. 执行 ramrun (CMD 0x81)
 
 SOC 阶段:
-  6. 切换到 2Mbps, PARITY_NONE
+  6. 切换到 2Mbps/6Mbps (由 info.json force_br 决定), PARITY_NONE
   7. 查询 block_len (CMD 0x09) → 返回 262144 (0x40000)
   8. 对每个文件 (bootloader, core, script):
      a. CMD 0x0A: 设置下载起始地址 + 原始数据长度
