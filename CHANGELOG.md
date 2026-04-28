@@ -49,7 +49,7 @@ All notable changes to this project will be documented in this file.
 #### SF32LB58 (Air8101) 刷机支持（luatos-flash）
 
 基于 `sftool-lib`（纯 Rust 实现，Apache-2.0），无需 `ImgDownUart.exe`，跨平台支持。  
-**实机验证通过**（2026-04-26，Air8101/SF32LB58 开发板）。
+**实机验证通过**（2026-04-26，SF32LB58 开发板）。
 
 - **`flash run`** — 全量刷机：bootloader(NOR) + ftab(NOR) + app(NAND) + script(NAND)
   - 分区：bootloader @ `0x1C020000`，ftab @ `0x1C000000`，app @ `0x68000000`，script @ `0x69800000`
