@@ -16,6 +16,7 @@ LuatOS 命令行工具集 — 刷机、日志、项目管理、固件合成。�
 - **SOC 管理** — 解包/打包/查看 SOC 固件包 (ZIP + 7z，纯 Rust)
 - **固件资源** — 从 LuatOS CDN 列出/下载固件资源 (SHA256 校验)
 - **AI 友好** — 全局 `--format json|jsonl` 输出，兼容工具链集成与流式事件消费
+- **量产刷机 GUI** — `luatos-mfgui` 独立图形界面工具，支持全芯片型号，一键刷机，适合生产线使用
 
 ## 安装
 
@@ -33,6 +34,16 @@ cargo build --release -p luatos-cli
 cargo build --release -p luatos-mcp
 
 # 二进制位于 target/release/luatos-mcp.exe
+```
+
+如需量产刷机 GUI：
+
+```bash
+# 构建量产刷机图形界面工具
+cargo build --release -p luatos-mfgui
+
+# 二进制位于 target/release/luatos-mfgui.exe
+# 双击运行即可，无需任何命令行参数
 ```
 
 ## 快速开始

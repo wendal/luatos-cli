@@ -1,8 +1,6 @@
 use super::SF32LB52Tool;
 use crate::Result;
-use crate::common::sifli_debug::{
-    ChipFrameFormat, RecvError, START_WORD, SifliUartCommand, SifliUartResponse, common_debug,
-};
+use crate::common::sifli_debug::{ChipFrameFormat, RecvError, START_WORD, SifliUartCommand, SifliUartResponse, common_debug};
 use std::io::{BufReader, Read};
 
 // Re-export for the module
@@ -22,9 +20,7 @@ impl ChipFrameFormat for SF32LB52FrameFormat {
         header
     }
 
-    fn parse_frame_header(
-        reader: &mut BufReader<Box<dyn Read + Send>>,
-    ) -> std::result::Result<usize, RecvError> {
+    fn parse_frame_header(reader: &mut BufReader<Box<dyn Read + Send>>) -> std::result::Result<usize, RecvError> {
         // 读取长度 (2字节) - SF32LB52 uses little-endian
         let mut length_bytes = [0; 2];
         if let Err(e) = reader.read_exact(&mut length_bytes) {
@@ -105,9 +101,7 @@ impl crate::common::sifli_debug::SifliDebug for SF32LB52Tool {
     }
 
     fn debug_write_core_reg(&mut self, reg: u16, data: u32) -> Result<()> {
-        common_debug::debug_write_core_reg_impl::<SF32LB52Tool, SF32LB52FrameFormat>(
-            self, reg, data,
-        )
+        common_debug::debug_write_core_reg_impl::<SF32LB52Tool, SF32LB52FrameFormat>(self, reg, data)
     }
 
     fn debug_step(&mut self) -> Result<()> {

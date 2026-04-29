@@ -128,15 +128,13 @@ pub fn find_stub_config_offset(data: &[u8]) -> Option<usize> {
 
 /// Locate and parse a driver config block from raw bytes.
 pub fn read_stub_config_from_bytes(data: &[u8]) -> Result<StubConfig> {
-    let offset = find_stub_config_offset(data)
-        .ok_or_else(|| Error::invalid_input("driver config block not found"))?;
+    let offset = find_stub_config_offset(data).ok_or_else(|| Error::invalid_input("driver config block not found"))?;
     read_stub_config_at(data, offset)
 }
 
 /// Locate and overwrite a driver config block inside a byte buffer.
 pub fn write_stub_config_to_bytes(data: &mut [u8], config: &StubConfig) -> Result<()> {
-    let offset = find_stub_config_offset(data)
-        .ok_or_else(|| Error::invalid_input("driver config block not found"))?;
+    let offset = find_stub_config_offset(data).ok_or_else(|| Error::invalid_input("driver config block not found"))?;
     write_stub_config_at(data, offset, config)
 }
 
@@ -181,10 +179,8 @@ pub fn read_stub_config_at(data: &[u8], offset: usize) -> Result<StubConfig> {
         return Err(Error::invalid_input("buffer too small for driver config"));
     }
 
-    let pin_mask = read_u16_le(data, offset + 8)
-        .ok_or_else(|| Error::invalid_input("failed to read pin_mask from driver config"))?;
-    let flash_mask = read_u16_le(data, offset + 10)
-        .ok_or_else(|| Error::invalid_input("failed to read flash_mask from driver config"))?;
+    let pin_mask = read_u16_le(data, offset + 8).ok_or_else(|| Error::invalid_input("failed to read pin_mask from driver config"))?;
+    let flash_mask = read_u16_le(data, offset + 10).ok_or_else(|| Error::invalid_input("failed to read flash_mask from driver config"))?;
     let pmic_mask = read_u8_required(data, offset + 12, "pmic_mask from driver config")?;
     let sd0_mask = read_u8_required(data, offset + 13, "sd0_mask from driver config")?;
 
@@ -198,11 +194,7 @@ pub fn read_stub_config_at(data: &[u8], offset: usize) -> Result<StubConfig> {
         let port = PinPort::try_from(read_u8_required(data, entry_offset, "pin port")?)?;
         let number = read_u8_required(data, entry_offset + 1, "pin number")?;
         let level = PinLevel::try_from(read_u8_required(data, entry_offset + 2, "pin level")?)?;
-        pins.push(PinConfig {
-            port,
-            number,
-            level,
-        });
+        pins.push(PinConfig { port, number, level });
     }
 
     let mut flash = Vec::new();
@@ -218,9 +210,7 @@ pub fn read_stub_config_at(data: &[u8], offset: usize) -> Result<StubConfig> {
         let device_type = read_u8_required(data, entry_offset + 5, "flash device_type")?;
         let density_id = read_u8_required(data, entry_offset + 6, "flash density_id")?;
         let flags = read_u8_required(data, entry_offset + 7, "flash flags")?;
-        let capacity_bytes = read_u32_le(data, entry_offset + 8).ok_or_else(|| {
-            Error::invalid_input("failed to read flash capacity from driver config")
-        })?;
+        let capacity_bytes = read_u32_le(data, entry_offset + 8).ok_or_else(|| Error::invalid_input("failed to read flash capacity from driver config"))?;
         flash.push(FlashConfig {
             media,
             driver_index,
@@ -235,11 +225,9 @@ pub fn read_stub_config_at(data: &[u8], offset: usize) -> Result<StubConfig> {
     let pmic_offset = flash_base + FLASH_CFG_COUNT * 12;
     let pmic = if pmic_mask != 0 {
         let disabled = read_u8_required(data, pmic_offset, "pmic disabled")? != 0;
-        let scl_port =
-            PinPort::try_from(read_u8_required(data, pmic_offset + 1, "pmic scl_port")?)?;
+        let scl_port = PinPort::try_from(read_u8_required(data, pmic_offset + 1, "pmic scl_port")?)?;
         let scl_pin = read_u8_required(data, pmic_offset + 2, "pmic scl_pin")?;
-        let sda_port =
-            PinPort::try_from(read_u8_required(data, pmic_offset + 3, "pmic sda_port")?)?;
+        let sda_port = PinPort::try_from(read_u8_required(data, pmic_offset + 3, "pmic sda_port")?)?;
         let sda_pin = read_u8_required(data, pmic_offset + 4, "pmic sda_pin")?;
         let mut channels = Vec::new();
         for idx in 0..PMIC_CHANNEL_COUNT {
@@ -262,15 +250,9 @@ pub fn read_stub_config_at(data: &[u8], offset: usize) -> Result<StubConfig> {
 
     let sd0_offset = pmic_offset + 16;
     let sd0 = if sd0_mask != 0 {
-        let base_address = read_u32_le(data, sd0_offset).ok_or_else(|| {
-            Error::invalid_input("failed to read sd0 base address from driver config")
-        })?;
+        let base_address = read_u32_le(data, sd0_offset).ok_or_else(|| Error::invalid_input("failed to read sd0 base address from driver config"))?;
         let pinmux = Sd0Pinmux::try_from(read_u8_required(data, sd0_offset + 4, "sd0 pinmux")?)?;
-        let init_sequence = Sd0InitSequence::try_from(read_u8_required(
-            data,
-            sd0_offset + 5,
-            "sd0 init sequence",
-        )?)?;
+        let init_sequence = Sd0InitSequence::try_from(read_u8_required(data, sd0_offset + 5, "sd0 init sequence")?)?;
         Some(Sd0Config {
             base_address,
             pinmux,
@@ -280,12 +262,7 @@ pub fn read_stub_config_at(data: &[u8], offset: usize) -> Result<StubConfig> {
         None
     };
 
-    Ok(StubConfig {
-        pins,
-        flash,
-        pmic,
-        sd0,
-    })
+    Ok(StubConfig { pins, flash, pmic, sd0 })
 }
 
 /// Overwrite a driver config block at the given offset.
@@ -309,16 +286,8 @@ pub fn write_stub_config_at(data: &mut [u8], offset: usize, config: &StubConfig)
 
 // Build a serialized driver config block with fixed size and masks.
 fn build_stub_config_block(config: &StubConfig) -> Result<Vec<u8>> {
-    let pin_mask: u16 = if config.pins.is_empty() {
-        0
-    } else {
-        (1u16 << config.pins.len()) - 1
-    };
-    let flash_mask: u16 = if config.flash.is_empty() {
-        0
-    } else {
-        (1u16 << config.flash.len()) - 1
-    };
+    let pin_mask: u16 = if config.pins.is_empty() { 0 } else { (1u16 << config.pins.len()) - 1 };
+    let flash_mask: u16 = if config.flash.is_empty() { 0 } else { (1u16 << config.flash.len()) - 1 };
     let pmic_mask: u8 = if config.pmic.is_some() { 1 } else { 0 };
     let sd0_mask: u8 = if config.sd0.is_some() { 1 } else { 0 };
 

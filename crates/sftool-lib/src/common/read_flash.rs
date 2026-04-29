@@ -39,22 +39,14 @@ impl FlashReader {
     /// 解析读取文件信息 (filename@address:size格式)
     pub fn parse_file_info(file_spec: &str) -> Result<ReadFlashFile> {
         let Some((file_path, addr_size)) = file_spec.split_once('@') else {
-            return Err(Error::invalid_input(format!(
-                "Invalid format: {}. Expected: filename@address:size",
-                file_spec
-            )));
+            return Err(Error::invalid_input(format!("Invalid format: {}. Expected: filename@address:size", file_spec)));
         };
         let Some((addr, size)) = addr_size.split_once(':') else {
-            return Err(Error::invalid_input(format!(
-                "Invalid format: {}. Expected: filename@address:size",
-                file_spec
-            )));
+            return Err(Error::invalid_input(format!("Invalid format: {}. Expected: filename@address:size", file_spec)));
         };
 
-        let address = Utils::str_to_u32(addr)
-            .map_err(|e| Error::invalid_input(format!("Invalid address '{}': {}", addr, e)))?;
-        let size = Utils::str_to_u32(size)
-            .map_err(|e| Error::invalid_input(format!("Invalid size '{}': {}", size, e)))?;
+        let address = Utils::str_to_u32(addr).map_err(|e| Error::invalid_input(format!("Invalid address '{}': {}", addr, e)))?;
+        let size = Utils::str_to_u32(size).map_err(|e| Error::invalid_input(format!("Invalid size '{}': {}", size, e)))?;
 
         Ok(ReadFlashFile {
             file_path: file_path.to_string(),
@@ -64,18 +56,12 @@ impl FlashReader {
     }
 
     /// 从Flash读取数据的通用实现
-    pub fn read_flash_data<T>(
-        tool: &mut T,
-        address: u32,
-        size: u32,
-        output_path: &str,
-    ) -> Result<()>
+    pub fn read_flash_data<T>(tool: &mut T, address: u32, size: u32, output_path: &str) -> Result<()>
     where
         T: SifliToolTrait + RamCommand,
     {
         let progress = tool.progress();
-        let progress_bar =
-            progress.create_bar(size as u64, ProgressOperation::ReadFlash { address, size });
+        let progress_bar = progress.create_bar(size as u64, ProgressOperation::ReadFlash { address, size });
 
         let mut temp_file = tempfile()?;
 
@@ -87,8 +73,7 @@ impl FlashReader {
 
             Self::wait_for_marker(port, Self::START_TRANS_MARKER, "start_trans marker")?;
 
-            let actual_crc =
-                Self::receive_payload(port, size, &mut temp_file, &progress_bar, address)?;
+            let actual_crc = Self::receive_payload(port, size, &mut temp_file, &progress_bar, address)?;
 
             let expected_crc = Self::read_crc_value(port)?;
             Self::expect_ok(port)?;
@@ -134,9 +119,7 @@ impl FlashReader {
                     if window.len() > marker.len() {
                         window.pop_front();
                     }
-                    if window.len() == marker.len()
-                        && window.iter().copied().eq(marker.iter().copied())
-                    {
+                    if window.len() == marker.len() && window.iter().copied().eq(marker.iter().copied()) {
                         return Ok(());
                     }
                 }
@@ -151,13 +134,7 @@ impl FlashReader {
         }
     }
 
-    fn receive_payload(
-        port: &mut Box<dyn SerialPort>,
-        size: u32,
-        temp_file: &mut File,
-        progress_bar: &ProgressHandle,
-        address: u32,
-    ) -> Result<u32> {
+    fn receive_payload(port: &mut Box<dyn SerialPort>, size: u32, temp_file: &mut File, progress_bar: &ProgressHandle, address: u32) -> Result<u32> {
         let mut remaining = size as usize;
         let buffer_len = remaining.clamp(1usize, Self::READ_CHUNK_SIZE);
         let mut buffer = vec![0u8; buffer_len];
@@ -170,12 +147,7 @@ impl FlashReader {
             let chunk_len = std::cmp::min(buffer.len(), remaining);
             let chunk = &mut buffer[..chunk_len];
             let current_address = address.saturating_add(processed as u32);
-            Self::read_exact_with_timeout(
-                port,
-                chunk,
-                Self::READ_TIMEOUT_MS,
-                &format!("reading flash at 0x{:08X}", current_address),
-            )?;
+            Self::read_exact_with_timeout(port, chunk, Self::READ_TIMEOUT_MS, &format!("reading flash at 0x{:08X}", current_address))?;
 
             temp_file.write_all(chunk)?;
             digest.update(chunk);
@@ -198,8 +170,7 @@ impl FlashReader {
         }
 
         let hex_part = &line[prefix.len()..];
-        u32::from_str_radix(hex_part, 16)
-            .map_err(|e| Error::protocol(format!("invalid CRC '{}': {}", line, e)))
+        u32::from_str_radix(hex_part, 16).map_err(|e| Error::protocol(format!("invalid CRC '{}': {}", line, e)))
     }
 
     fn expect_ok(port: &mut Box<dyn SerialPort>) -> Result<()> {
@@ -254,12 +225,7 @@ impl FlashReader {
         Ok(String::from_utf8_lossy(&buffer).into_owned())
     }
 
-    fn read_exact_with_timeout(
-        port: &mut Box<dyn SerialPort>,
-        buf: &mut [u8],
-        timeout_ms: u128,
-        context: &str,
-    ) -> Result<()> {
+    fn read_exact_with_timeout(port: &mut Box<dyn SerialPort>, buf: &mut [u8], timeout_ms: u128, context: &str) -> Result<()> {
         if buf.is_empty() {
             return Ok(());
         }

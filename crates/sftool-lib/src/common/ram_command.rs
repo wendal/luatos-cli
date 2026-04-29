@@ -85,12 +85,7 @@ impl RamOps {
     const ERASE_ALL_TIMEOUT_MS: u128 = 30 * 1000;
 
     /// 发送命令并等待响应的通用实现
-    pub fn send_command_and_wait_response(
-        port: &mut Box<dyn SerialPort>,
-        cmd: Command,
-        command_str: &str,
-        memory_type: &str,
-    ) -> Result<Response> {
+    pub fn send_command_and_wait_response(port: &mut Box<dyn SerialPort>, cmd: Command, command_str: &str, memory_type: &str) -> Result<Response> {
         tracing::debug!("command: {:?}", cmd);
 
         // 发送命令
@@ -105,11 +100,7 @@ impl RamOps {
             Command::EraseAll { .. } => Self::ERASE_ALL_TIMEOUT_MS,
             _ => Self::DEFAULT_TIMEOUT_MS,
         };
-        let timeout = if memory_type == "sd" {
-            timeout * 3
-        } else {
-            timeout
-        };
+        let timeout = if memory_type == "sd" { timeout * 3 } else { timeout };
 
         // 某些命令直接返回成功，不等待响应
         match cmd {
@@ -123,11 +114,7 @@ impl RamOps {
     }
 
     /// 发送数据并等待响应的通用实现
-    pub fn send_data_and_wait_response(
-        port: &mut Box<dyn SerialPort>,
-        data: &[u8],
-        config: &CommandConfig,
-    ) -> Result<Response> {
+    pub fn send_data_and_wait_response(port: &mut Box<dyn SerialPort>, data: &[u8], config: &CommandConfig) -> Result<Response> {
         // 根据配置发送数据
         if !config.compat_mode {
             port.write_all(data)?;
@@ -166,25 +153,17 @@ impl RamOps {
             // 检查是否收到预期的响应
             for response_str in RESPONSE_STR_TABLE.iter() {
                 let response_bytes = response_str.as_bytes();
-                let exists = buffer
-                    .windows(response_bytes.len())
-                    .any(|window| window == response_bytes);
+                let exists = buffer.windows(response_bytes.len()).any(|window| window == response_bytes);
                 if exists {
                     tracing::debug!("Response buffer: {:?}", String::from_utf8_lossy(&buffer));
-                    return Response::from_str(response_str)
-                        .map_err(|e| Error::invalid_input(e.to_string()));
+                    return Response::from_str(response_str).map_err(|e| Error::invalid_input(e.to_string()));
                 }
             }
         }
     }
 
     /// 等待shell提示符的通用实现
-    pub fn wait_for_shell_prompt(
-        port: &mut Box<dyn SerialPort>,
-        prompt: &[u8],
-        retry_interval_ms: u64,
-        max_retries: u32,
-    ) -> Result<()> {
+    pub fn wait_for_shell_prompt(port: &mut Box<dyn SerialPort>, prompt: &[u8], retry_interval_ms: u64, max_retries: u32) -> Result<()> {
         let mut buffer = Vec::new();
         let mut now = std::time::SystemTime::now();
         let mut retry_count = 0;
@@ -196,10 +175,7 @@ impl RamOps {
         loop {
             let elapsed = now.elapsed().unwrap().as_millis();
             if elapsed > retry_interval_ms as u128 {
-                tracing::warn!(
-                    "Wait for shell Failed, retry. buffer: {:?}",
-                    String::from_utf8_lossy(&buffer)
-                );
+                tracing::warn!("Wait for shell Failed, retry. buffer: {:?}", String::from_utf8_lossy(&buffer));
                 port.clear(serialport::ClearBuffer::All)?;
                 tracing::debug!("Retrying to find shell prompt...");
                 std::thread::sleep(std::time::Duration::from_millis(100));

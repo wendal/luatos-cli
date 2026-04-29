@@ -16,9 +16,13 @@ pub mod progress;
 pub mod common;
 
 // 芯片特定的实现模块
+#[cfg(feature = "sf32lb52")]
 pub mod sf32lb52;
+#[cfg(feature = "sf32lb55")]
 pub mod sf32lb55;
+#[cfg(feature = "sf32lb56")]
 pub mod sf32lb56;
+#[cfg(feature = "sf32lb58")]
 pub mod sf32lb58;
 
 // 重新导出 trait，使其在 crate 外部可用
@@ -32,15 +36,15 @@ use serialport::SerialPort;
 use std::sync::Arc;
 
 /// Load stub image bytes for the given chip and memory type.
-pub fn load_stub_bytes(
-    external_path: Option<&str>,
-    chip_type: ChipType,
-    memory_type: &str,
-) -> Result<Vec<u8>> {
+pub fn load_stub_bytes(external_path: Option<&str>, chip_type: ChipType, memory_type: &str) -> Result<Vec<u8>> {
     let chip_key = match chip_type {
+        #[cfg(feature = "sf32lb52")]
         ChipType::SF32LB52 => "sf32lb52",
+        #[cfg(feature = "sf32lb55")]
         ChipType::SF32LB55 => "sf32lb55",
+        #[cfg(feature = "sf32lb56")]
         ChipType::SF32LB56 => "sf32lb56",
+        #[cfg(feature = "sf32lb58")]
         ChipType::SF32LB58 => "sf32lb58",
     };
     let key = format!("{}_{}", chip_key, memory_type.to_lowercase());
@@ -87,12 +91,16 @@ impl AfterOperation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 pub enum ChipType {
+    #[cfg(feature = "sf32lb52")]
     #[cfg_attr(feature = "cli", clap(name = "SF32LB52"))]
     SF32LB52,
+    #[cfg(feature = "sf32lb55")]
     #[cfg_attr(feature = "cli", clap(name = "SF32LB55"))]
     SF32LB55,
+    #[cfg(feature = "sf32lb56")]
     #[cfg_attr(feature = "cli", clap(name = "SF32LB56"))]
     SF32LB56,
+    #[cfg(feature = "sf32lb58")]
     #[cfg_attr(feature = "cli", clap(name = "SF32LB58"))]
     SF32LB58,
 }
@@ -113,14 +121,7 @@ pub struct SifliToolBase {
 
 impl SifliToolBase {
     /// 创建一个使用默认空进度回调的 SifliToolBase
-    pub fn new_with_no_progress(
-        port_name: String,
-        before: BeforeOperation,
-        memory_type: String,
-        baud: u32,
-        connect_attempts: i8,
-        compat: bool,
-    ) -> Self {
+    pub fn new_with_no_progress(port_name: String, before: BeforeOperation, memory_type: String, baud: u32, connect_attempts: i8, compat: bool) -> Self {
         let progress_sink = no_op_progress_sink();
         let progress_helper = Arc::new(ProgressHelper::new(progress_sink.clone(), 0));
         Self {
@@ -244,9 +245,7 @@ pub trait SifliToolTrait: Send + Sync {
     fn soft_reset(&mut self) -> Result<()>;
 }
 
-pub trait SifliTool:
-    SifliToolTrait + WriteFlashTrait + ReadFlashTrait + EraseFlashTrait + Send + Sync
-{
+pub trait SifliTool: SifliToolTrait + WriteFlashTrait + ReadFlashTrait + EraseFlashTrait + Send + Sync {
     /// 工厂函数，根据芯片类型创建对应的 SifliTool 实现
     fn create_tool(base_param: SifliToolBase) -> Box<dyn SifliTool>
     where
@@ -256,9 +255,13 @@ pub trait SifliTool:
 /// 工厂函数，根据芯片类型创建对应的 SifliTool 实现
 pub fn create_sifli_tool(chip_type: ChipType, base_param: SifliToolBase) -> Box<dyn SifliTool> {
     match chip_type {
+        #[cfg(feature = "sf32lb52")]
         ChipType::SF32LB52 => sf32lb52::SF32LB52Tool::create_tool(base_param),
+        #[cfg(feature = "sf32lb55")]
         ChipType::SF32LB55 => sf32lb55::SF32LB55Tool::create_tool(base_param),
+        #[cfg(feature = "sf32lb56")]
         ChipType::SF32LB56 => sf32lb56::SF32LB56Tool::create_tool(base_param),
+        #[cfg(feature = "sf32lb58")]
         ChipType::SF32LB58 => sf32lb58::SF32LB58Tool::create_tool(base_param),
     }
 }

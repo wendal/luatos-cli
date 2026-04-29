@@ -42,35 +42,14 @@ pub enum EraseRegionStyle {
 #[derive(Debug, Clone)]
 pub enum ProgressOperation {
     Connect,
-    DownloadStub {
-        stage: StubStage,
-    },
-    EraseFlash {
-        address: u32,
-        style: EraseFlashStyle,
-    },
-    EraseRegion {
-        address: u32,
-        len: u32,
-        style: EraseRegionStyle,
-    },
+    DownloadStub { stage: StubStage },
+    EraseFlash { address: u32, style: EraseFlashStyle },
+    EraseRegion { address: u32, len: u32, style: EraseRegionStyle },
     EraseAllRegions,
-    Verify {
-        address: u32,
-        len: u32,
-    },
-    CheckRedownload {
-        address: u32,
-        size: u64,
-    },
-    WriteFlash {
-        address: u32,
-        size: u64,
-    },
-    ReadFlash {
-        address: u32,
-        size: u32,
-    },
+    Verify { address: u32, len: u32 },
+    CheckRedownload { address: u32, size: u64 },
+    WriteFlash { address: u32, size: u64 },
+    ReadFlash { address: u32, size: u32 },
 }
 
 /// 进度上下文
@@ -105,22 +84,10 @@ pub enum ProgressStatus {
 /// 进度事件
 #[derive(Debug, Clone)]
 pub enum ProgressEvent {
-    Start {
-        id: ProgressId,
-        ctx: ProgressContext,
-    },
-    Update {
-        id: ProgressId,
-        ctx: ProgressContext,
-    },
-    Advance {
-        id: ProgressId,
-        delta: u64,
-    },
-    Finish {
-        id: ProgressId,
-        status: ProgressStatus,
-    },
+    Start { id: ProgressId, ctx: ProgressContext },
+    Update { id: ProgressId, ctx: ProgressContext },
+    Advance { id: ProgressId, delta: u64 },
+    Finish { id: ProgressId, status: ProgressStatus },
 }
 
 /// 进度事件接收器
@@ -181,10 +148,7 @@ impl ProgressHelper {
             operation,
             current: None,
         };
-        self.sink.on_event(ProgressEvent::Start {
-            id,
-            ctx: ctx.clone(),
-        });
+        self.sink.on_event(ProgressEvent::Start { id, ctx: ctx.clone() });
         ProgressHandle::new(Arc::clone(&self.sink), id, ctx)
     }
 
@@ -198,10 +162,7 @@ impl ProgressHelper {
             operation,
             current: Some(0),
         };
-        self.sink.on_event(ProgressEvent::Start {
-            id,
-            ctx: ctx.clone(),
-        });
+        self.sink.on_event(ProgressEvent::Start { id, ctx: ctx.clone() });
         ProgressHandle::new(Arc::clone(&self.sink), id, ctx)
     }
 
@@ -238,25 +199,18 @@ impl ProgressHandle {
     pub fn set_operation(&self, operation: ProgressOperation) {
         let mut ctx = self.context.lock().unwrap();
         ctx.operation = operation;
-        self.sink.on_event(ProgressEvent::Update {
-            id: self.id,
-            ctx: ctx.clone(),
-        });
+        self.sink.on_event(ProgressEvent::Update { id: self.id, ctx: ctx.clone() });
     }
 
     /// 增加进度
     pub fn inc(&self, delta: u64) {
-        self.sink
-            .on_event(ProgressEvent::Advance { id: self.id, delta });
+        self.sink.on_event(ProgressEvent::Advance { id: self.id, delta });
     }
 
     /// 完成进度条
     pub fn finish(mut self, status: ProgressStatus) {
         self.finished = true;
-        self.sink.on_event(ProgressEvent::Finish {
-            id: self.id,
-            status,
-        });
+        self.sink.on_event(ProgressEvent::Finish { id: self.id, status });
     }
 }
 

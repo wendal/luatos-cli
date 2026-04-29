@@ -9,9 +9,7 @@ pub mod speed;
 pub mod write_flash;
 
 use crate::common::sifli_debug::SifliDebug;
-use crate::progress::{
-    EraseFlashStyle, EraseRegionStyle, ProgressOperation, ProgressStatus, StubStage,
-};
+use crate::progress::{EraseFlashStyle, EraseRegionStyle, ProgressOperation, ProgressStatus, StubStage};
 use crate::sf32lb52::ram_command::DownloadStub;
 use crate::{Result, SifliTool, SifliToolBase, SifliToolTrait};
 use serialport::SerialPort;
@@ -50,9 +48,7 @@ impl SF32LB52Tool {
             if elapsed > 30000 {
                 // 擦除可能需要更长时间
                 tracing::error!("response string is {}", String::from_utf8_lossy(&buffer));
-                return Err(
-                    std::io::Error::new(std::io::ErrorKind::TimedOut, "Erase timeout").into(),
-                );
+                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "Erase timeout").into());
             }
 
             let mut byte = [0];
@@ -91,12 +87,7 @@ impl SF32LB52Tool {
         let now = std::time::SystemTime::now();
 
         let timeout_ms = (len as u128 / (4 * 1024) + 1) * 800; // 我们假设每擦除1个sector（4KB）最长时间不超过800ms
-        tracing::info!(
-            "Erase region at 0x{:08X} with length 0x{:08X}, timeout: {} ms",
-            address,
-            len,
-            timeout_ms
-        );
+        tracing::info!("Erase region at 0x{:08X} with length 0x{:08X}, timeout: {} ms", address, len, timeout_ms);
 
         // 等待擦除完成
         loop {
@@ -104,9 +95,7 @@ impl SF32LB52Tool {
             if elapsed > timeout_ms {
                 // 擦除可能需要更长时间
                 tracing::error!("response string is {}", String::from_utf8_lossy(&buffer));
-                return Err(
-                    std::io::Error::new(std::io::ErrorKind::TimedOut, "Erase timeout").into(),
-                );
+                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "Erase timeout").into());
             }
 
             let mut byte = [0];
@@ -131,11 +120,7 @@ impl SF32LB52Tool {
         use crate::common::sifli_debug::{SifliUartCommand, SifliUartResponse};
 
         let infinite_attempts = self.base.connect_attempts <= 0;
-        let mut remaining_attempts = if infinite_attempts {
-            None
-        } else {
-            Some(self.base.connect_attempts)
-        };
+        let mut remaining_attempts = if infinite_attempts { None } else { Some(self.base.connect_attempts) };
         loop {
             if self.base.before.requires_reset() {
                 // 使用RTS引脚复位
@@ -175,14 +160,12 @@ impl SF32LB52Tool {
     }
 
     fn download_stub_impl(&mut self) -> Result<()> {
-        use crate::common::sifli_debug::{Aircr, Demcr, AIRCR_ADDR, DEMCR_ADDR, REG_PC, REG_SP};
         use crate::common::sifli_debug::SifliUartCommand;
+        use crate::common::sifli_debug::{AIRCR_ADDR, Aircr, DEMCR_ADDR, Demcr, REG_PC, REG_SP};
         use crate::ram_stub::load_stub_file;
 
         let progress = self.progress();
-        let spinner = progress.create_spinner(ProgressOperation::DownloadStub {
-            stage: StubStage::Start,
-        });
+        let spinner = progress.create_spinner(ProgressOperation::DownloadStub { stage: StubStage::Start });
 
         // 1. reset and halt
         //    1.1. reset_catch_set
@@ -247,16 +230,8 @@ impl SF32LB52Tool {
 
         // 3. run ram stub
         // 3.1. set SP and PC
-        let sp = u32::from_le_bytes(
-            stub.data[0..4]
-                .try_into()
-                .expect("slice with exactly 4 bytes"),
-        );
-        let pc = u32::from_le_bytes(
-            stub.data[4..8]
-                .try_into()
-                .expect("slice with exactly 4 bytes"),
-        );
+        let sp = u32::from_le_bytes(stub.data[0..4].try_into().expect("slice with exactly 4 bytes"));
+        let pc = u32::from_le_bytes(stub.data[4..8].try_into().expect("slice with exactly 4 bytes"));
         self.debug_write_core_reg(REG_PC, pc)?;
         self.debug_write_core_reg(REG_SP, sp)?;
 
@@ -271,10 +246,7 @@ impl SF32LB52Tool {
 
 impl SifliTool for SF32LB52Tool {
     fn create_tool(base: SifliToolBase) -> Box<dyn SifliTool> {
-        let mut port = serialport::new(&base.port_name, 1000000)
-            .timeout(Duration::from_secs(5))
-            .open()
-            .unwrap();
+        let mut port = serialport::new(&base.port_name, 1000000).timeout(Duration::from_secs(5)).open().unwrap();
         port.write_request_to_send(false).unwrap();
         std::thread::sleep(Duration::from_millis(100));
 

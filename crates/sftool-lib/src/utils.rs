@@ -113,27 +113,18 @@ impl Utils {
             match file_type {
                 FileType::Hex => {
                     // 对于HEX文件，使用带基地址覆盖的处理函数
-                    return Self::hex_with_base_to_write_flash_files(
-                        Path::new(parts[0]),
-                        Some(addr),
-                    );
+                    return Self::hex_with_base_to_write_flash_files(Path::new(parts[0]), Some(addr));
                 }
                 FileType::Elf => {
                     // ELF文件不支持@地址格式
-                    return Err(Error::invalid_input(
-                        "ELF files do not support @address format",
-                    ));
+                    return Err(Error::invalid_input("ELF files do not support @address format"));
                 }
                 _ => {
                     // 对于其他文件类型，使用原来的处理方式
                     let file = std::fs::File::open(parts[0])?;
                     let crc32 = Self::get_file_crc32(&file)?;
 
-                    return Ok(vec![WriteFlashFile {
-                        address: addr,
-                        file,
-                        crc32,
-                    }]);
+                    return Ok(vec![WriteFlashFile { address: addr, file, crc32 }]);
                 }
             }
         }
@@ -143,9 +134,7 @@ impl Utils {
         match file_type {
             FileType::Hex => Self::hex_to_write_flash_files(Path::new(parts[0])),
             FileType::Elf => Self::elf_to_write_flash_files(Path::new(parts[0])),
-            _ => Err(Error::invalid_input(
-                "For binary files, please use the <file@address> format",
-            )),
+            _ => Err(Error::invalid_input("For binary files, please use the <file@address> format")),
         }
     }
 
@@ -156,20 +145,12 @@ impl Utils {
             Some(addr) => {
                 let file_type = Self::detect_file_type(file_path)?;
                 match file_type {
-                    FileType::Hex => {
-                        Self::hex_with_base_to_write_flash_files(file_path, Some(addr))
-                    }
-                    FileType::Elf => Err(Error::invalid_input(
-                        "ELF files do not support @address format",
-                    )),
+                    FileType::Hex => Self::hex_with_base_to_write_flash_files(file_path, Some(addr)),
+                    FileType::Elf => Err(Error::invalid_input("ELF files do not support @address format")),
                     _ => {
                         let file = std::fs::File::open(file_path)?;
                         let crc32 = Self::get_file_crc32(&file)?;
-                        Ok(vec![WriteFlashFile {
-                            address: addr,
-                            file,
-                            crc32,
-                        }])
+                        Ok(vec![WriteFlashFile { address: addr, file, crc32 }])
                     }
                 }
             }
@@ -178,9 +159,7 @@ impl Utils {
                 match file_type {
                     FileType::Hex => Self::hex_to_write_flash_files(file_path),
                     FileType::Elf => Self::elf_to_write_flash_files(file_path),
-                    _ => Err(Error::invalid_input(
-                        "For binary files, please use the <file@address> format",
-                    )),
+                    _ => Err(Error::invalid_input("For binary files, please use the <file@address> format")),
                 }
             }
         }
@@ -235,11 +214,7 @@ impl Utils {
 
                     // Check if we need to start a new segment based on address continuity
                     let should_start_new_segment = if current_temp_file.is_some() {
-                        Self::should_start_new_hex_segment(
-                            current_segment_start,
-                            current_file_offset,
-                            absolute_address,
-                        )
+                        Self::should_start_new_hex_segment(current_segment_start, current_file_offset, absolute_address)
                     } else {
                         false // No current file, will create one below
                     };
@@ -247,11 +222,7 @@ impl Utils {
                     if should_start_new_segment {
                         // Finalize current segment
                         if let Some(temp_file) = current_temp_file.take() {
-                            Self::finalize_segment(
-                                temp_file,
-                                current_segment_start,
-                                &mut write_flash_files,
-                            )?;
+                            Self::finalize_segment(temp_file, current_segment_start, &mut write_flash_files)?;
                         }
                     }
 
@@ -281,11 +252,7 @@ impl Utils {
                 ihex::Record::EndOfFile => {
                     // Finalize the last segment
                     if let Some(temp_file) = current_temp_file.take() {
-                        Self::finalize_segment(
-                            temp_file,
-                            current_segment_start,
-                            &mut write_flash_files,
-                        )?;
+                        Self::finalize_segment(temp_file, current_segment_start, &mut write_flash_files)?;
                     }
                     break;
                 }
@@ -303,10 +270,7 @@ impl Utils {
 
     /// 将HEX文件转换为WriteFlashFile，支持基地址覆盖
     /// base_address_override: 如果提供，将用其高8位替换ExtendedLinearAddress中的高8位
-    pub fn hex_with_base_to_write_flash_files(
-        hex_file: &Path,
-        base_address_override: Option<u32>,
-    ) -> Result<Vec<WriteFlashFile>> {
+    pub fn hex_with_base_to_write_flash_files(hex_file: &Path, base_address_override: Option<u32>) -> Result<Vec<WriteFlashFile>> {
         let mut write_flash_files: Vec<WriteFlashFile> = Vec::new();
 
         let file = std::fs::File::open(hex_file)?;
@@ -330,8 +294,7 @@ impl Utils {
                 ihex::Record::ExtendedLinearAddress(addr) => {
                     let new_base_address = if let Some(override_addr) = base_address_override {
                         // 只替换高8位：(原值 & 0x00FF) | ((新地址 >> 16) & 0xFF00)
-                        let modified_addr =
-                            (addr & 0x00FF) | ((override_addr >> 16) as u16 & 0xFF00);
+                        let modified_addr = (addr & 0x00FF) | ((override_addr >> 16) as u16 & 0xFF00);
                         (modified_addr as u32) << 16
                     } else {
                         (addr as u32) << 16
@@ -346,11 +309,7 @@ impl Utils {
 
                     // Check if we need to start a new segment based on address continuity
                     let should_start_new_segment = if current_temp_file.is_some() {
-                        Self::should_start_new_hex_segment(
-                            current_segment_start,
-                            current_file_offset,
-                            absolute_address,
-                        )
+                        Self::should_start_new_hex_segment(current_segment_start, current_file_offset, absolute_address)
                     } else {
                         false // No current file, will create one below
                     };
@@ -358,11 +317,7 @@ impl Utils {
                     if should_start_new_segment {
                         // Finalize current segment
                         if let Some(temp_file) = current_temp_file.take() {
-                            Self::finalize_segment(
-                                temp_file,
-                                current_segment_start,
-                                &mut write_flash_files,
-                            )?;
+                            Self::finalize_segment(temp_file, current_segment_start, &mut write_flash_files)?;
                         }
                     }
 
@@ -392,11 +347,7 @@ impl Utils {
                 ihex::Record::EndOfFile => {
                     // Finalize the last segment
                     if let Some(temp_file) = current_temp_file.take() {
-                        Self::finalize_segment(
-                            temp_file,
-                            current_segment_start,
-                            &mut write_flash_files,
-                        )?;
+                        Self::finalize_segment(temp_file, current_segment_start, &mut write_flash_files)?;
                     }
                     break;
                 }
@@ -426,9 +377,7 @@ impl Utils {
         let mut load_segments: Vec<_> = elf
             .program_headers
             .iter()
-            .filter(|ph| {
-                ph.p_type == goblin::elf::program_header::PT_LOAD && ph.p_paddr < 0x2000_0000
-            })
+            .filter(|ph| ph.p_type == goblin::elf::program_header::PT_LOAD && ph.p_paddr < 0x2000_0000)
             .collect();
         load_segments.sort_by_key(|ph| ph.p_paddr);
 
@@ -492,18 +441,10 @@ impl Utils {
     }
 
     /// 完成一个段的处理，将临时文件转换为WriteFlashFile
-    fn finalize_segment(
-        mut temp_file: File,
-        address: u32,
-        write_flash_files: &mut Vec<WriteFlashFile>,
-    ) -> Result<()> {
+    fn finalize_segment(mut temp_file: File, address: u32, write_flash_files: &mut Vec<WriteFlashFile>) -> Result<()> {
         temp_file.seek(std::io::SeekFrom::Start(0))?;
         let crc32 = Self::get_file_crc32(&temp_file)?;
-        write_flash_files.push(WriteFlashFile {
-            address,
-            file: temp_file,
-            crc32,
-        });
+        write_flash_files.push(WriteFlashFile { address, file: temp_file, crc32 });
         Ok(())
     }
 
@@ -511,11 +452,7 @@ impl Utils {
     /// - 地址回退/重叠：分段
     /// - 间隙 <= 4KB：不分段（以0xFF填充）
     /// - 间隙 > 4KB：只有下一段起始地址为sector对齐时才分段
-    fn should_start_new_hex_segment(
-        current_segment_start: u32,
-        current_file_offset: u32,
-        next_address: u32,
-    ) -> bool {
+    fn should_start_new_hex_segment(current_segment_start: u32, current_file_offset: u32, next_address: u32) -> bool {
         let current_end_address = current_segment_start.saturating_add(current_file_offset);
         if next_address < current_end_address {
             return true;
@@ -532,25 +469,16 @@ impl Utils {
     /// 解析读取文件信息 (filename@address:size格式)
     pub fn parse_read_file_info(file_spec: &str) -> Result<crate::ReadFlashFile> {
         let Some((file_path, addr_size)) = file_spec.split_once('@') else {
-            return Err(Error::invalid_input(format!(
-                "Invalid format: {}. Expected: filename@address:size",
-                file_spec
-            )));
+            return Err(Error::invalid_input(format!("Invalid format: {}. Expected: filename@address:size", file_spec)));
         };
 
         let Some((address_str, size_str)) = addr_size.split_once(':') else {
-            return Err(Error::invalid_input(format!(
-                "Invalid address:size format: {}. Expected: address:size",
-                addr_size
-            )));
+            return Err(Error::invalid_input(format!("Invalid address:size format: {}. Expected: address:size", addr_size)));
         };
 
-        let address = Self::str_to_u32(address_str).map_err(|e| {
-            Error::invalid_input(format!("Invalid address '{}': {}", address_str, e))
-        })?;
+        let address = Self::str_to_u32(address_str).map_err(|e| Error::invalid_input(format!("Invalid address '{}': {}", address_str, e)))?;
 
-        let size = Self::str_to_u32(size_str)
-            .map_err(|e| Error::invalid_input(format!("Invalid size '{}': {}", size_str, e)))?;
+        let size = Self::str_to_u32(size_str).map_err(|e| Error::invalid_input(format!("Invalid size '{}': {}", size_str, e)))?;
 
         Ok(crate::ReadFlashFile {
             file_path: file_path.to_string(),
@@ -561,25 +489,18 @@ impl Utils {
 
     /// 解析擦除地址
     pub fn parse_erase_address(address_str: &str) -> Result<u32> {
-        Self::str_to_u32(address_str)
-            .map_err(|e| Error::invalid_input(format!("Invalid address '{}': {}", address_str, e)))
+        Self::str_to_u32(address_str).map_err(|e| Error::invalid_input(format!("Invalid address '{}': {}", address_str, e)))
     }
 
     /// 解析擦除区域信息 (address:size格式)
     pub fn parse_erase_region(region_spec: &str) -> Result<crate::EraseRegionFile> {
         let Some((address_str, size_str)) = region_spec.split_once(':') else {
-            return Err(Error::invalid_input(format!(
-                "Invalid region format: {}. Expected: address:size",
-                region_spec
-            )));
+            return Err(Error::invalid_input(format!("Invalid region format: {}. Expected: address:size", region_spec)));
         };
 
-        let address = Self::str_to_u32(address_str).map_err(|e| {
-            Error::invalid_input(format!("Invalid address '{}': {}", address_str, e))
-        })?;
+        let address = Self::str_to_u32(address_str).map_err(|e| Error::invalid_input(format!("Invalid address '{}': {}", address_str, e)))?;
 
-        let size = Self::str_to_u32(size_str)
-            .map_err(|e| Error::invalid_input(format!("Invalid size '{}': {}", size_str, e)))?;
+        let size = Self::str_to_u32(size_str).map_err(|e| Error::invalid_input(format!("Invalid size '{}': {}", size_str, e)))?;
 
         Ok(crate::EraseRegionFile { address, size })
     }

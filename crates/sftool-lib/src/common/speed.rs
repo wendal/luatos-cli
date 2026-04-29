@@ -12,10 +12,7 @@ impl SpeedOps {
         T: SifliToolTrait + RamCommand,
     {
         // 发送设置波特率命令
-        tool.command(Command::SetBaud {
-            baud: speed,
-            delay: 10,
-        })?;
+        tool.command(Command::SetBaud { baud: speed, delay: 10 })?;
 
         // 等待一段时间让设置生效
         std::thread::sleep(Duration::from_millis(50));

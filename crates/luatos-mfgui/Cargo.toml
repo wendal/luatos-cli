@@ -1,0 +1,28 @@
+[package]
+name = "luatos-mfgui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "合宙简易量产刷机程序 — 基于 egui 的单文件桌面刷机工具"
+
+[[bin]]
+name = "luatos-mfgui"
+path = "src/main.rs"
+
+[dependencies]
+# GUI 框架（纯 Rust，无需 Node.js）
+egui = "0.27"
+eframe = { version = "0.27", default-features = false, features = ["default_fonts", "glow"] }
+
+# 文件/目录选择对话框（Windows: 原生 WinAPI；Linux 需 gtk3 或 xdg-portal 功能）
+rfd = { version = "0.15", default-features = false }
+
+# workspace 库 crate
+luatos-flash  = { path = "../luatos-flash" }
+luatos-serial = { path = "../luatos-serial" }
+luatos-soc    = { path = "../luatos-soc" }
+
+# workspace 公共依赖
+anyhow.workspace = true
+log.workspace    = true
+env_logger.workspace = true

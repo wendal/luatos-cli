@@ -30,11 +30,7 @@ fn roundtrip_stub_config() {
             scl_pin: 10,
             sda_port: PinPort::Pa,
             sda_pin: 11,
-            channels: vec![
-                PmicChannel::LvSw1001,
-                PmicChannel::HvSw1501,
-                PmicChannel::Ldo33,
-            ],
+            channels: vec![PmicChannel::LvSw1001, PmicChannel::HvSw1501, PmicChannel::Ldo33],
         }),
         sd0: Some(Sd0Config {
             base_address: 0x6800_0000,

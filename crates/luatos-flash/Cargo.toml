@@ -5,6 +5,14 @@ edition.workspace = true
 license.workspace = true
 description = "LuatOS flash protocols — BK7258, EC618, etc."
 
+[features]
+default = ["sf32lb52", "sf32lb55", "sf32lb56", "sf32lb57", "sf32lb58"]
+sf32lb52 = ["sftool-lib/sf32lb52"]
+sf32lb55 = ["sftool-lib/sf32lb55"]
+sf32lb56 = ["sftool-lib/sf32lb56"]
+sf32lb57 = ["sftool-lib/sf32lb57"]
+sf32lb58 = ["sftool-lib/sf32lb58"]
+
 [dependencies]
 luatos-soc = { path = "../luatos-soc" }
 luatos-luadb = { path = "../luatos-luadb" }
@@ -20,7 +28,7 @@ md5 = "0.7"
 sha2.workspace = true
 crc32fast = "1"
 sevenz-rust2.workspace = true
-sftool-lib = { git = "https://github.com/wendal/sftool", branch = "remove-probe-rs-dep" }
+sftool-lib = { git = "https://github.com/wendal/sftool", branch = "remove-probe-rs-dep", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

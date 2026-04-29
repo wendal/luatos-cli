@@ -12,11 +12,17 @@ readme = "README.md"
 path = "src/lib.rs"
 
 [features]
+default = ["sf32lb58"]
+sf32lb52 = []
+sf32lb55 = []
+sf32lb56 = []
+sf32lb57 = []
+sf32lb58 = []
 cli = ["clap"]
 
 [dependencies]
 serialport = "4.7.0"
-rust-embed = { version = "8.6.0", features = ["debug-embed", "compression"] }
+rust-embed = { version = "8.6.0", features = ["debug-embed", "compression", "include-exclude"] }
 strum = {version = "0.27.1",features = ["derive"]}
 phf = { version = "0.11", features = ["macros"] }
 tracing = "0.1.41"

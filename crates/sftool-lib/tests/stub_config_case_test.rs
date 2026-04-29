@@ -150,12 +150,7 @@ impl StubConfigSpec {
             init_sequence: sd0.init_sequence.into(),
         });
 
-        lib::StubConfig {
-            pins,
-            flash,
-            pmic,
-            sd0,
-        }
+        lib::StubConfig { pins, flash, pmic, sd0 }
     }
 }
 
@@ -228,8 +223,7 @@ fn fixture_path(relative: &str) -> std::path::PathBuf {
 
 fn load_fixture_spec() -> StubConfigSpec {
     let path = fixture_path("tests/stub_config_test.json");
-    let json = std::fs::read_to_string(&path)
-        .unwrap_or_else(|_| panic!("failed to read {}", path.display()));
+    let json = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("failed to read {}", path.display()));
     serde_json::from_str(&json).expect("failed to parse stub config JSON")
 }
 
@@ -239,8 +233,7 @@ fn stub_config_matches_fixture() {
     let expected = spec.to_lib();
 
     let path = fixture_path("tests/ram_patch_52X_test.bin");
-    let actual = lib::read_stub_config_from_file(&path)
-        .unwrap_or_else(|_| panic!("failed to read stub config from {}", path.display()));
+    let actual = lib::read_stub_config_from_file(&path).unwrap_or_else(|_| panic!("failed to read stub config from {}", path.display()));
 
     assert_eq!(actual, expected);
 }
@@ -251,15 +244,12 @@ fn stub_config_write_matches_fixture() {
     let config = spec.to_lib();
 
     let source_path = fixture_path("stub/ram_patch_52X.bin");
-    let mut data = std::fs::read(&source_path)
-        .unwrap_or_else(|_| panic!("failed to read {}", source_path.display()));
+    let mut data = std::fs::read(&source_path).unwrap_or_else(|_| panic!("failed to read {}", source_path.display()));
 
-    lib::write_stub_config_to_bytes(&mut data, &config)
-        .expect("failed to write stub config into source binary");
+    lib::write_stub_config_to_bytes(&mut data, &config).expect("failed to write stub config into source binary");
 
     let expected_path = fixture_path("tests/ram_patch_52X_test.bin");
-    let expected = std::fs::read(&expected_path)
-        .unwrap_or_else(|_| panic!("failed to read {}", expected_path.display()));
+    let expected = std::fs::read(&expected_path).unwrap_or_else(|_| panic!("failed to read {}", expected_path.display()));
 
     assert_eq!(data, expected);
 }

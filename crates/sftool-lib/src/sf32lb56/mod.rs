@@ -8,13 +8,8 @@ pub mod sifli_debug;
 pub mod speed;
 pub mod write_flash;
 
-use crate::common::sifli_debug::{
-    ChipFrameFormat, RecvError, START_WORD, SifliDebug, SifliUartCommand, SifliUartResponse,
-    common_debug,
-};
-use crate::progress::{
-    EraseFlashStyle, EraseRegionStyle, ProgressOperation, ProgressStatus, StubStage,
-};
+use crate::common::sifli_debug::{ChipFrameFormat, RecvError, START_WORD, SifliDebug, SifliUartCommand, SifliUartResponse, common_debug};
+use crate::progress::{EraseFlashStyle, EraseRegionStyle, ProgressOperation, ProgressStatus, StubStage};
 use crate::sf32lb56::ram_command::DownloadStub;
 use crate::{Result, SifliTool, SifliToolBase, SifliToolTrait};
 use serialport::SerialPort;
@@ -41,9 +36,7 @@ impl ChipFrameFormat for SF32LB56FrameFormat {
         header
     }
 
-    fn parse_frame_header(
-        reader: &mut BufReader<Box<dyn Read + Send>>,
-    ) -> std::result::Result<usize, RecvError> {
+    fn parse_frame_header(reader: &mut BufReader<Box<dyn Read + Send>>) -> std::result::Result<usize, RecvError> {
         // 读取长度 (2字节) - SF32LB56 uses big-endian
         let mut length_bytes = [0; 2];
         if let Err(e) = reader.read_exact(&mut length_bytes) {
@@ -168,9 +161,7 @@ impl SifliDebug for SF32LB56Tool {
     }
 
     fn debug_write_core_reg(&mut self, reg: u16, data: u32) -> Result<()> {
-        common_debug::debug_write_core_reg_impl::<SF32LB56Tool, SF32LB56FrameFormat>(
-            self, reg, data,
-        )
+        common_debug::debug_write_core_reg_impl::<SF32LB56Tool, SF32LB56FrameFormat>(self, reg, data)
     }
 
     fn debug_step(&mut self) -> Result<()> {
@@ -209,9 +200,7 @@ impl SF32LB56Tool {
             if elapsed > 30000 {
                 // 擦除可能需要更长时间
                 tracing::error!("response string is {}", String::from_utf8_lossy(&buffer));
-                return Err(
-                    std::io::Error::new(std::io::ErrorKind::TimedOut, "Erase timeout").into(),
-                );
+                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "Erase timeout").into());
             }
 
             let mut byte = [0];
@@ -255,9 +244,7 @@ impl SF32LB56Tool {
             if elapsed > 30000 {
                 // 擦除可能需要更长时间
                 tracing::error!("response string is {}", String::from_utf8_lossy(&buffer));
-                return Err(
-                    std::io::Error::new(std::io::ErrorKind::TimedOut, "Erase timeout").into(),
-                );
+                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "Erase timeout").into());
             }
 
             let mut byte = [0];
@@ -282,11 +269,7 @@ impl SF32LB56Tool {
         use crate::common::sifli_debug::{SifliUartCommand, SifliUartResponse};
 
         let infinite_attempts = self.base.connect_attempts <= 0;
-        let mut remaining_attempts = if infinite_attempts {
-            None
-        } else {
-            Some(self.base.connect_attempts)
-        };
+        let mut remaining_attempts = if infinite_attempts { None } else { Some(self.base.connect_attempts) };
         loop {
             if self.base.before.requires_reset() {
                 // 使用RTS引脚复位
@@ -326,14 +309,12 @@ impl SF32LB56Tool {
     }
 
     pub fn download_stub_impl(&mut self) -> Result<()> {
-        use crate::common::sifli_debug::{Aircr, Demcr, AIRCR_ADDR, DEMCR_ADDR, REG_PC, REG_SP};
         use crate::common::sifli_debug::SifliUartCommand;
+        use crate::common::sifli_debug::{AIRCR_ADDR, Aircr, DEMCR_ADDR, Demcr, REG_PC, REG_SP};
         use crate::ram_stub::load_stub_file;
 
         let progress = self.progress();
-        let spinner = progress.create_spinner(ProgressOperation::DownloadStub {
-            stage: StubStage::Start,
-        });
+        let spinner = progress.create_spinner(ProgressOperation::DownloadStub { stage: StubStage::Start });
 
         // 0.0 HCPU Unconditional halt
         self.debug_halt()?;
@@ -395,16 +376,8 @@ impl SF32LB56Tool {
 
         // 3. run ram stub
         // 3.1. set SP and PC
-        let sp = u32::from_le_bytes(
-            stub.data[0..4]
-                .try_into()
-                .expect("slice with exactly 4 bytes"),
-        );
-        let pc = u32::from_le_bytes(
-            stub.data[4..8]
-                .try_into()
-                .expect("slice with exactly 4 bytes"),
-        );
+        let sp = u32::from_le_bytes(stub.data[0..4].try_into().expect("slice with exactly 4 bytes"));
+        let pc = u32::from_le_bytes(stub.data[4..8].try_into().expect("slice with exactly 4 bytes"));
         self.debug_write_core_reg(REG_PC, pc)?;
         self.debug_write_core_reg(REG_SP, sp)?;
 
@@ -419,10 +392,7 @@ impl SF32LB56Tool {
 
 impl SifliTool for SF32LB56Tool {
     fn create_tool(base: SifliToolBase) -> Box<dyn SifliTool> {
-        let mut port = serialport::new(&base.port_name, 1000000)
-            .timeout(Duration::from_secs(5))
-            .open()
-            .unwrap();
+        let mut port = serialport::new(&base.port_name, 1000000).timeout(Duration::from_secs(5)).open().unwrap();
         port.write_request_to_send(false).unwrap();
         std::thread::sleep(Duration::from_millis(100));
 

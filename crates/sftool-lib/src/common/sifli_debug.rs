@@ -51,9 +51,7 @@ impl From<RecvError> for Error {
             RecvError::InvalidHeaderLength => Error::protocol("invalid frame length"),
             RecvError::InvalidHeaderChannel => Error::protocol("invalid frame channel information"),
             RecvError::ReadError(e) => Error::from(e),
-            RecvError::InvalidResponse(code) => {
-                Error::protocol(format!("invalid response code: {:#04X}", code))
-            }
+            RecvError::InvalidResponse(code) => Error::protocol(format!("invalid response code: {:#04X}", code)),
         }
     }
 }
@@ -135,27 +133,63 @@ impl From<Dcrsr> for u32 {
 pub struct Dhcsr(pub u32);
 
 impl Dhcsr {
-    pub fn s_reset_st(&self) -> bool { self.0 & (1 << 25) != 0 }
-    pub fn s_retire_st(&self) -> bool { self.0 & (1 << 24) != 0 }
-    pub fn s_lockup(&self) -> bool { self.0 & (1 << 19) != 0 }
-    pub fn s_sleep(&self) -> bool { self.0 & (1 << 18) != 0 }
-    pub fn s_halt(&self) -> bool { self.0 & (1 << 17) != 0 }
-    pub fn s_regrdy(&self) -> bool { self.0 & (1 << 16) != 0 }
-    pub fn c_maskints(&self) -> bool { self.0 & (1 << 3) != 0 }
+    pub fn s_reset_st(&self) -> bool {
+        self.0 & (1 << 25) != 0
+    }
+    pub fn s_retire_st(&self) -> bool {
+        self.0 & (1 << 24) != 0
+    }
+    pub fn s_lockup(&self) -> bool {
+        self.0 & (1 << 19) != 0
+    }
+    pub fn s_sleep(&self) -> bool {
+        self.0 & (1 << 18) != 0
+    }
+    pub fn s_halt(&self) -> bool {
+        self.0 & (1 << 17) != 0
+    }
+    pub fn s_regrdy(&self) -> bool {
+        self.0 & (1 << 16) != 0
+    }
+    pub fn c_maskints(&self) -> bool {
+        self.0 & (1 << 3) != 0
+    }
     pub fn set_c_maskints(&mut self, val: bool) {
-        if val { self.0 |= 1 << 3; } else { self.0 &= !(1 << 3); }
+        if val {
+            self.0 |= 1 << 3;
+        } else {
+            self.0 &= !(1 << 3);
+        }
     }
-    pub fn c_step(&self) -> bool { self.0 & (1 << 2) != 0 }
+    pub fn c_step(&self) -> bool {
+        self.0 & (1 << 2) != 0
+    }
     pub fn set_c_step(&mut self, val: bool) {
-        if val { self.0 |= 1 << 2; } else { self.0 &= !(1 << 2); }
+        if val {
+            self.0 |= 1 << 2;
+        } else {
+            self.0 &= !(1 << 2);
+        }
     }
-    pub fn c_halt(&self) -> bool { self.0 & (1 << 1) != 0 }
+    pub fn c_halt(&self) -> bool {
+        self.0 & (1 << 1) != 0
+    }
     pub fn set_c_halt(&mut self, val: bool) {
-        if val { self.0 |= 1 << 1; } else { self.0 &= !(1 << 1); }
+        if val {
+            self.0 |= 1 << 1;
+        } else {
+            self.0 &= !(1 << 1);
+        }
     }
-    pub fn c_debugen(&self) -> bool { self.0 & 1 != 0 }
+    pub fn c_debugen(&self) -> bool {
+        self.0 & 1 != 0
+    }
     pub fn set_c_debugen(&mut self, val: bool) {
-        if val { self.0 |= 1; } else { self.0 &= !1; }
+        if val {
+            self.0 |= 1;
+        } else {
+            self.0 &= !1;
+        }
     }
 
     /// This function sets the bit to enable writes to this register.
@@ -192,15 +226,23 @@ impl Aircr {
     }
     /// Request a system-level reset.
     pub fn set_sysresetreq(&mut self, val: bool) {
-        if val { self.0 |= 1 << 2; } else { self.0 &= !(1 << 2); }
+        if val {
+            self.0 |= 1 << 2;
+        } else {
+            self.0 &= !(1 << 2);
+        }
     }
 }
 
 impl From<u32> for Aircr {
-    fn from(val: u32) -> Self { Self(val) }
+    fn from(val: u32) -> Self {
+        Self(val)
+    }
 }
 impl From<Aircr> for u32 {
-    fn from(val: Aircr) -> u32 { val.0 }
+    fn from(val: Aircr) -> u32 {
+        val.0
+    }
 }
 
 /// Debug Exception and Monitor Control Register (ARMv7-M DDI 0403E.b C1.6.5)
@@ -210,15 +252,23 @@ pub struct Demcr(pub u32);
 impl Demcr {
     /// Enable halting debug trap on reset (VC_CORERESET, bit 0).
     pub fn set_vc_corereset(&mut self, val: bool) {
-        if val { self.0 |= 1; } else { self.0 &= !1; }
+        if val {
+            self.0 |= 1;
+        } else {
+            self.0 &= !1;
+        }
     }
 }
 
 impl From<u32> for Demcr {
-    fn from(val: u32) -> Self { Self(val) }
+    fn from(val: u32) -> Self {
+        Self(val)
+    }
 }
 impl From<Demcr> for u32 {
-    fn from(val: Demcr) -> u32 { val.0 }
+    fn from(val: Demcr) -> u32 {
+        val.0
+    }
 }
 
 pub trait SifliDebug {
@@ -238,9 +288,7 @@ pub trait ChipFrameFormat {
     fn create_header(len: u16) -> Vec<u8>;
 
     /// Parse received frame header and return payload size
-    fn parse_frame_header(
-        reader: &mut BufReader<Box<dyn Read + Send>>,
-    ) -> std::result::Result<usize, RecvError>;
+    fn parse_frame_header(reader: &mut BufReader<Box<dyn Read + Send>>) -> std::result::Result<usize, RecvError>;
 
     /// Encode command data with chip-specific endianness
     fn encode_command_data(command: &SifliUartCommand) -> Vec<u8>;
@@ -255,10 +303,7 @@ pub trait ChipFrameFormat {
 }
 
 // Common implementation for communication
-pub fn send_command<F: ChipFrameFormat>(
-    writer: &mut BufWriter<Box<dyn Write + Send>>,
-    command: &SifliUartCommand,
-) -> Result<()> {
+pub fn send_command<F: ChipFrameFormat>(writer: &mut BufWriter<Box<dyn Write + Send>>, command: &SifliUartCommand) -> Result<()> {
     let send_data = F::encode_command_data(command);
     let header = F::create_header(send_data.len() as u16);
 
@@ -268,9 +313,7 @@ pub fn send_command<F: ChipFrameFormat>(
     Ok(())
 }
 
-pub fn recv_response<F: ChipFrameFormat>(
-    reader: &mut BufReader<Box<dyn Read + Send>>,
-) -> Result<SifliUartResponse> {
+pub fn recv_response<F: ChipFrameFormat>(reader: &mut BufReader<Box<dyn Read + Send>>) -> Result<SifliUartResponse> {
     let start_time = Instant::now();
     let mut temp: Vec<u8> = vec![];
 
@@ -280,10 +323,7 @@ pub fn recv_response<F: ChipFrameFormat>(
 
     loop {
         if start_time.elapsed() >= DEFUALT_RECV_TIMEOUT {
-            tracing::warn!(
-                "Receive timeout: {} seconds",
-                DEFUALT_RECV_TIMEOUT.as_secs()
-            );
+            tracing::warn!("Receive timeout: {} seconds", DEFUALT_RECV_TIMEOUT.as_secs());
             return Err(RecvError::Timeout.into());
         }
 
@@ -363,15 +403,8 @@ pub fn recv_response<F: ChipFrameFormat>(
         }
         0xD2 => {
             // 提取数据部分，跳过响应代码和最后的校验字节
-            let data = if recv_data.len() > 1 {
-                recv_data[1..recv_data.len() - 1].to_vec()
-            } else {
-                Vec::new()
-            };
-            tracing::info!(
-                "Received memory read response, data length: {} bytes",
-                data.len()
-            );
+            let data = if recv_data.len() > 1 { recv_data[1..recv_data.len() - 1].to_vec() } else { Vec::new() };
+            tracing::info!("Received memory read response, data length: {} bytes", data.len());
             Ok(SifliUartResponse::MEMRead { data })
         }
         0xD3 => {
@@ -390,10 +423,7 @@ pub mod common_debug {
     use super::*;
 
     /// Common implementation for debug_command
-    pub fn debug_command_impl<T: SifliTool, F: ChipFrameFormat>(
-        tool: &mut T,
-        command: SifliUartCommand,
-    ) -> Result<SifliUartResponse> {
+    pub fn debug_command_impl<T: SifliTool, F: ChipFrameFormat>(tool: &mut T, command: SifliUartCommand) -> Result<SifliUartResponse> {
         tracing::info!("Command: {}", command);
         let writer: Box<dyn Write + Send> = tool.port().try_clone()?;
         let mut buf_writer = BufWriter::new(writer);
@@ -414,15 +444,9 @@ pub mod common_debug {
     }
 
     /// Common implementation for debug_read_word32
-    pub fn debug_read_word32_impl<T: SifliTool, F: ChipFrameFormat>(
-        tool: &mut T,
-        addr: u32,
-    ) -> Result<u32> {
+    pub fn debug_read_word32_impl<T: SifliTool, F: ChipFrameFormat>(tool: &mut T, addr: u32) -> Result<u32> {
         let mapped_addr = F::map_address(addr);
-        let command = SifliUartCommand::MEMRead {
-            addr: mapped_addr,
-            len: 1,
-        };
+        let command = SifliUartCommand::MEMRead { addr: mapped_addr, len: 1 };
 
         // Call debug_command_impl directly instead of using the trait method
         match debug_command_impl::<T, F>(tool, command) {
@@ -439,16 +463,9 @@ pub mod common_debug {
     }
 
     /// Common implementation for debug_write_word32
-    pub fn debug_write_word32_impl<T: SifliTool, F: ChipFrameFormat>(
-        tool: &mut T,
-        addr: u32,
-        data: u32,
-    ) -> Result<()> {
+    pub fn debug_write_word32_impl<T: SifliTool, F: ChipFrameFormat>(tool: &mut T, addr: u32, data: u32) -> Result<()> {
         let mapped_addr = F::map_address(addr);
-        let command = SifliUartCommand::MEMWrite {
-            addr: mapped_addr,
-            data: &[data],
-        };
+        let command = SifliUartCommand::MEMWrite { addr: mapped_addr, data: &[data] };
         match debug_command_impl::<T, F>(tool, command) {
             Ok(SifliUartResponse::MEMWrite) => Ok(()),
             Ok(_) => Err(Error::invalid_input("invalid response")),
@@ -457,11 +474,7 @@ pub mod common_debug {
     }
 
     /// Common implementation for debug_write_memory with chip-specific mapping
-    pub fn debug_write_memory_impl<T: SifliTool, F: ChipFrameFormat>(
-        tool: &mut T,
-        address: u32,
-        data: &[u8],
-    ) -> Result<()> {
+    pub fn debug_write_memory_impl<T: SifliTool, F: ChipFrameFormat>(tool: &mut T, address: u32, data: &[u8]) -> Result<()> {
         if data.is_empty() {
             return Ok(());
         }
@@ -497,13 +510,7 @@ pub mod common_debug {
             } else {
                 // For the rest of the cases (header or tail incomplete overwrite):
                 // Call MEMRead first to read out the original 4-byte block.
-                let resp = debug_command_impl::<T, F>(
-                    tool,
-                    SifliUartCommand::MEMRead {
-                        addr: block_addr as u32,
-                        len: 1,
-                    },
-                )?;
+                let resp = debug_command_impl::<T, F>(tool, SifliUartCommand::MEMRead { addr: block_addr as u32, len: 1 })?;
                 let mut block: [u8; 4] = match resp {
                     SifliUartResponse::MEMRead { data: d } if d.len() == 4 => {
                         // Apply chip-specific decoding for proper endianness
@@ -521,8 +528,7 @@ pub mod common_debug {
                     let in_block_offset = overlap_start - block_addr;
                     let in_data_offset = overlap_start - addr_usize;
                     let overlap_len = overlap_end - overlap_start;
-                    block[in_block_offset..in_block_offset + overlap_len]
-                        .copy_from_slice(&data[in_data_offset..in_data_offset + overlap_len]);
+                    block[in_block_offset..in_block_offset + overlap_len].copy_from_slice(&data[in_data_offset..in_data_offset + overlap_len]);
                 }
                 buffer[i * 4..i * 4 + 4].copy_from_slice(&block);
             }
@@ -546,11 +552,7 @@ pub mod common_debug {
     }
 
     /// Common implementation for debug_write_core_reg
-    pub fn debug_write_core_reg_impl<T: SifliTool, F: ChipFrameFormat>(
-        tool: &mut T,
-        addr: u16,
-        value: u32,
-    ) -> Result<()> {
+    pub fn debug_write_core_reg_impl<T: SifliTool, F: ChipFrameFormat>(tool: &mut T, addr: u16, value: u32) -> Result<()> {
         debug_write_word32_impl::<T, F>(tool, DCRDR_ADDR, value)?;
 
         let mut dcrsr_val = Dcrsr(0);

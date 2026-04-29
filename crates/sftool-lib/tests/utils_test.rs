@@ -84,10 +84,7 @@ fn test_hex_to_bin_with_gaps() {
     println!("Number of segments: {}", result.len());
     for (i, segment) in result.iter().enumerate() {
         let file_size = segment.file.metadata().unwrap().len() as usize;
-        println!(
-            "Segment {}: address=0x{:08X}, size={}",
-            i, segment.address, file_size
-        );
+        println!("Segment {}: address=0x{:08X}, size={}", i, segment.address, file_size);
     }
 
     // Should have one segment
@@ -98,10 +95,7 @@ fn test_hex_to_bin_with_gaps() {
 
     // Should have 4 bytes data + 4092 bytes gap + 4 bytes data = 4100 bytes
     let file_size = segment.file.metadata().unwrap().len() as usize;
-    println!(
-        "Expected size: 0x1004 ({}), Actual size: {}",
-        0x1004, file_size
-    );
+    println!("Expected size: 0x1004 ({}), Actual size: {}", 0x1004, file_size);
     assert_eq!(file_size, 0x1004);
 
     // Read file content to verify data
@@ -163,18 +157,12 @@ fn test_hex_to_bin_complex_multi_segment() {
     // First 16 bytes should be the original data: 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10
     assert_eq!(
         &file_data_0[0..16],
-        &[
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
-            0x0F, 0x10
-        ]
+        &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10]
     );
     // Gap between 0x10 and 0x1000 should be filled with 0xFF
     assert!(file_data_0[16..0x1000].iter().all(|&b| b == 0xFF));
     // Last 8 bytes should be the second data block
-    assert_eq!(
-        &file_data_0[0x1000..0x1008],
-        &[0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18]
-    );
+    assert_eq!(&file_data_0[0x1000..0x1008], &[0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18]);
 }
 
 #[test]
@@ -243,8 +231,7 @@ fn test_hex_with_base_to_write_flash_files() {
     temp_hex.write_all(hex_content.as_bytes()).unwrap();
 
     // Test with base address override
-    let result =
-        Utils::hex_with_base_to_write_flash_files(temp_hex.path(), Some(0x10000000)).unwrap();
+    let result = Utils::hex_with_base_to_write_flash_files(temp_hex.path(), Some(0x10000000)).unwrap();
 
     // Should have one segment
     assert_eq!(result.len(), 1);
@@ -256,8 +243,7 @@ fn test_hex_with_base_to_write_flash_files() {
     assert_eq!(segment.address, 0x10010000);
 
     // Test without base address override (should work like original function)
-    let result_no_override =
-        Utils::hex_with_base_to_write_flash_files(temp_hex.path(), None).unwrap();
+    let result_no_override = Utils::hex_with_base_to_write_flash_files(temp_hex.path(), None).unwrap();
     assert_eq!(result_no_override.len(), 1);
     assert_eq!(result_no_override[0].address, 0x08010000);
 }
@@ -300,12 +286,7 @@ fn test_parse_file_info_elf_with_address_error() {
     let result = Utils::parse_file_info(&file_spec);
 
     assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("ELF files do not support")
-    );
+    assert!(result.unwrap_err().to_string().contains("ELF files do not support"));
 
     // Clean up
     std::fs::remove_file(&elf_file_path).unwrap();
@@ -321,8 +302,7 @@ fn test_extended_linear_address_replacement_edge_cases() {
     let mut temp_hex1 = NamedTempFile::new().unwrap();
     temp_hex1.write_all(hex_content1.as_bytes()).unwrap();
 
-    let result1 =
-        Utils::hex_with_base_to_write_flash_files(temp_hex1.path(), Some(0x12000000)).unwrap();
+    let result1 = Utils::hex_with_base_to_write_flash_files(temp_hex1.path(), Some(0x12000000)).unwrap();
     assert_eq!(result1[0].address, 0x12000000);
 
     // Case 2: ExtendedLinearAddress(0x00FF) with override 0x34000000
@@ -331,8 +311,7 @@ fn test_extended_linear_address_replacement_edge_cases() {
     let mut temp_hex2 = NamedTempFile::new().unwrap();
     temp_hex2.write_all(hex_content2.as_bytes()).unwrap();
 
-    let result2 =
-        Utils::hex_with_base_to_write_flash_files(temp_hex2.path(), Some(0x34FF0000)).unwrap();
+    let result2 = Utils::hex_with_base_to_write_flash_files(temp_hex2.path(), Some(0x34FF0000)).unwrap();
     assert_eq!(result2[0].address, 0x34FF0000);
 }
 
@@ -361,10 +340,7 @@ fn test_hex_continuous_segments_merging() {
     let mut file_data = Vec::new();
     let mut file = &segment.file;
     file.read_to_end(&mut file_data).unwrap();
-    assert_eq!(
-        &file_data,
-        &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
-    );
+    assert_eq!(&file_data, &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
 }
 
 #[test]
@@ -372,8 +348,7 @@ fn test_hex_different_base_continuous_segments_merging() {
     // Test that segments from different ExtendedLinearAddress but continuous addresses are merged
     // First segment: ExtendedLinearAddress(0x0800) with 4 bytes at offset 0x0000 -> address 0x08000000-0x08000003
     // Second segment: ExtendedLinearAddress(0x0800) with 4 bytes at offset 0x0004 -> address 0x08000004-0x08000007
-    let hex_content =
-        ":020000040800F2\n:0400000001020304F2\n:020000040800F2\n:0400040005060708DE\n:00000001FF\n";
+    let hex_content = ":020000040800F2\n:0400000001020304F2\n:020000040800F2\n:0400040005060708DE\n:00000001FF\n";
 
     let mut temp_hex = NamedTempFile::new().unwrap();
     temp_hex.write_all(hex_content.as_bytes()).unwrap();
@@ -394,10 +369,7 @@ fn test_hex_different_base_continuous_segments_merging() {
     let mut file_data = Vec::new();
     let mut file = &segment.file;
     file.read_to_end(&mut file_data).unwrap();
-    assert_eq!(
-        &file_data,
-        &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
-    );
+    assert_eq!(&file_data, &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
 }
 
 #[test]
@@ -462,8 +434,7 @@ fn test_hex_with_base_continuous_segments_merging() {
     temp_hex.write_all(hex_content.as_bytes()).unwrap();
 
     // With base address override 0x10000000
-    let result =
-        Utils::hex_with_base_to_write_flash_files(temp_hex.path(), Some(0x10000000)).unwrap();
+    let result = Utils::hex_with_base_to_write_flash_files(temp_hex.path(), Some(0x10000000)).unwrap();
 
     // Should have only one segment (merged)
     assert_eq!(result.len(), 1);
@@ -480,10 +451,7 @@ fn test_hex_with_base_continuous_segments_merging() {
     let mut file_data = Vec::new();
     let mut file = &segment.file;
     file.read_to_end(&mut file_data).unwrap();
-    assert_eq!(
-        &file_data,
-        &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
-    );
+    assert_eq!(&file_data, &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
 }
 
 #[test]
@@ -495,8 +463,7 @@ fn test_hex_with_base_non_aligned_large_gap_segments_are_merged() {
     temp_hex.write_all(hex_content.as_bytes()).unwrap();
 
     // 0x0801 will be replaced to 0x1201 when override is 0x12000000
-    let result =
-        Utils::hex_with_base_to_write_flash_files(temp_hex.path(), Some(0x12000000)).unwrap();
+    let result = Utils::hex_with_base_to_write_flash_files(temp_hex.path(), Some(0x12000000)).unwrap();
 
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].address, 0x12010000);
