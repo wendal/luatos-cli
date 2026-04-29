@@ -12,7 +12,9 @@ pub struct MfguiApp {
 }
 
 impl MfguiApp {
-    pub fn new(_cc: &eframe::CreationContext) -> Self {
+    pub fn new(cc: &eframe::CreationContext) -> Self {
+        // 加载系统中文字体，确保汉字正确渲染
+        load_cjk_font(&cc.egui_ctx);
         Self {
             state: AppState::new(),
             worker: None,
@@ -238,4 +240,33 @@ impl eframe::App for MfguiApp {
             self.state.scroll_to_bottom = false;
         });
     }
+}
+
+// ─── 字体加载 ──────────────────────────────────────────────────────────────────
+
+/// 从系统字体目录加载支持 CJK 的字体，避免中文显示乱码。
+///
+/// 优先顺序（Windows）：微软雅黑 → 宋体 → SimHei。
+/// 加载失败时静默回退到 egui 默认字体（Latin 正常，中文无法显示）。
+fn load_cjk_font(ctx: &egui::Context) {
+    // 候选字体路径（Windows 系统字体目录）
+    let candidates: &[&str] = &[
+        r"C:\Windows\Fonts\msyh.ttc", // 微软雅黑
+        r"C:\Windows\Fonts\msyh.ttf",
+        r"C:\Windows\Fonts\simsun.ttc", // 宋体
+        r"C:\Windows\Fonts\simhei.ttf", // 黑体
+    ];
+
+    for path in candidates {
+        if let Ok(bytes) = std::fs::read(path) {
+            let mut fonts = egui::FontDefinitions::default();
+            fonts.font_data.insert("cjk_font".to_owned(), egui::FontData::from_owned(bytes));
+            // 插入到字体栈首位，使中文/英文均由该字体渲染
+            fonts.families.entry(egui::FontFamily::Proportional).or_default().insert(0, "cjk_font".to_owned());
+            fonts.families.entry(egui::FontFamily::Monospace).or_default().push("cjk_font".to_owned());
+            ctx.set_fonts(fonts);
+            return;
+        }
+    }
+    // 无系统字体时不报错，UI 仍可使用（中文可能显示为方块）
 }
