@@ -17,6 +17,7 @@ All notable changes to this project will be documented in this file.
 - **进度条 + 日志** — 实时显示刷机阶段和百分比，彩色日志滚动显示（最多 500 行）
 - **全芯片支持** — 覆盖 BK7258、XT804、CCM4211、EC718、SF32LB58 五大芯片系列
 - **18 个单元测试** — 覆盖串口需求判断、启动条件校验、日志截断、状态重置、消息转发等逻辑
+- **CJK 字体支持** — 启动时自动加载 Windows 系统字体（微软雅黑 → 宋体 → 黑体），确保中文正确渲染
 
 ### Bug Fixes
 
