@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 变更
+
+#### 量产刷机 GUI 升级 egui 0.34.1
+
+- 将 `luatos-mfgui` 的 egui/eframe 从 0.27 升级至最新稳定版 **0.34.1**
+- 适配 0.34 API 变更：
+  - `eframe::App` 必须实现方法改为 `fn ui(&mut self, ui, frame)`（原 `fn update` 已废弃）
+  - 非绘制逻辑（worker 轮询、`request_repaint`）迁移到 `fn logic(&mut self, ctx, frame)`
+  - `font_data` HashMap 值类型改为 `Arc<FontData>`，字体插入语句更新
+  - `AppCreator` 返回值改为 `Result<Box<dyn App>>`，入口处加 `Ok()`
+- 更新 `docs/mfgui-dev-notes.md`，记录 0.27→0.34 迁移要点与 rsproxy.cn 镜像配置方法
+
 ### 新增
 
 #### 量产刷机 GUI（luatos-mfgui）

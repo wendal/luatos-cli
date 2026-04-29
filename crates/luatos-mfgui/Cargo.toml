@@ -11,8 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 # GUI 框架（纯 Rust，无需 Node.js）
-egui = "0.27"
-eframe = { version = "0.27", default-features = false, features = ["default_fonts", "glow"] }
+egui = "0.34"
+eframe = { version = "0.34", default-features = false, features = ["default_fonts", "glow"] }
 
 # 文件/目录选择对话框（Windows: 原生 WinAPI；Linux 需 gtk3 或 xdg-portal 功能）
 rfd = { version = "0.15", default-features = false }

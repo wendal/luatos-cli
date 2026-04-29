@@ -28,7 +28,7 @@ fn main() {
         ..Default::default()
     };
 
-    if let Err(e) = eframe::run_native(&title, options, Box::new(|cc| Box::new(app::MfguiApp::new(cc)))) {
+    if let Err(e) = eframe::run_native(&title, options, Box::new(|cc| Ok(Box::new(app::MfguiApp::new(cc))))) {
         eprintln!("启动失败: {e}");
         std::process::exit(1);
     }

@@ -16,62 +16,49 @@
 
 ### 根本原因
 
-本机 Cargo 缓存（`~/.cargo/registry/src/`）中只有 **egui 0.27.2 / eframe 0.27.2**，
-而 egui 0.34 依赖 `winit 0.30.x`（及间接的 `orbclient`），这些均不在缓存中，
-必须从网络下载，在弱网环境下必然失败。
+本机 Cargo 缓存（`~/.cargo/registry/src/`）中无 egui 0.34 相关包，
+而 egui 0.34 依赖 `winit 0.30.x` 等，这些均不在缓存中，必须从网络下载。
 
 ### 解决办法
 
-1. 先枚举本地缓存中已有的版本：
-   ```powershell
-   Get-ChildItem "$env:USERPROFILE\.cargo\registry\src\index.crates.io-*" -Directory |
-       Where-Object { $_.Name -match "^egui-" } | Select-Object Name
-   ```
-2. 将 `Cargo.toml` 中的版本锁定到缓存中已有的版本，例如：
-   ```toml
-   egui  = "0.27"
-   eframe = { version = "0.27", default-features = false, features = ["default_fonts", "glow"] }
-   ```
+配置国内 Cargo 镜像（rsproxy.cn）：在 `~/.cargo/config.toml` 中添加：
+
+```toml
+[source.crates-io]
+replace-with = "rsproxy-sparse"
+
+[source.rsproxy-sparse]
+registry = "sparse+https://rsproxy.cn/index/"
+
+[net]
+git-fetch-with-cli = true
+```
+
+此文件不纳入版本库（属于个人开发机配置），配置后即可正常下载 egui 0.34。
 
 ### 经验总结
 
-> 在弱网/离线环境添加新 GUI 依赖时，**务必先确认本地缓存中已有的版本**，
-> 再写入 `Cargo.toml`，否则即使版本号合法也会因网络问题导致编译失败。
+> 在弱网/离线环境添加新 GUI 依赖时，优先配置 rsproxy.cn 镜像，而非降级到旧版本。
 
 ---
 
-## 坑2：eframe AppCreator 跨版本 API 不兼容
+## 坑2：eframe 0.27 → 0.34 API 差异
 
-### 现象
+### 差异对照表
 
-将 egui 从 0.34 降级到 0.27 后，编译报错：
-
-```
-error[E0308]: mismatched types
-   --> src/main.rs:34:23
-    |
-    |     Box::new(|cc| Ok(Box::new(app::MfguiApp::new(cc)))),
-    |                   ^^ expected `Box<dyn App>`, found `Result<Box<dyn App>>`
-```
-
-### 根本原因
-
-`AppCreator` 类型定义在两个版本之间不同：
-
-| 版本 | `AppCreator` 定义 |
-|------|------------------|
-| 0.27 | `Box<dyn FnOnce(&CreationContext) -> Box<dyn App>>` |
-| 0.34 | `Box<dyn FnOnce(&CreationContext) -> Result<Box<dyn App>>>` |
+| 位置 | 0.27 写法 | 0.34 写法 |
+|------|-----------|-----------|
+| `AppCreator` 返回值 | `Box::new(\|cc\| Box::new(App::new(cc)))` | `Box::new(\|cc\| Ok(Box::new(App::new(cc))))` |
+| `App` trait 必须实现的方法 | `fn update(&mut self, ctx, frame)` | `fn ui(&mut self, ui: &mut egui::Ui, frame)` |
+| 非绘制逻辑钩子 | 无，写在 `update` 开头 | `fn logic(&mut self, ctx, frame)`（可选） |
+| `font_data` HashMap 值类型 | `FontData` | `Arc<FontData>` |
 
 ### 解决办法
 
-```rust
-// 0.34（错误，0.27 不兼容）
-Box::new(|cc| Ok(Box::new(app::MfguiApp::new(cc))))
-
-// 0.27（正确）
-Box::new(|cc| Box::new(app::MfguiApp::new(cc)))
-```
+1. `main.rs`：`AppCreator` 闭包返回 `Ok(Box::new(...))`
+2. `app.rs`：将原 `update` 中的非绘制逻辑（worker 轮询、`request_repaint`）移到 `logic()`
+3. `app.rs`：将原 `update` 中的 UI 代码（去掉 `CentralPanel::default().show(ctx, ...)` 外层）写到 `fn ui`
+4. 字体插入：`Arc::new(egui::FontData::from_owned(bytes))`
 
 ---
 
@@ -81,18 +68,13 @@ Box::new(|cc| Box::new(app::MfguiApp::new(cc)))
 
 添加 `rfd = "0.15"` 后，Linux 环境编译失败，提示需要下载 `ashpd`（xdg-portal 绑定）。
 
-### 根本原因
-
-rfd 的默认 features 在 Linux 上包含 `xdg-portal` / `gtk3`，会引入 `ashpd` 等重量级依赖。
-
 ### 解决办法
 
 ```toml
 rfd = { version = "0.15", default-features = false }
 ```
 
-Windows 上无需 xdg-portal，关闭默认 feature 后直接使用 WinAPI 原生对话框，
-功能完整，体积更小。
+Windows 上无需 xdg-portal，关闭默认 feature 后直接使用 WinAPI 原生对话框。
 
 ---
 
@@ -105,12 +87,10 @@ Windows 上无需 xdg-portal，关闭默认 feature 后直接使用 WinAPI 原�
 ### 根本原因
 
 egui 内置的默认字体（`NotoSans`）**仅包含 Latin 字符集**，不含 CJK（汉字、假名等）。
-当渲染找不到对应字形时，显示替代方块。
 
 ### 解决办法
 
-在 `app.rs` 中，于 `MfguiApp::new(cc)` 里调用字体加载函数，
-从 Windows 系统字体目录加载支持 CJK 的字体，通过 `ctx.set_fonts()` 注入：
+在 `MfguiApp::new(cc)` 里调用字体加载函数，从 Windows 系统字体目录加载支持 CJK 的字体：
 
 ```rust
 fn load_cjk_font(ctx: &egui::Context) {
@@ -122,7 +102,8 @@ fn load_cjk_font(ctx: &egui::Context) {
     for path in candidates {
         if let Ok(bytes) = std::fs::read(path) {
             let mut fonts = egui::FontDefinitions::default();
-            fonts.font_data.insert("cjk".to_owned(), egui::FontData::from_owned(bytes));
+            // egui 0.34: font_data 值为 Arc<FontData>
+            fonts.font_data.insert("cjk".to_owned(), Arc::new(egui::FontData::from_owned(bytes)));
             fonts.families.entry(egui::FontFamily::Proportional)
                 .or_default().insert(0, "cjk".to_owned());
             fonts.families.entry(egui::FontFamily::Monospace)
@@ -134,41 +115,22 @@ fn load_cjk_font(ctx: &egui::Context) {
 }
 ```
 
-**关键点：**
-- 字体插入到 `Proportional` 字体栈的 **第 0 位**（最高优先级），
-  使 egui 优先用该字体渲染所有文字（中英文均覆盖）。
-- 同时 `push` 到 `Monospace` 字体栈末尾，作为日志区的汉字兜底。
-- 加载失败时静默回退，程序仍可正常启动（中文显示为方块但不崩溃）。
-
-### 跨平台推广
-
-macOS / Linux 可在 `candidates` 中追加对应路径：
-
-```rust
-// macOS
-"/System/Library/Fonts/PingFang.ttc",
-"/Library/Fonts/Arial Unicode.ttf",
-
-// Linux
-"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-"/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-```
-
 ---
 
 ## 架构说明
 
 ```
 luatos-mfgui/
-├── Cargo.toml        — 依赖：egui 0.27 + eframe 0.27 + rfd 0.15（无默认 features）
+├── Cargo.toml        — 依赖：egui 0.34 + eframe 0.34 + rfd 0.15（无默认 features）
 └── src/
     ├── main.rs       — eframe 入口，窗口标题含版本号
-    ├── app.rs        — MfguiApp（egui App trait），UI 渲染 + 字体加载
-    ├── state.rs      — AppState 纯逻辑（无 egui 依赖），含 12 个单元测试
+    ├── app.rs        — MfguiApp（egui App trait），logic(轮询)+ui(渲染)+字体加载
+    ├── state.rs      — AppState 纯逻辑（无 egui 依赖），含 15 个单元测试
     └── worker.rs     — 后台刷机线程，mpsc channel 消息，含 3 个单元测试
 ```
 
 **设计原则：**
 - `state.rs` 不依赖任何 GUI 库，所有业务逻辑可独立单元测试
 - `worker.rs` 通过 `Arc<AtomicBool>` 实现取消，`ProgressCallback` 克隆发送到 channel
-- `app.rs` 只做状态展示与事件派发，`poll_worker()` 在每帧 `update()` 中非阻塞轮询
+- `app.rs` 只做状态展示与事件派发，`poll_worker()` 在每帧 `logic()` 中非阻塞轮询
+
