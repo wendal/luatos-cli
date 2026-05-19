@@ -41,6 +41,7 @@ ureq = "2"
 sha2 = "0.10"
 indicatif = "0.17"
 crc32fast = "1"
+md-5 = "0.10"
 
 [profile.release]
 lto = "fat"
