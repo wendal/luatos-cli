@@ -24,9 +24,11 @@ fn check_script_size(image_len: usize, partition_size: usize) -> anyhow::Result<
 }
 
 pub fn cmd_flash_run(
-    soc: &str,
+    soc: Option<&str>,
+    binpkg: Option<&str>,
     port: &str,
     baud: Option<u32>,
+    force_br: Option<u32>,
     script_folders: Option<&[String]>,
     step: u8,
     format: &OutputFormat,
@@ -45,6 +47,36 @@ pub fn cmd_flash_run(
     })?;
 
     let on_progress = make_progress_callback(format, "flash.run", step);
+
+    if let Some(binpkg) = binpkg {
+        if soc.is_some() {
+            anyhow::bail!("--soc and --binpkg are mutually exclusive");
+        }
+        if baud.is_some() {
+            anyhow::bail!("--baud is only supported with --soc flashing");
+        }
+        if script_folders.is_some() {
+            anyhow::bail!("--script is only supported with --soc flashing");
+        }
+        if reset_config.is_some() {
+            anyhow::bail!("--auto-reset is not supported with EC718 --binpkg flashing");
+        }
+
+        let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress)?;
+        luatos_flash::ec718::flash_ec718_binpkg(binpkg, &boot_port, force_br.unwrap_or(0), &on_progress, cancel)?;
+        match format {
+            OutputFormat::Text => {
+                println!("EC718 BINPKG flash completed successfully.");
+            }
+            OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": "ec7xx", "format": "binpkg" }))?,
+        }
+        return Ok(());
+    }
+
+    let soc = soc.ok_or_else(|| anyhow::anyhow!("Either --soc or --binpkg must be specified"))?;
+    if force_br.is_some() {
+        anyhow::bail!("--force-br is only supported with EC718 --binpkg flashing");
+    }
 
     // Detect chip type from SOC info.json
     let info = luatos_soc::read_soc_info(soc)?;

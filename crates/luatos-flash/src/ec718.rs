@@ -1298,6 +1298,22 @@ pub fn flash_ec718(soc_path: &str, port: &str, on_progress: &ProgressCallback, c
 
     log::info!("EC718 chip: {}, {} entries, force_br={}", binpkg.chip, binpkg.entries.len(), force_br,);
 
+    flash_ec718_parsed(binpkg, force_br, port, on_progress, cancel)
+}
+
+/// Flash EC718 firmware from a raw .binpkg file via native Rust protocol.
+pub fn flash_ec718_binpkg(binpkg_path: &str, port: &str, force_br: u32, on_progress: &ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
+    on_progress(&FlashProgress::info("Preparing", 0.0, "Parsing BINPKG file..."));
+
+    let fdata = std::fs::read(binpkg_path).with_context(|| format!("Failed to read binpkg file: {binpkg_path}"))?;
+    let binpkg = parse_binpkg(&fdata)?;
+
+    log::info!("EC718 binpkg chip: {}, {} entries, force_br={}", binpkg.chip, binpkg.entries.len(), force_br,);
+
+    flash_ec718_parsed(binpkg, force_br, port, on_progress, cancel)
+}
+
+fn flash_ec718_parsed(binpkg: BinpkgResult, force_br: u32, port: &str, on_progress: &ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
     // Determine port type and agentboot binary
     let port_type = detect_port_type(port);
     let agentboot = match port_type {

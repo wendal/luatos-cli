@@ -5,9 +5,10 @@
 //   luatos-cli soc info <path>          # Show SOC file info
 //   luatos-cli soc unpack <path> -o dir # Extract SOC file
 //   luatos-cli flash run --soc <path> --port COM6
+//   luatos-cli flash run --binpkg <path> --port COM6
 //   luatos-cli flash test --soc <path> --port COM6
 
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand};
 
 mod cmd_build;
 mod cmd_device;
@@ -170,16 +171,27 @@ impl SignalLevel {
 #[derive(Subcommand)]
 enum FlashCommands {
     /// Full firmware flash (ROM + optional script)
+    #[command(group(
+        ArgGroup::new("firmware")
+            .required(true)
+            .args(["soc", "binpkg"])
+    ))]
     Run {
         /// Path to .soc file
         #[arg(long)]
-        soc: String,
+        soc: Option<String>,
+        /// Path to EC718 .binpkg file
+        #[arg(long)]
+        binpkg: Option<String>,
         /// Serial port (e.g. COM6)
         #[arg(long)]
         port: String,
         /// Override baud rate
         #[arg(long)]
         baud: Option<u32>,
+        /// EC718 agentboot baud override for --binpkg (0 keeps current default)
+        #[arg(long)]
+        force_br: Option<u32>,
         /// Script folder (optional, can specify multiple)
         #[arg(long)]
         script: Vec<String>,
@@ -638,8 +650,10 @@ fn main() {
         Commands::Flash { action, progress_step } => match action {
             FlashCommands::Run {
                 soc,
+                binpkg,
                 port,
                 baud,
+                force_br,
                 script,
                 auto_reset,
                 dtr_boot,
@@ -659,7 +673,17 @@ fn main() {
                 } else {
                     None
                 };
-                cmd_flash::cmd_flash_run(&soc, &port, baud, script_opt, progress_step, &cli.format, reset_config)
+                cmd_flash::cmd_flash_run(
+                    soc.as_deref(),
+                    binpkg.as_deref(),
+                    &port,
+                    baud,
+                    force_br,
+                    script_opt,
+                    progress_step,
+                    &cli.format,
+                    reset_config,
+                )
             }
             FlashCommands::Script {
                 soc,
