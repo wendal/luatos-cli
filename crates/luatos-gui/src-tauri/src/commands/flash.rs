@@ -48,7 +48,7 @@ pub async fn flash_run(
             }
             "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" => {
                 let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(&port), &on_progress).map_err(|e| format!("EC718 进入下载模式失败: {e}"))?;
-                luatos_flash::ec718::flash_ec718(&soc_path, &boot_port, &on_progress, cancel).map_err(|e| format!("EC718 刷机失败: {e}"))?;
+                luatos_flash::ec718::flash_ec718(&soc_path, &boot_port, None, None, None, &on_progress, cancel).map_err(|e| format!("EC718 刷机失败: {e}"))?;
             }
             _ => {
                 return Err(format!("不支持的芯片类型: {chip}"));

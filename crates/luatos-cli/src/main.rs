@@ -41,6 +41,13 @@ enum OutputFormat {
     Jsonl,
 }
 
+#[derive(Clone, Copy, PartialEq, clap::ValueEnum)]
+pub(crate) enum Ec718PortMode {
+    Auto,
+    Usb,
+    Uart,
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Serial port tools
@@ -189,9 +196,15 @@ enum FlashCommands {
         /// Override baud rate
         #[arg(long)]
         baud: Option<u32>,
-        /// EC718 agentboot baud override for --binpkg (0 keeps current default)
-        #[arg(long)]
-        force_br: Option<u32>,
+        /// EC718 agentboot/download baud override (default: UART 921600, USB unchanged)
+        #[arg(long = "agent-baud", visible_alias = "agbaud", alias = "force-br")]
+        agent_baud: Option<u32>,
+        /// EC718 UART1 AT reset baud override (default: 115200)
+        #[arg(long = "at-baud")]
+        at_baud: Option<u32>,
+        /// EC718 download port mode for --binpkg/--soc
+        #[arg(long, value_enum, default_value = "auto")]
+        port_mode: Ec718PortMode,
         /// Script folder (optional, can specify multiple)
         #[arg(long)]
         script: Vec<String>,
@@ -653,7 +666,9 @@ fn main() {
                 binpkg,
                 port,
                 baud,
-                force_br,
+                agent_baud,
+                at_baud,
+                port_mode,
                 script,
                 auto_reset,
                 dtr_boot,
@@ -678,7 +693,9 @@ fn main() {
                     binpkg.as_deref(),
                     &port,
                     baud,
-                    force_br,
+                    agent_baud,
+                    at_baud,
+                    port_mode,
                     script_opt,
                     progress_step,
                     &cli.format,
