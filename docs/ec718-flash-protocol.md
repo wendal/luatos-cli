@@ -105,10 +105,51 @@ DIAG_REBOOT_DOWNLOAD_MS = 0x42  // 重启到下载模式
 4. 等待模组以 VID=0x17D1 重新枚举
 
 ### UART模式
-- 使用物理UART引脚 (TX/RX), 非USB CDC
+- 使用物理 UART1/串口1 引脚 (TX/RX), 非USB CDC
 - 需要外部USB转UART适配器
-- 可能需要手动控制BOOT引脚
-- 波特率: 115200 (初始同步)
+- 当前仅支持 UART1/串口1 下载; UART2等其他物理串口不支持串口下载
+- FlashTools detect模式不需要手动控制BOOT引脚, 但要求固件能响应AT复位命令
+- AT复位波特率: 默认 115200, 可通过 CLI `--at-baud` 覆盖
+- BootROM DLBOOT初始同步波特率: 115200
+- AgentBoot/下载波特率: 默认 921600, 可通过 CLI `--agent-baud` / `--agbaud` 覆盖
+
+#### UART detect进入下载模式流程
+
+该流程对应 FlashTools `config_pkg_product_uart.ini` 中的 `detect=1`, `reset=2`, `atreset=at+ecrst=delay,650`, `atbaud=115200`, `agbaud=921600`。
+
+```
+1. 打开物理 UART1/串口1 端口, at_baud baud (默认 115200)
+2. 清 DTR/RTS, 清空串口缓冲
+3. 发送: AT+ECRST=delay,650\r\n
+4. 等待约 200ms
+5. 发送: 0x7E 0x00 0x02 0x7E
+6. 关闭并重新打开同一个 UART1/串口1 端口, 115200 baud
+7. 立即执行 DLBOOT sync
+8. 下载 ec718m_uart.bin agentboot
+9. image_head(AGBT, baud=921600 或用户指定值)
+10. 串口切换到 agent baud 后继续 AGBOOT/LPC 烧录
+```
+
+注意:
+- 如果固件已经死机, 不能响应 `AT+ECRST`, UART detect会失败。此时可以先启动刷机命令, 在等待 DLBOOT sync 阶段按一下 RESET 后重试。
+- 如果固件把 UART1 AT 波特率改成非 115200, 需要用 `--at-baud` 指定运行态AT波特率。
+- USB模式仍使用USB下载口和 `ec718m_usb.bin`; UART模式使用物理 UART1/串口1 和 `ec718m_uart.bin`。
+- CLI 默认 `--port-mode auto`, 会保持原来的USB自动进入下载逻辑。需要强制走UART时使用 `--port-mode uart`。
+
+示例:
+```bash
+# USB/自动模式: 保持原有行为
+luatos-cli flash run --binpkg firmware.binpkg --port COM3
+
+# 强制物理UART模式
+luatos-cli flash run --binpkg firmware.binpkg --port COM6 --port-mode uart
+
+# 固件运行态UART1 AT波特率不是115200时
+luatos-cli flash run --binpkg firmware.binpkg --port COM6 --port-mode uart --at-baud 9600
+
+# 某些USB-UART不稳定时降低下载波特率
+luatos-cli flash run --binpkg firmware.binpkg --port COM6 --port-mode uart --agent-baud 460800
+```
 
 ## 刷机协议详解
 
@@ -205,7 +246,7 @@ DIAG_REBOOT_DOWNLOAD_MS = 0x42  // 重启到下载模式
 1. 打开端口 → DLBOOT sync
 2. AgentBoot下载:
    a. base_info(HEAD) → 获取设备信息
-   b. image_head(AGBT, baud=921600) → 发送agentboot镜像头
+   b. image_head(AGBT, baud=agent_baud) → 发送agentboot镜像头
    c. DLBOOT sync (确认)
    d. base_info(BL) → bootloader信息
    e. package_data(agentboot_bin) → 发送agentboot二进制
@@ -238,6 +279,24 @@ DIAG_REBOOT_DOWNLOAD_MS = 0x42  // 重启到下载模式
 - ec718m_usb.bin: 40696字节 (USB模式)
 - ec718m_uart.bin: 47890字节 (UART模式)
 - 来源: https://github.com/yuzhan-tech/luatos-tools
+
+## CLI EC718刷机参数
+
+`flash run` 支持两种EC718固件输入:
+- `--soc firmware.soc`: 从SOC包中提取 `.binpkg` 后烧录
+- `--binpkg firmware.binpkg`: 直接烧录原始 `.binpkg`
+
+EC718专用参数:
+- `--port-mode auto|usb|uart`: 端口模式, 默认 `auto`
+- `--at-baud <baud>`: 覆盖 UART1 detect 阶段的 AT 复位波特率, 默认 115200
+- `--agent-baud <baud>`: 覆盖 AgentBoot/下载波特率
+- `--agbaud <baud>`: `--agent-baud` 的兼容短别名
+- `--force-br <baud>`: 旧参数兼容别名, 不在帮助中主动展示
+
+模式说明:
+- `auto`: 保持旧行为。优先识别USB下载口, 否则通过USB命令口发送AT+DIAG进入USB下载模式, 最后才回退到用户指定端口。
+- `usb`: 强制按USB下载口处理, 使用 `ec718m_usb.bin`。
+- `uart`: 直接使用 `--port` 指定的物理 UART1/串口1 端口, 使用 UART detect 流程和 `ec718m_uart.bin`。
 
 ## 日志输出
 

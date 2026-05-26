@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use serialport::SerialPort;
+use serialport::{ClearBuffer, SerialPort};
 use sha2::{Digest, Sha256};
 
 use crate::{FlashProgress, ProgressCallback};
@@ -73,6 +73,12 @@ const LPC_SYS_RESET_ACK: &[u8] = b"ZzZzZzZz";
 // Protocol sizes
 const FIXED_PROTOCOL_RSP_LEN: usize = 6;
 const MAX_DATA_BLOCK_SIZE: usize = 0x10000; // 64KB
+
+// FlashTools UART detect-mode defaults for EC618/EC718.
+const UART_BOOT_BAUD: u32 = 115200;
+const UART_AGENT_BAUD: u32 = 921600;
+const UART_AT_RESET_SEQUENCE: &[u8] = b"AT+ECRST=delay,650\r\n";
+const UART_DOWNLOAD_DIAG_FRAME: &[u8] = b"\x7e\x00\x02\x7e";
 
 // Storage types
 const STYPE_AP_FLASH: u8 = 0x0;
@@ -138,7 +144,20 @@ impl Ec718PortType {
     fn baudrate(&self) -> u32 {
         match self {
             Ec718PortType::Usb => 921600,
-            Ec718PortType::Uart => 115200,
+            Ec718PortType::Uart => UART_BOOT_BAUD,
+        }
+    }
+
+    fn agent_baudrate(&self, soc_force_br: u32, override_baud: Option<u32>) -> u32 {
+        if let Some(baud) = override_baud {
+            baud
+        } else if soc_force_br != 0 {
+            soc_force_br
+        } else {
+            match self {
+                Ec718PortType::Usb => 0,
+                Ec718PortType::Uart => UART_AGENT_BAUD,
+            }
         }
     }
 }
@@ -148,13 +167,91 @@ pub fn detect_port_type(port_name: &str) -> Ec718PortType {
     if let Ok(ports) = serialport::available_ports() {
         for p in &ports {
             if p.port_name == port_name {
-                if let serialport::SerialPortType::UsbPort(_) = &p.port_type {
-                    return Ec718PortType::Usb;
+                if let serialport::SerialPortType::UsbPort(usb) = &p.port_type {
+                    if (usb.vid == BOOT_VID && usb.pid == BOOT_PID) || (usb.vid == LOG_VID && usb.pid == LOG_PID) {
+                        return Ec718PortType::Usb;
+                    }
+                    return Ec718PortType::Uart;
+                } else {
+                    return Ec718PortType::Uart;
                 }
             }
         }
     }
     Ec718PortType::Uart
+}
+
+fn resolve_port_type(port_name: &str, forced_port_type: Option<Ec718PortType>) -> Ec718PortType {
+    forced_port_type.unwrap_or_else(|| detect_port_type(port_name))
+}
+
+/// Trigger EC618/EC718 UART detect download mode.
+///
+/// FlashTools' `config_pkg_product_uart.ini` uses detect=1/reset=2: open the
+/// UART1 at 115200, send `AT+ECRST=delay,650`, send the download DIAG frame,
+/// then listen for BootROM.
+/// If the firmware is hung and cannot receive AT, callers should retry while
+/// the user manually presses RESET.
+fn trigger_uart_detect_reset(port_name: &str, at_baudrate: u32, on_progress: &ProgressCallback) -> Result<()> {
+    on_progress(&FlashProgress::info(
+        "Rebooting",
+        1.5,
+        &format!("Sending UART1 AT reset on {} at {} baud...", port_name, at_baudrate),
+    ));
+
+    let mut port = serialport::new(port_name, at_baudrate)
+        .timeout(Duration::from_millis(800))
+        .preserve_dtr_on_open()
+        .open()
+        .with_context(|| format!("Failed to open UART reset port {}", port_name))?;
+
+    port.write_data_terminal_ready(false).context("Failed to clear UART reset DTR")?;
+    port.write_request_to_send(false).context("Failed to clear UART reset RTS")?;
+    let _ = port.clear(ClearBuffer::All);
+    port.write_all(UART_AT_RESET_SEQUENCE).context("Failed to send UART AT reset")?;
+    port.flush().context("Failed to flush UART AT reset")?;
+    std::thread::sleep(Duration::from_millis(200));
+    port.write_all(UART_DOWNLOAD_DIAG_FRAME).context("Failed to send UART download DIAG frame")?;
+    port.flush().context("Failed to flush UART download DIAG frame")?;
+    std::thread::sleep(Duration::from_millis(50));
+    drop(port);
+
+    Ok(())
+}
+
+fn open_ec718_flash_port(port_name: &str, port_type: Ec718PortType, baudrate: u32) -> Result<Box<dyn SerialPort>> {
+    let mut port = serialport::new(port_name, baudrate)
+        .timeout(Duration::from_millis(800))
+        .preserve_dtr_on_open()
+        .open()
+        .with_context(|| format!("Failed to open serial port {}", port_name))?;
+
+    match port_type {
+        Ec718PortType::Usb => {
+            port.write_data_terminal_ready(true).context("Failed to set DTR")?;
+        }
+        Ec718PortType::Uart => {
+            port.write_data_terminal_ready(false).context("Failed to clear DTR")?;
+            port.write_request_to_send(false).context("Failed to clear RTS")?;
+        }
+    }
+
+    let _ = port.clear(ClearBuffer::All);
+    Ok(port)
+}
+
+fn configure_agent_baud(port: &mut dyn SerialPort, agent_baudrate: u32) -> Result<()> {
+    if agent_baudrate == 0 {
+        return Ok(());
+    }
+
+    port.set_baud_rate(agent_baudrate)
+        .with_context(|| format!("Failed to switch serial port to agent baud {}", agent_baudrate))?;
+    port.set_timeout(Duration::from_millis(800))
+        .with_context(|| format!("Failed to set serial timeout after switching to {}", agent_baudrate))?;
+    let _ = port.clear(ClearBuffer::All);
+    std::thread::sleep(Duration::from_millis(100));
+    Ok(())
 }
 
 // ─── Checksum Functions ─────────────────────────────────────────────────────
@@ -490,6 +587,14 @@ pub fn parse_binpkg(fdata: &[u8]) -> Result<BinpkgResult> {
 // ─── Sync Protocol ──────────────────────────────────────────────────────────
 
 fn burn_sync(port: &mut dyn SerialPort, sync_type: SyncType, counter: u32) -> Result<()> {
+    burn_sync_inner(port, sync_type, counter, false)
+}
+
+fn burn_sync_and_drain_uart_tail(port: &mut dyn SerialPort, sync_type: SyncType, counter: u32) -> Result<()> {
+    burn_sync_inner(port, sync_type, counter, true)
+}
+
+fn burn_sync_inner(port: &mut dyn SerialPort, sync_type: SyncType, counter: u32, drain_uart_tail: bool) -> Result<()> {
     log::debug!("burn_sync {:?} counter={}", sync_type, counter);
     let handshake = sync_type.handshake_value();
     let send_buf = handshake.to_le_bytes();
@@ -503,6 +608,14 @@ fn burn_sync(port: &mut dyn SerialPort, sync_type: SyncType, counter: u32) -> Re
         if let Some(recv_buf) = com_read(port, 4)? {
             log::debug!("sync recv: {:02x?} (expect {:02x?})", recv_buf, send_buf);
             if recv_buf.len() < 4 {
+                continue;
+            }
+            if drain_uart_tail && matches!(sync_type, SyncType::DlBoot) {
+                if recv_buf == send_buf {
+                    log::debug!("sync done");
+                    drain_uart_detect_tail(port)?;
+                    return Ok(());
+                }
                 continue;
             }
             if matches!(sync_type, SyncType::DlBoot) {
@@ -520,6 +633,34 @@ fn burn_sync(port: &mut dyn SerialPort, sync_type: SyncType, counter: u32) -> Re
         }
     }
     bail!("Sync failed for {:?}", sync_type);
+}
+
+fn drain_uart_detect_tail(port: &mut dyn SerialPort) -> Result<()> {
+    let mut drained = Vec::new();
+    let old_timeout = port.timeout();
+    port.set_timeout(Duration::from_millis(20))
+        .context("Failed to set short timeout while draining UART detect tail")?;
+
+    for _ in 0..16 {
+        match com_read(port, 64) {
+            Ok(Some(mut data)) => {
+                drained.append(&mut data);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok(None) => break,
+            Err(e) => {
+                let _ = port.set_timeout(old_timeout);
+                return Err(e).context("Failed to drain UART detect tail");
+            }
+        }
+    }
+
+    port.set_timeout(old_timeout).context("Failed to restore serial timeout after draining UART detect tail")?;
+    if !drained.is_empty() {
+        let drained_hex = drained.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join("");
+        log::debug!("drained UART detect tail: {}", drained_hex);
+    }
+    Ok(())
 }
 
 // ─── Command Send/Receive ───────────────────────────────────────────────────
@@ -1290,7 +1431,15 @@ pub fn build_log_probe() -> Vec<u8> {
 /// Flash EC718 firmware via native Rust protocol.
 ///
 /// Handles full flash: agentboot + all partitions from .soc file.
-pub fn flash_ec718(soc_path: &str, port: &str, on_progress: &ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
+pub fn flash_ec718(
+    soc_path: &str,
+    port: &str,
+    forced_port_type: Option<Ec718PortType>,
+    agent_baud_override: Option<u32>,
+    at_baud_override: Option<u32>,
+    on_progress: &ProgressCallback,
+    cancel: Arc<AtomicBool>,
+) -> Result<()> {
     on_progress(&FlashProgress::info("Preparing", 0.0, "Parsing SOC file..."));
 
     // Parse SOC file
@@ -1298,23 +1447,65 @@ pub fn flash_ec718(soc_path: &str, port: &str, on_progress: &ProgressCallback, c
 
     log::info!("EC718 chip: {}, {} entries, force_br={}", binpkg.chip, binpkg.entries.len(), force_br,);
 
+    flash_ec718_parsed(binpkg, force_br, port, forced_port_type, agent_baud_override, at_baud_override, on_progress, cancel)
+}
+
+/// Flash EC718 firmware from a raw .binpkg file via native Rust protocol.
+pub fn flash_ec718_binpkg(
+    binpkg_path: &str,
+    port: &str,
+    forced_port_type: Option<Ec718PortType>,
+    agent_baud_override: Option<u32>,
+    at_baud_override: Option<u32>,
+    on_progress: &ProgressCallback,
+    cancel: Arc<AtomicBool>,
+) -> Result<()> {
+    on_progress(&FlashProgress::info("Preparing", 0.0, "Parsing BINPKG file..."));
+
+    let fdata = std::fs::read(binpkg_path).with_context(|| format!("Failed to read binpkg file: {binpkg_path}"))?;
+    let binpkg = parse_binpkg(&fdata)?;
+
+    log::info!(
+        "EC718 binpkg chip: {}, {} entries, agent_baud_override={:?}",
+        binpkg.chip,
+        binpkg.entries.len(),
+        agent_baud_override,
+    );
+
+    flash_ec718_parsed(binpkg, 0, port, forced_port_type, agent_baud_override, at_baud_override, on_progress, cancel)
+}
+
+fn flash_ec718_parsed(
+    binpkg: BinpkgResult,
+    force_br: u32,
+    port: &str,
+    forced_port_type: Option<Ec718PortType>,
+    agent_baud_override: Option<u32>,
+    at_baud_override: Option<u32>,
+    on_progress: &ProgressCallback,
+    cancel: Arc<AtomicBool>,
+) -> Result<()> {
     // Determine port type and agentboot binary
-    let port_type = detect_port_type(port);
+    let port_type = resolve_port_type(port, forced_port_type);
     let agentboot = match port_type {
         Ec718PortType::Usb => AGENTBOOT_EC718M_USB,
         Ec718PortType::Uart => AGENTBOOT_EC718M_UART,
     };
 
-    on_progress(&FlashProgress::info("Connecting", 1.0, &format!("Opening {} ({:?} mode)...", port, port_type)));
-
-    // Open serial port
     let baudrate = port_type.baudrate();
-    let mut serial = serialport::new(port, baudrate)
-        .timeout(Duration::from_millis(800))
-        .open()
-        .with_context(|| format!("Failed to open serial port {}", port))?;
+    let agent_baudrate = port_type.agent_baudrate(force_br, agent_baud_override);
 
-    serial.write_data_terminal_ready(true).context("Failed to set DTR")?;
+    if port_type == Ec718PortType::Uart {
+        trigger_uart_detect_reset(port, at_baud_override.unwrap_or(UART_BOOT_BAUD), on_progress)?;
+    }
+
+    on_progress(&FlashProgress::info(
+        "Connecting",
+        1.0,
+        &format!("Opening {} ({:?} mode, {} baud)...", port, port_type, baudrate),
+    ));
+
+    let mut serial = open_ec718_flash_port(port, port_type, baudrate)?;
 
     if cancel.load(Ordering::Relaxed) {
         bail!("Cancelled");
@@ -1324,20 +1515,42 @@ pub fn flash_ec718(soc_path: &str, port: &str, on_progress: &ProgressCallback, c
     on_progress(&FlashProgress::info(
         "Connecting",
         2.0,
-        "Waiting for bootloader (DLBOOT sync)...\n\
-         提示: 如果等待超时, 请手动按住BOOT按钮并复位模组进入下载模式",
+        if port_type == Ec718PortType::Uart {
+            "Waiting for UART detect bootloader (DLBOOT sync)...\n\
+             提示: 如果模组已死机或无法响应AT, 请在此阶段按一下RESET后重试"
+        } else {
+            "Waiting for bootloader (DLBOOT sync)...\n\
+             提示: 如果等待超时, 请手动按住BOOT按钮并复位模组进入下载模式"
+        },
     ));
 
-    if let Err(e) = burn_sync(serial.as_mut(), SyncType::DlBoot, 2) {
+    let dlboot_sync_result = if port_type == Ec718PortType::Uart {
+        burn_sync_and_drain_uart_tail(serial.as_mut(), SyncType::DlBoot, 2)
+    } else {
+        burn_sync(serial.as_mut(), SyncType::DlBoot, 2)
+    };
+
+    if let Err(e) = dlboot_sync_result {
         on_progress(&FlashProgress::info(
             "Connecting",
             -1.0,
-            "⚠ 无法连接到bootloader. 请按住BOOT按钮, 然后复位或重新上电模组, 再重试刷机.",
+            if port_type == Ec718PortType::Uart {
+                "⚠ 无法通过UART detect连接bootloader. 如果模组已死机, 请先启动刷机命令, 然后按一下RESET再重试."
+            } else {
+                "⚠ 无法连接到bootloader. 请按住BOOT按钮, 然后复位或重新上电模组, 再重试刷机."
+            },
         ));
-        return Err(e).context(
-            "DLBOOT sync failed. The module may not be in boot mode.\n\
-             Please hold the BOOT button, reset/power-cycle the module, then retry.",
-        );
+        return if port_type == Ec718PortType::Uart {
+            Err(e).context(
+                "DLBOOT sync failed in UART detect mode.\n\
+                 If the module firmware is hung and cannot receive AT, start flashing first, press RESET, then retry.",
+            )
+        } else {
+            Err(e).context(
+                "DLBOOT sync failed. The module may not be in boot mode.\n\
+                 Please hold the BOOT button, reset/power-cycle the module, then retry.",
+            )
+        };
     }
 
     on_progress(&FlashProgress::info("Connecting", 5.0, "Bootloader connected"));
@@ -1349,7 +1562,8 @@ pub fn flash_ec718(soc_path: &str, port: &str, on_progress: &ProgressCallback, c
     // Stage 2: Download agentboot
     on_progress(&FlashProgress::info("AgentBoot", 6.0, &format!("Downloading agentboot ({} bytes)...", agentboot.len())));
 
-    burn_agboot(serial.as_mut(), agentboot, force_br)?;
+    burn_agboot(serial.as_mut(), agentboot, agent_baudrate)?;
+    configure_agent_baud(serial.as_mut(), agent_baudrate)?;
 
     on_progress(&FlashProgress::info("AgentBoot", 15.0, "AgentBoot loaded"));
 
@@ -1619,6 +1833,6 @@ mod tests {
         let on_progress: ProgressCallback = Box::new(|p| {
             eprintln!("[{:>6.1}%] {} — {}", p.percent, p.stage, p.message);
         });
-        flash_ec718(soc, port, &on_progress, cancel).expect("flash_ec718");
+        flash_ec718(soc, port, None, None, &on_progress, cancel).expect("flash_ec718");
     }
 }

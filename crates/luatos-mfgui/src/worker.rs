@@ -89,7 +89,7 @@ fn do_flash(soc_path: &str, port: Option<&str>, tx: &Sender<WorkerMsg>, cancel: 
             let cb = make_cb(tx);
             let boot_port = luatos_flash::ec718::auto_enter_boot_mode(port, &cb)?;
             let cb2 = make_cb(tx);
-            luatos_flash::ec718::flash_ec718(soc_path, &boot_port, &cb2, Arc::clone(&cancel))?;
+            luatos_flash::ec718::flash_ec718(soc_path, &boot_port, None, None, None, &cb2, Arc::clone(&cancel))?;
         }
         "sf32lb58" => {
             let port_str = port.ok_or_else(|| anyhow::anyhow!("SF32LB58 需要指定串口"))?;

@@ -2,7 +2,7 @@ use anyhow::Context;
 
 use crate::{
     event::{self, MessageLevel},
-    OutputFormat,
+    Ec718PortMode, OutputFormat,
 };
 
 /// 检查脚本镜像大小是否超过分区容量，超出则报错并给出详细信息
@@ -24,9 +24,13 @@ fn check_script_size(image_len: usize, partition_size: usize) -> anyhow::Result<
 }
 
 pub fn cmd_flash_run(
-    soc: &str,
+    soc: Option<&str>,
+    binpkg: Option<&str>,
     port: &str,
     baud: Option<u32>,
+    agent_baud: Option<u32>,
+    at_baud: Option<u32>,
+    port_mode: Ec718PortMode,
     script_folders: Option<&[String]>,
     step: u8,
     format: &OutputFormat,
@@ -46,9 +50,58 @@ pub fn cmd_flash_run(
 
     let on_progress = make_progress_callback(format, "flash.run", step);
 
+    if let Some(binpkg) = binpkg {
+        if soc.is_some() {
+            anyhow::bail!("--soc and --binpkg are mutually exclusive");
+        }
+        if baud.is_some() {
+            anyhow::bail!("--baud is only supported with --soc flashing");
+        }
+        if script_folders.is_some() {
+            anyhow::bail!("--script is only supported with --soc flashing");
+        }
+        if reset_config.is_some() {
+            anyhow::bail!("--auto-reset is not supported with EC718 --binpkg flashing");
+        }
+
+        let (boot_port, forced_port_type) = match port_mode {
+            Ec718PortMode::Auto => (luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress)?, None),
+            Ec718PortMode::Usb => (
+                luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress)?,
+                Some(luatos_flash::ec718::Ec718PortType::Usb),
+            ),
+            Ec718PortMode::Uart => {
+                on_progress(&luatos_flash::FlashProgress::info("Fallback", 2.0, &format!("使用用户指定端口: {} (UART模式)", port)));
+                (port.to_string(), Some(luatos_flash::ec718::Ec718PortType::Uart))
+            }
+        };
+        luatos_flash::ec718::flash_ec718_binpkg(binpkg, &boot_port, forced_port_type, agent_baud, at_baud, &on_progress, cancel)?;
+        match format {
+            OutputFormat::Text => {
+                println!("EC718 BINPKG flash completed successfully.");
+            }
+            OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": "ec7xx", "format": "binpkg" }))?,
+        }
+        return Ok(());
+    }
+
+    let soc = soc.ok_or_else(|| anyhow::anyhow!("Either --soc or --binpkg must be specified"))?;
     // Detect chip type from SOC info.json
     let info = luatos_soc::read_soc_info(soc)?;
     let chip = info.chip.chip_type.as_str();
+    let is_ec718_chip = matches!(chip, "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg");
+
+    if !is_ec718_chip {
+        if agent_baud.is_some() {
+            anyhow::bail!("--agent-baud/--agbaud is only supported with EC718 flashing");
+        }
+        if at_baud.is_some() {
+            anyhow::bail!("--at-baud is only supported with EC718 flashing");
+        }
+        if port_mode != Ec718PortMode::Auto {
+            anyhow::bail!("--port-mode is only supported with EC718 flashing");
+        }
+    }
 
     match chip {
         "bk72xx" | "air8101" => {
@@ -86,8 +139,18 @@ pub fn cmd_flash_run(
         }
         "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" => {
             // EC718 series: auto-detect boot mode, reboot if needed
-            let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress)?;
-            luatos_flash::ec718::flash_ec718(soc, &boot_port, &on_progress, cancel)?;
+            let (boot_port, forced_port_type) = match port_mode {
+                Ec718PortMode::Auto => (luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress)?, None),
+                Ec718PortMode::Usb => (
+                    luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress)?,
+                    Some(luatos_flash::ec718::Ec718PortType::Usb),
+                ),
+                Ec718PortMode::Uart => {
+                    on_progress(&luatos_flash::FlashProgress::info("Fallback", 2.0, &format!("使用用户指定端口: {} (UART模式)", port)));
+                    (port.to_string(), Some(luatos_flash::ec718::Ec718PortType::Uart))
+                }
+            };
+            luatos_flash::ec718::flash_ec718(soc, &boot_port, forced_port_type, agent_baud, at_baud, &on_progress, cancel)?;
             match format {
                 OutputFormat::Text => {
                     println!("EC718 flash completed successfully.");
@@ -428,7 +491,7 @@ pub fn cmd_flash_test(
         "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" => {
             let on_progress2 = make_progress_callback(format, "flash.test", step);
             let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress2)?;
-            luatos_flash::ec718::flash_ec718(soc, &boot_port, &on_progress2, cancel.clone())?;
+            luatos_flash::ec718::flash_ec718(soc, &boot_port, None, None, None, &on_progress2, cancel.clone())?;
             Vec::new()
         }
         _ => {
