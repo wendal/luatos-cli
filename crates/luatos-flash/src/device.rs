@@ -4,7 +4,7 @@
 //   - bk72xx / air8101   : 5阶段 DTR+RTS 脉冲进入 boot；DTR 脉冲重启
 //   - xt804 / air6208 / air101 / air103 / air601 : RTS+DTR 时序进入 boot；DTR 脉冲重启
 //   - ec718 / ec7xx / air8000 / air780* : USB AT 口发送 AT+ECRST / DIAG boot 帧
-//   - ccm4211 / air1601  : ISP 时序进入 boot；DTR+RTS 双信号复位
+//   - ccm4211 / air1601 / air1602  : ISP 时序进入 boot；DTR+RTS 双信号复位
 //   - sf32lb58           : ROM BL 需手动操作（MODE 引脚 + RESET），软件仅打印说明
 //   - 通用               : DTR 脉冲（最佳努力）
 
@@ -30,7 +30,7 @@ fn dtr_pulse_reboot(port_name: &str) -> Result<()> {
     Ok(())
 }
 
-/// DTR+RTS 双信号复位（用于 ccm4211/air1601）。
+/// DTR+RTS 双信号复位（用于 ccm4211/air1601/air1602）。
 fn dtr_rts_pulse_reboot(port_name: &str) -> Result<()> {
     let mut port = serialport::new(port_name, 115200)
         .timeout(Duration::from_millis(200))
@@ -189,8 +189,8 @@ fn ec718_enter_boot(port_name: Option<&str>) -> Result<()> {
 pub fn device_reboot(port_name: Option<&str>, chip: &str) -> Result<()> {
     match chip {
         "ec718" | "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" | "air8000m" => ec718_reboot(port_name),
-        "ccm4211" | "air1601" => {
-            let port = port_name.ok_or_else(|| anyhow::anyhow!("ccm4211/air1601 需要指定 --port"))?;
+        "ccm4211" | "air1601" | "air1602" => {
+            let port = port_name.ok_or_else(|| anyhow::anyhow!("ccm4211/air1601/air1602 需要指定 --port"))?;
             dtr_rts_pulse_reboot(port)
         }
         "sf32lb58" => {
@@ -223,8 +223,8 @@ pub fn device_enter_boot(port_name: Option<&str>, chip: &str) -> Result<()> {
             xt804_enter_boot(port)
         }
         "ec718" | "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" | "air8000m" => ec718_enter_boot(port_name),
-        "ccm4211" | "air1601" => {
-            let port = port_name.ok_or_else(|| anyhow::anyhow!("ccm4211/air1601 需要指定 --port"))?;
+        "ccm4211" | "air1601" | "air1602" => {
+            let port = port_name.ok_or_else(|| anyhow::anyhow!("ccm4211/air1601/air1602 需要指定 --port"))?;
             ccm4211_enter_boot(port)
         }
         "sf32lb58" => {

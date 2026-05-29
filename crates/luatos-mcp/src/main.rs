@@ -188,7 +188,7 @@ struct ProjectWizardArgs {
 struct DeviceRebootArgs {
     #[schemars(description = "串口号（如 COM6），EC718 系列可省略（自动检测）")]
     port: Option<String>,
-    #[schemars(description = "芯片类型: bk72xx, air8101, xt804, air6208, ec718, air8000, air1601, ccm4211 等")]
+    #[schemars(description = "芯片类型: bk72xx, air8101, xt804, air6208, ec718, air8000, air1601, air1602, ccm4211 等")]
     chip: String,
 }
 
@@ -196,7 +196,7 @@ struct DeviceRebootArgs {
 struct DeviceBootArgs {
     #[schemars(description = "串口号（如 COM6），EC718 系列可省略（自动检测）")]
     port: Option<String>,
-    #[schemars(description = "芯片类型: bk72xx, air8101, xt804, air6208, ec718, air8000, air1601, ccm4211 等")]
+    #[schemars(description = "芯片类型: bk72xx, air8101, xt804, air6208, ec718, air8000, air1601, air1602, ccm4211 等")]
     chip: String,
 }
 

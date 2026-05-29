@@ -347,7 +347,7 @@ enum LogCommands {
         #[arg(long)]
         smart: bool,
     },
-    /// View serial log in binary SOC mode (Air1601, Air8000/EC718, etc.)
+    /// View serial log in binary SOC mode (Air1601/Air1602, Air8000/EC718, etc.)
     ViewBinary {
         /// Serial port (e.g. COM7, or "auto" for EC718 auto-detect)
         #[arg(long)]
@@ -355,7 +355,7 @@ enum LogCommands {
         /// Baud rate (default: 2000000)
         #[arg(long, default_value = "2000000")]
         baud: u32,
-        /// Send probe command to trigger log output (required for Air1601/CCM4211/EC718)
+        /// Send probe command to trigger log output (required for Air1601/Air1602/CCM4211/EC718)
         #[arg(long)]
         probe: bool,
         /// Save raw binary log to directory (rolling 200 MB files with timestamp injection)
@@ -578,7 +578,7 @@ enum DeviceCommands {
         /// Serial port (e.g. COM6). EC718 series can be omitted for auto-detect.
         #[arg(long)]
         port: Option<String>,
-        /// Chip type (bk72xx, air8101, xt804, air6208, air101, ec718, air8000, air1601, ccm4211, ...)
+        /// Chip type (bk72xx, air8101, xt804, air6208, air101, ec718, air8000, air1601, air1602, ccm4211, ...)
         /// If omitted, generic DTR pulse is used.
         #[arg(long)]
         chip: Option<String>,
@@ -588,7 +588,7 @@ enum DeviceCommands {
         /// Serial port (e.g. COM6). EC718 series can be omitted for auto-detect.
         #[arg(long)]
         port: Option<String>,
-        /// Chip type (bk72xx, air8101, xt804, air6208, air101, ec718, air8000, air1601, ccm4211, ...)
+        /// Chip type (bk72xx, air8101, xt804, air6208, air101, ec718, air8000, air1601, air1602, ccm4211, ...)
         /// If omitted, generic DTR+RTS pulse is used.
         #[arg(long)]
         chip: Option<String>,

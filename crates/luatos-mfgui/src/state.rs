@@ -177,6 +177,7 @@ mod tests {
     fn needs_uart_port_ccm4211_returns_true() {
         assert!(AppState::needs_uart_port("ccm4211"));
         assert!(AppState::needs_uart_port("air1601"));
+        assert!(AppState::needs_uart_port("air1602"));
     }
 
     #[test]

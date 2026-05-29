@@ -139,7 +139,7 @@ pub fn chip_from_soc_filename(filename: &str) -> &'static str {
         "air101"
     } else if lower.contains("air8000") {
         "air8000"
-    } else if lower.contains("air780") || lower.contains("air600") || lower.contains("ec718") || lower.contains("ec618") || lower.contains("air1601") || lower.contains("air201") {
+    } else if lower.contains("air780") || lower.contains("air600") || lower.contains("ec718") || lower.contains("ec618") || lower.contains("air1601") || lower.contains("air1602") || lower.contains("air201") {
         "ec7xx"
     } else if lower.contains("esp32") {
         "esp32"
@@ -166,6 +166,7 @@ pub fn fallback_models() -> Vec<ModelInfo> {
         ("Air780EHM", "ec7xx"),
         ("Air780E", "ec7xx"),
         ("Air1601", "ec7xx"),
+        ("Air1602", "ec7xx"),
         ("Air201", "ec7xx"),
         ("Air6208", "air6208"),
         ("Air101", "air101"),
@@ -192,6 +193,7 @@ mod tests {
         assert_eq!(chip_from_soc_filename("LuatOS-SoC_V2031_Air8000_101.soc"), "air8000");
         assert_eq!(chip_from_soc_filename("LuatOS-SoC_Air101.soc"), "air101");
         assert_eq!(chip_from_soc_filename("LuatOS-SoC_V1001_Air1601.soc"), "ec7xx");
+        assert_eq!(chip_from_soc_filename("LuatOS-SoC_V1001_Air1602.soc"), "ec7xx");
         assert_eq!(chip_from_soc_filename("LuatOS-SoC_V1001_Air201.soc"), "ec7xx");
         assert_eq!(chip_from_soc_filename("LuatOS-SoC_V1001_Air780EHM.soc"), "ec7xx");
         // air1016 不应匹配 air101
@@ -244,6 +246,7 @@ mod tests {
         // 验证常见型号在列表中
         assert!(models.iter().any(|m| m.name == "Air8101"));
         assert!(models.iter().any(|m| m.name == "Air780EPM"));
+        assert!(models.iter().any(|m| m.name == "Air1602"));
         // 验证 bitw 正确设置
         let air101 = models.iter().find(|m| m.name == "Air101").unwrap();
         assert_eq!(air101.bitw, 64);

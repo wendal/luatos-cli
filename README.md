@@ -6,7 +6,7 @@ LuatOS 命令行工具集 — 刷机、日志、项目管理、固件合成。�
 
 ## 功能特性
 
-- **多芯片刷机** — 支持 Air8101 (BK7258)、Air6208 (XT804)、Air1601 (CCM4211)、Air8000 (EC718)、SF32LB58 等模组
+- **多芯片刷机** — 支持 Air8101 (BK7258)、Air6208 (XT804)、Air1601/Air1602 (CCM4211)、Air8000 (EC718)、SF32LB58 等模组
 - **分区操作** — 全量刷机、单刷脚本区、烧录/清除文件系统、清除 FSKV
 - **闭环测试** — `flash test` 刷机后自动抓取 boot log 并验证关键字 (PASS/FAIL)
 - **日志系统** — 实时查看/录制/解析，支持文本和 SOC 二进制两种格式，智能诊断分析
@@ -60,7 +60,7 @@ luatos-cli soc info firmware.soc
 # 全量刷机 (Air8101/BK7258)
 luatos-cli flash run --soc firmware.soc --port COM6
 
-# 全量刷机 (Air1601/CCM4211)
+# 全量刷机 (Air1601/Air1602/CCM4211)
 luatos-cli flash run --soc firmware.soc --port COM11
 
 # 全量刷机 (SF32LB58 — 手动进入 ROM BL 模式)
@@ -112,7 +112,7 @@ luatos-cli log view-binary --port COM7 --baud 2000000
 # 二进制日志 + 智能分析
 luatos-cli log view-binary --port COM7 --baud 2000000 --smart
 
-# 查看 Air1601 日志 (需要 --probe 触发固件输出)
+# 查看 Air1601/Air1602 日志 (需要 --probe 触发固件输出)
 luatos-cli log view-binary --port COM11 --baud 2000000 --probe
 
 # 查看 Air8000/EC718 日志 (自动检测端口, --probe 触发输出)
@@ -241,7 +241,7 @@ target/release/luatos-mcp.exe
 | Air8101 | BK7258 (bk72xx) | ✅ | ✅ | ✅ | ✅ | 文本 | ✅ | |
 | Air6208 | XT804 (air6208) | ✅ | ✅ | ✅ | ✅ | 二进制 | ✅ | |
 | Air101/103 | XT804 | ✅ | ✅ | — | — | 二进制 | ✅ | |
-| Air1601 | CCM4211 | ✅ | ✅ | ✅ | ✅ | 二进制 (--probe) | ✅ | |
+| Air1601 / Air1602 | CCM4211 | ✅ | ✅ | ✅ | ✅ | 二进制 (--probe) | ✅ | |
 | Air8000 | EC718HM (ec7xx) | ✅ | ✅ | — | — | 二进制 (--probe) | ✅ | |
 | Air780E系列 | EC718 (ec7xx) | ✅ | ✅ | — | — | 二进制 (--probe) | ✅ | |
 | Air8101(SF32) | SF32LB58 | ✅ | ✅ | — | ✅ | 文本 | — | `--auto-reset` 支持 CH340X 改装一键下载；`--baud 3000000` 协商高速波特率（CH342K 支持）|
@@ -265,12 +265,12 @@ target/release/luatos-mcp.exe
 | Air6208 | ``flash flash-fs`` (烧文件系统) | ✅ | 3329 blocks, LuaDB 打包写入 FS 分区 |
 | Air6208 | ``flash test`` (闭环测试) | ✅ | 二进制日志中部分文本匹配 |
 | Air6208 | ``log view-binary`` (二进制日志) | ✅ | SOC 二进制帧解码正确 |
-| Air1601 | ``flash run`` (全量刷机) | ✅ | ISP→SOC 协议，bootloader+core MD5 校验 |
-| Air1601 | ``flash script`` (刷脚本区) | ✅ | LuaDB 594B, luac bitw=64 |
-| Air1601 | ``flash clear-fs`` (清文件系统) | ✅ | 擦除 0x14D00000 分区 |
-| Air1601 | ``flash clear-kv`` (清 FSKV) | ✅ | 擦除 0x14FF0000 分区 |
-| Air1601 | ``flash test`` (闭环测试) | ✅ | SOC 二进制日志 + 探测帧，31 行日志 |
-| Air1601 | ``log view-binary --probe`` | ✅ | 2Mbps, 探测帧触发日志输出 |
+| Air1601 / Air1602 | ``flash run`` (全量刷机) | ✅ | ISP→SOC 协议，bootloader+core MD5 校验 |
+| Air1601 / Air1602 | ``flash script`` (刷脚本区) | ✅ | LuaDB 594B, luac bitw=64 |
+| Air1601 / Air1602 | ``flash clear-fs`` (清文件系统) | ✅ | 擦除 0x14D00000 分区 |
+| Air1601 / Air1602 | ``flash clear-kv`` (清 FSKV) | ✅ | 擦除 0x14FF0000 分区 |
+| Air1601 / Air1602 | ``flash test`` (闭环测试) | ✅ | SOC 二进制日志 + 探测帧，31 行日志 |
+| Air1601 / Air1602 | ``log view-binary --probe`` | ✅ | 2Mbps, 探测帧触发日志输出 |
 | Air8000 | ``flash run`` (全量刷机) | ✅ | USB自动进入boot模式, BL+AP+CP ~43s |
 | Air8000 | ``flash script`` (刷脚本区) | ✅ | FlexFile类型, 594B脚本, addr=0xC8E000 |
 | Air8000 | ``flash test`` (闭环测试) | ✅ | 0x7E HDLC日志解码, 921600 baud |
@@ -299,7 +299,7 @@ luatos-cli (workspace, 8 crates)
 │   ├── cmd_project.rs    #   项目管理 / 导入 / 依赖分析
 │   ├── cmd_build.rs      #   Lua 编译 / 文件系统打包
 │   └── cmd_resource.rs   #   固件资源下载 (薄包装层)
-├── luatos-flash/         # 刷机协议 (BK7258 + XT804 + CCM4211 + EC718)
+├── luatos-flash/         # 刷机协议 (BK7258 + XT804 + CCM4211/Air1602 + EC718)
 ├── luatos-soc/           # SOC 文件解包/打包 (ZIP + 7z)
 ├── luatos-luadb/         # LuaDB 脚本打包 + Lua 编译 + BK CRC16
 ├── luatos-serial/        # 串口枚举 + 文本/二进制日志流

@@ -209,7 +209,7 @@ impl SocInfo {
             return bitw;
         }
         match self.chip.chip_type.as_str() {
-            "air6208" | "air101" | "air103" | "air601" | "air1601" | "ccm4211" => 64,
+            "air6208" | "air101" | "air103" | "air601" | "air1601" | "air1602" | "ccm4211" => 64,
             _ => 32,
         }
     }
@@ -299,6 +299,19 @@ mod tests {
         assert_eq!(info.chip.chip_type, "bk72xx");
         assert_eq!(info.flash_baud_rate(), 2_000_000);
         assert_eq!(info.log_baud_rate(), 921_600);
+    }
+
+    #[test]
+    fn script_bitw_defaults_for_ccm4211_family() {
+        let json = r#"{
+            "version": 1,
+            "chip": {"type": "air1602"},
+            "rom": {"file": "AIR1602.fls"},
+            "script": {"file": "script.img"},
+            "download": {}
+        }"#;
+        let info: SocInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.script_bitw(), 64);
     }
 
     /// 验证 Air6208 SOC info.json 中 fs/kv 分区的解析（size 单位为 KB）

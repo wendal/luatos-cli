@@ -137,6 +137,7 @@ fn detect_chip_from_soc_path(soc_path: &str) -> String {
         || filename.contains("ec718")
         || filename.contains("ec618")
         || filename.contains("air1601")
+        || filename.contains("air1602")
         || filename.contains("air201")
     {
         "ec7xx".to_string()
@@ -282,6 +283,7 @@ sys.lua =
         assert_eq!(detect_chip_from_soc_path("LuatOS-SoC_V2031_Air8000_101.soc"), "air8000");
         assert_eq!(detect_chip_from_soc_path("LuatOS-SoC_V1001_Air6208.soc"), "air6208");
         assert_eq!(detect_chip_from_soc_path("D:\\path\\to\\LuatOS-SoC_Air101.soc"), "air101");
+        assert_eq!(detect_chip_from_soc_path("LuatOS-SoC_V1001_Air1602.soc"), "ec7xx");
     }
 
     #[test]

@@ -2,12 +2,12 @@
 //
 // Supported chip families:
 //   EC7xx / EC618 / Air8000  — differential (--new + --old) via FotaToolkit.exe + soc_tools.exe
-//   Air1601 / CCM4211        — full only via soc_tools.exe zip_file + make_ota_file
+//   Air1601 / Air1602 / CCM4211 — full only via soc_tools.exe zip_file + make_ota_file
 //   Air6208 / XT804          — full only via air101_flash.exe (bundled in the .soc)
 //
 // External tools required:
 //   FotaToolkit.exe — delta-diff engine, must run from its own dtools directory (EC7xx/EC618)
-//   soc_tools.exe   — assembles .sota containers (EC7xx/EC618 and Air1601/CCM4211)
+//   soc_tools.exe   — assembles .sota containers (EC7xx/EC618 and Air1601/Air1602/CCM4211)
 //   air101_flash.exe — W800 OTA image builder, extracted from the .soc itself (Air6208)
 //
 // Tool discovery order:
@@ -176,7 +176,7 @@ fn build_ec7xx_fota(new_soc: &str, old_soc: &str, chip: &str, toolkit_path: &Pat
     Ok(())
 }
 
-// ─── Air1601 / CCM4211 — full FOTA ───────────────────────────────────────────
+// ─── Air1601 / Air1602 / CCM4211 — full FOTA ────────────────────────────────
 
 fn build_ccm4211_fota(new_soc: &str, soc_tools: &Path, out_path: &Path) -> Result<()> {
     let tmp = tempfile::tempdir().context("tempdir")?;
@@ -453,9 +453,9 @@ pub fn cmd_fota_build(
         }
 
         // ── Air1601 / CCM4211 — full only ─────────────────────────────────────
-        "air1601" | "ccm4211" => {
+        "air1601" | "air1602" | "ccm4211" => {
             if old_soc.is_some() {
-                log::warn!("--old is ignored for Air1601/CCM4211: only full FOTA is supported");
+                log::warn!("--old is ignored for Air1601/Air1602/CCM4211: only full FOTA is supported");
             }
             let soc_tools = find_soc_tools(soc_tools_path)?;
             let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{chip}_fota.sota")));
@@ -501,7 +501,7 @@ pub fn cmd_fota_build(
 
         other => bail!(
             "FOTA not supported for chip '{other}'. \
-            Supported: EC7xx/EC618/Air8000 (differential), Air1601/CCM4211 (full), Air6208/XT804 (full)."
+            Supported: EC7xx/EC618/Air8000 (differential), Air1601/Air1602/CCM4211 (full), Air6208/XT804 (full)."
         ),
     }
 

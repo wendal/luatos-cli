@@ -1278,7 +1278,7 @@ pub fn auto_enter_boot_mode(user_port: Option<&str>, on_progress: &ProgressCallb
     );
 }
 
-/// Build a SOC log probe frame for EC718 (same protocol as CCM4211/Air1601).
+/// Build a SOC log probe frame for EC718 (same protocol as CCM4211/Air1601/Air1602).
 ///
 /// EC718 firmware buffers log output and won't start sending until a command
 /// is received on the debug UART. This probe triggers device-info + log flush.
