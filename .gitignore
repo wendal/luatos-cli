@@ -10,3 +10,4 @@ resource/
 *.tmp
 *.bak
 *.pyc
+.worktrees/
