@@ -139,7 +139,14 @@ pub fn chip_from_soc_filename(filename: &str) -> &'static str {
         "air101"
     } else if lower.contains("air8000") {
         "air8000"
-    } else if lower.contains("air780") || lower.contains("air600") || lower.contains("ec718") || lower.contains("ec618") || lower.contains("air1601") || lower.contains("air1602") || lower.contains("air201") {
+    } else if lower.contains("air780")
+        || lower.contains("air600")
+        || lower.contains("ec718")
+        || lower.contains("ec618")
+        || lower.contains("air1601")
+        || lower.contains("air1602")
+        || lower.contains("air201")
+    {
         "ec7xx"
     } else if lower.contains("esp32") {
         "esp32"

@@ -7,6 +7,7 @@
 
 pub mod combine;
 mod info;
+pub mod ota;
 pub mod pack;
 mod unpack;
 

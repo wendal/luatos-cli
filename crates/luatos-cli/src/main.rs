@@ -614,6 +614,9 @@ enum FotaCommands {
         /// Path to soc_tools.exe (auto-detected if omitted)
         #[arg(long)]
         soc_tools: Option<String>,
+        /// Build a script-only FOTA package (CCM4211 only, skips ROM compression)
+        #[arg(long)]
+        script_only: bool,
     },
 }
 
@@ -818,7 +821,16 @@ fn main() {
                 output,
                 fota_toolkit,
                 soc_tools,
-            } => cmd_fota::cmd_fota_build(&new, old.as_deref(), output.as_deref(), fota_toolkit.as_deref(), soc_tools.as_deref(), &cli.format),
+                script_only,
+            } => cmd_fota::cmd_fota_build(
+                &new,
+                old.as_deref(),
+                output.as_deref(),
+                fota_toolkit.as_deref(),
+                soc_tools.as_deref(),
+                script_only,
+                &cli.format,
+            ),
         },
         Commands::Doctor { dir } => cmd_doctor::cmd_doctor(&dir, &cli.format),
         Commands::Version => {
