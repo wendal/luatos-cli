@@ -43,7 +43,7 @@ const newChip = ref('bk72xx')
 // 新增脚本目录
 const newScriptDir = ref('')
 
-const chips = ['bk72xx', 'air6208', 'air101', 'air103', 'air601', 'air1601', 'ec7xx', 'air8000']
+const chips = ['bk72xx', 'air6208', 'air101', 'air103', 'air601', 'air1601', 'air1602', 'ec7xx', 'air8000']
 
 // 标记字段变化
 function markDirty() {

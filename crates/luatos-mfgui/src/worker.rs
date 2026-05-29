@@ -79,8 +79,8 @@ fn do_flash(soc_path: &str, port: Option<&str>, tx: &Sender<WorkerMsg>, cancel: 
             let cb = make_cb(tx);
             luatos_flash::xt804::flash_xt804(soc_path, port_str, cb, Arc::clone(&cancel))?;
         }
-        "air1601" | "ccm4211" => {
-            let port_str = port.ok_or_else(|| anyhow::anyhow!("CCM4211/Air1601 需要指定串口"))?;
+        "air1601" | "air1602" | "ccm4211" => {
+            let port_str = port.ok_or_else(|| anyhow::anyhow!("CCM4211/Air1601/Air1602 需要指定串口"))?;
             let cb = make_cb(tx);
             luatos_flash::ccm4211::flash_ccm4211(soc_path, port_str, &cb, Arc::clone(&cancel))?;
         }

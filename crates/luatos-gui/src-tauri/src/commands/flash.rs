@@ -1,4 +1,4 @@
-//! 刷机命令 — 支持 BK7258/XT804/CCM4211/EC718 全系列芯片
+//! 刷机命令 — 支持 BK7258/XT804/CCM4211(Air1601/Air1602)/EC718 全系列芯片
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -43,7 +43,7 @@ pub async fn flash_run(
             "air6208" | "air101" | "air103" | "air601" => {
                 luatos_flash::xt804::flash_xt804(&soc_path, &port, on_progress, cancel).map_err(|e| format!("XT804 刷机失败: {e}"))?;
             }
-            "air1601" | "ccm4211" => {
+            "air1601" | "air1602" | "ccm4211" => {
                 luatos_flash::ccm4211::flash_ccm4211(&soc_path, &port, &on_progress, cancel).map_err(|e| format!("CCM4211 刷机失败: {e}"))?;
             }
             "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" => {

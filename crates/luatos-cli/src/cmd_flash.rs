@@ -75,7 +75,7 @@ pub fn cmd_flash_run(
                 OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": chip }))?,
             }
         }
-        "air1601" | "ccm4211" => {
+        "air1601" | "air1602" | "ccm4211" => {
             luatos_flash::ccm4211::flash_ccm4211(soc, port, &on_progress, cancel)?;
             match format {
                 OutputFormat::Text => {
@@ -106,7 +106,7 @@ pub fn cmd_flash_run(
             }
         }
         _ => {
-            anyhow::bail!("Unsupported chip type: {chip}. Supported: bk72xx, air6208, air101, air1601, ec7xx");
+            anyhow::bail!("Unsupported chip type: {chip}. Supported: bk72xx, air6208, air101, air1601, air1602, ec7xx");
         }
     }
 
@@ -215,7 +215,7 @@ pub fn cmd_flash_partition(
             }
             _ => unreachable!(),
         },
-        "air1601" | "ccm4211" => match op {
+        "air1601" | "air1602" | "ccm4211" => match op {
             "script" => {
                 let folders = script_folders.expect("script folder required");
                 let folder_paths: Vec<std::path::PathBuf> = folders.iter().map(std::path::PathBuf::from).collect();
@@ -420,7 +420,7 @@ pub fn cmd_flash_test(
             luatos_flash::xt804::flash_xt804(soc, port, on_progress2, cancel.clone())?;
             Vec::new() // XT804 does not return boot lines from flash
         }
-        "air1601" | "ccm4211" => {
+        "air1601" | "air1602" | "ccm4211" => {
             let on_progress2 = make_progress_callback(format, "flash.test", step);
             luatos_flash::ccm4211::flash_ccm4211(soc, port, &on_progress2, cancel.clone())?;
             Vec::new()
@@ -445,7 +445,7 @@ pub fn cmd_flash_test(
 
     // Determine if this chip uses binary SOC log protocol
     let is_ec718 = matches!(chip.as_str(), "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg");
-    let use_binary_log = matches!(chip.as_str(), "air1601" | "ccm4211") || is_ec718;
+    let use_binary_log = matches!(chip.as_str(), "air1601" | "air1602" | "ccm4211") || is_ec718;
 
     // For EC718: after flash+reset, the boot port disappears and the module
     // re-enumerates as running mode (VID=0x19D1). We need to wait for the

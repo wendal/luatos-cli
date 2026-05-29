@@ -1,8 +1,8 @@
-# CCM4211 (Air1601) 刷机协议文档
+# CCM4211 (Air1601 / Air1602) 刷机协议文档
 
 ## 概述
 
-Air1601 模组使用 CCM4211 芯片，刷机流程分为三个阶段：
+Air1601 与 Air1602 模组都使用 CCM4211 芯片，刷机流程、地址布局、波特率与日志协议完全一致，分为三个阶段：
 
 1. **ISP 阶段**：通过 ROM bootloader 将 ramrun 程序加载到 RAM
 2. **SOC 协议阶段**：通过 ramrun 程序执行 Flash 操作（下载、擦除、校验）
@@ -30,7 +30,7 @@ LuatOS-SoC_V1009_Air1601.soc (7z archive)
 ├── *.elf              # 调试用 ELF 文件
 └── *.map              # 调试用 MAP 文件
 
-LuatOS-SoC_V1013_Air1601.soc (7z archive)
+LuatOS-SoC_V1013_Air1602.soc (7z archive)
 ├── info.json          # 芯片信息、地址配置（force_br=6000000）
 ├── bootloader.bin     # Bootloader 固件 (~41KB)
 ├── luatos.bin         # LuatOS 核心固件 (~3.1MB)
@@ -45,7 +45,7 @@ LuatOS-SoC_V1013_Air1601.soc (7z archive)
 
 ```json
 {
-  "chip": { "type": "air1601" },
+  "chip": { "type": "air1602" },
   "download": {
     "bl_addr":     "10000000",
     "app_addr":    "14000000",
@@ -57,6 +57,8 @@ LuatOS-SoC_V1013_Air1601.soc (7z archive)
   "user": { "log_br": "6000000" }
 }
 ```
+
+> **说明：** Air1602 与 Air1601 协议完全一致；部分资源包文件名仍可能沿用 Air1601 命名。
 
 ### 地址映射
 

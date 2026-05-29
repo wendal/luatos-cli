@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### 变更
 
+#### Air1602 (CCM4211) 刷机/日志别名支持
+
+- 将 `Air1602` 作为 `Air1601 / CCM4211` 的别名接入刷机、分区操作、闭环测试、日志探测、FOTA、设备控制、GUI 与 MCP 工具
+- `luatos-soc` 的芯片默认位宽与 LuaTools 项目导入/向导识别同步支持 `air1602`
+- 更新 `README.md`、`docs/ccm4211-flash-protocol.md`、`docs/dev-hardware-env.md`，统一说明 Air1602 与 Air1601 刷机行为一致
+
 #### 量产刷机 GUI 升级 egui 0.34.1
 
 - 将 `luatos-mfgui` 的 egui/eframe 从 0.27 升级至最新稳定版 **0.34.1**

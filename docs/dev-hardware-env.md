@@ -11,7 +11,7 @@
 | BK7258 (博通) | Air8101 | `bk72xx` / `air8101` |
 | XT804 (联盛德) | Air6208、Air101、Air103、Air601 | `xt804` / `air6208` / `air101` / `air103` / `air601` |
 | EC718 (移芯) | Air8000、Air780E、Air780EPM、Air780EHM/EHV/EHG | `ec718` / `ec7xx` / `air8000` |
-| CCM4211 (国芯) | Air1601 | `ccm4211` / `air1601` |
+| CCM4211 (国芯) | Air1601 / Air1602 | `ccm4211` / `air1601` / `air1602` |
 
 ---
 
@@ -92,7 +92,7 @@ USB-TTL 模块         开发板/模组
 |---------|---------|---------|
 | BK7258 (Air8101) | RESET（低电平触发） | BOOT0（高电平进 boot） |
 | XT804 (Air6208 等) | RESET（低电平触发） | BOOT（高电平进 boot） |
-| CCM4211 (Air1601) | RESET | BOOT |
+| CCM4211 (Air1601/Air1602) | RESET | BOOT |
 | EC718 (Air8000 等) | 通过 USB AT 口控制，无需 DTR/RTS | — |
 
 > CH340G 的 DTR 输出为 **电平取反**（软件设 DTR=true → 引脚输出低电平）。FT232/CP2102 为**非反转**（DTR=true → 引脚高电平）。若使用 CH340G，实际电平与上表相反，但 luatos-cli 已按 serialport 库的逻辑统一处理，**通常无需手动调整**。
@@ -176,12 +176,12 @@ luatos-cli device boot --port COM8 --chip ec718
 
 ---
 
-### CCM4211 / Air1601
+### CCM4211 / Air1601 / Air1602
 
 **自动（推荐）**：
 
 ```bash
-luatos-cli device boot --port COM6 --chip air1601
+luatos-cli device boot --port COM6 --chip air1602
 ```
 
 **手动**：
@@ -196,7 +196,7 @@ luatos-cli device boot --port COM6 --chip air1601
 所有芯片都支持通过命令重启：
 
 ```bash
-# BK7258 / XT804 / CCM4211
+# BK7258 / XT804 / CCM4211 (Air1601/Air1602)
 luatos-cli device reboot --port COM6 --chip bk72xx
 
 # EC718（自动检测 USB 命令口）
