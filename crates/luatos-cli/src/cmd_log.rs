@@ -3,6 +3,13 @@ use crate::{
     OutputFormat,
 };
 
+pub fn resolve_log_mode(chip: &str, requested_baud: u32) -> (bool, bool, u32) {
+    let is_ec718 = matches!(chip, "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg");
+    let use_binary_log = matches!(chip, "air1601" | "air1602" | "ccm4211") || is_ec718;
+    let baud = if is_ec718 && requested_baud == 2_000_000 { 921_600 } else { requested_baud };
+    (use_binary_log, is_ec718, baud)
+}
+
 pub fn cmd_log_view(port: &str, baud: u32, smart: bool, format: &OutputFormat) -> anyhow::Result<()> {
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
@@ -436,5 +443,32 @@ fn emit_smart_diagnostics(analyzer: &Option<std::sync::Arc<std::sync::Mutex<luat
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn resolve_log_mode_ec718_forces_921600() {
+        let (binary, ec718, baud) = super::resolve_log_mode("ec7xx", 2_000_000);
+        assert!(binary);
+        assert!(ec718);
+        assert_eq!(baud, 921_600);
+    }
+
+    #[test]
+    fn resolve_log_mode_air1601_binary_keeps_baud() {
+        let (binary, ec718, baud) = super::resolve_log_mode("air1601", 2_000_000);
+        assert!(binary);
+        assert!(!ec718);
+        assert_eq!(baud, 2_000_000);
+    }
+
+    #[test]
+    fn resolve_log_mode_bk72xx_text() {
+        let (binary, ec718, baud) = super::resolve_log_mode("bk72xx", 921_600);
+        assert!(!binary);
+        assert!(!ec718);
+        assert_eq!(baud, 921_600);
     }
 }

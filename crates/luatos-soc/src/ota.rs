@@ -264,6 +264,7 @@ pub fn lzma_compress_file(input_path: &Path, output_path: &Path, magic: u32, sta
 /// - `common_path`: path to common partition data (e.g., user script, or dummy)
 /// - `sdk_path`: path to SDK partition data (e.g., delta.par, or dummy)
 /// - `output_path`: output .sota file path
+#[allow(clippy::too_many_arguments)]
 pub fn assemble_ota_package(
     magic: u32,
     main_version_decimal: u32,
@@ -403,14 +404,14 @@ fn decode_md5_prefix(hex_str: &str, dst: &mut [u32; 5]) {
     }
 
     // Pad remaining with '0' → 0x00
-    for i in (hex_len / 2)..16 {
-        buf[i] = 0u8;
+    for b in buf.iter_mut().skip(hex_len / 2) {
+        *b = 0u8;
     }
 
     // Store as 4 little-endian u32
-    for i in 0..4 {
+    for (i, out) in dst.iter_mut().take(4).enumerate() {
         let off = i * 4;
-        dst[i] = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
+        *out = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
     }
 }
 
