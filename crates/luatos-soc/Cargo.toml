@@ -20,3 +20,8 @@ sevenz-rust2.workspace = true
 walkdir.workspace = true
 sha2.workspace = true
 md-5.workspace = true
+crc32fast.workspace = true
+flate2 = "1"
+aes = "0.8"
+cbc = "0.1"
+cipher = { version = "0.4", features = ["block-padding"] }

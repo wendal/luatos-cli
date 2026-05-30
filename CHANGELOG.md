@@ -18,6 +18,14 @@ All notable changes to this project will be documented in this file.
 
 ### 变更
 
+#### FOTA：新增 Air8101(BK72XX) 新格式包生成
+
+- `fota build` 新增 `bk72xx/air8101` 分支：支持新格式**全量**与`--script-only`脚本包生成
+- 新增 `luatos_soc::ota` BK72XX 打包实现：脚本包（1KB 头 + BK CRC16）与全量包（RBL + 固定 gzip 头 + AES256-CBC）
+- 新增文档 `docs/air8101-fota-format.md`，沉淀 Air8101 新格式结构说明
+- 更新 OTA/型号/README 文档，补充 Air8101 FOTA 用法与支持矩阵
+- 同步 `refs/soc_files/` 到最新样本集合（含 `LuatOS-SoC_V2015_Air8101.soc`、`LuatOS-SoC_V1021_Air1602.soc`）
+
 #### flash test 关键字判定与失败诊断增强
 
 - `flash test` 关键字默认策略收敛：未传 `--keyword` 时默认 `LuatOS@`，显式传入时仅按传入关键字判定
