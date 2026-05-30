@@ -61,6 +61,13 @@ luatos-cli project wizard --help
 luatos-cli doctor --help
 ```
 
+### `flash test` 关键字判定说明
+
+- 未传 `--keyword` 时，默认检查 `LuatOS@`
+- 显式传入 `--keyword` 时，仅按传入关键字判定
+- Air1601/Air1602 机型执行 `flash test --script <dir>` 时，会先全量刷机，再覆盖脚本分区后再抓日志判定关键字
+- 结果为 `FAIL` 时会输出缺失关键字列表（JSON 输出为 `missing_keywords`）
+
 ## 支持的模组（摘要）
 
 | 模组 | 芯片 | 刷机 | 脚本区 | 文件系统 | FSKV | 日志 | 闭环测试 |

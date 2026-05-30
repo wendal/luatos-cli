@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 ### 变更
 
+#### flash test 关键字判定与失败诊断增强
+
+- `flash test` 关键字默认策略收敛：未传 `--keyword` 时默认 `LuatOS@`，显式传入时仅按传入关键字判定
+- 修复 Air1601/Air1602 `flash test --script` 被忽略的问题：现在会在全量刷机后覆盖脚本分区，再进行关键字判定
+- `flash test` 结果为 `FAIL` 时，文本输出新增 `Missing keywords` 汇总，便于快速定位未命中项
+- JSON/JSONL 结果新增 `missing_keywords` 字段，便于 MCP/自动化流程直接消费
+
 #### AI 工具调用友好性改进（文档拆分 + 型号帮助 + 刷机后日志续接）
 
 - **README 按型号拆分**：首页改为轻量索引，新增 `docs/models/*.md` 型号文档，按 Air1601/Air8000/Air8101/Air6208/SF32 分流

@@ -23,6 +23,8 @@ mod cmd_serial;
 mod cmd_soc;
 mod event;
 
+const DEFAULT_FLASH_TEST_KEYWORD: &str = "LuatOS@";
+
 const SECONDARY_HELP: &str = r#"二级帮助入口（按型号）:
   luatos-cli guide models
   luatos-cli guide model --model air1601
@@ -360,9 +362,13 @@ enum FlashCommands {
         #[arg(long, default_value = "15")]
         timeout: u64,
         /// Keywords to search for in boot log (default: "LuatOS@")
-        #[arg(long, default_value = "LuatOS@")]
-        keyword: Vec<String>,
+        #[arg(long)]
+        keyword: Option<Vec<String>>,
     },
+}
+
+fn resolve_flash_test_keywords(keyword: Option<Vec<String>>) -> Vec<String> {
+    keyword.unwrap_or_else(|| vec![DEFAULT_FLASH_TEST_KEYWORD.to_string()])
 }
 
 #[derive(Subcommand)]
@@ -763,7 +769,8 @@ fn main() {
                 keyword,
             } => {
                 let script_opt = if script.is_empty() { None } else { Some(script.as_slice()) };
-                cmd_flash::cmd_flash_test(&soc, &port, baud, script_opt, timeout, &keyword, progress_step, &cli.format)
+                let keywords = resolve_flash_test_keywords(keyword);
+                cmd_flash::cmd_flash_test(&soc, &port, baud, script_opt, timeout, &keywords, progress_step, &cli.format)
             }
         },
         Commands::Log { action } => match action {
@@ -820,6 +827,7 @@ fn main() {
                     )
                 }
             }
+
             ProjectCommands::Info { dir } => cmd_project::cmd_project_info(&dir, &cli.format),
             ProjectCommands::Config { dir, key, value } => cmd_project::cmd_project_config(&dir, key.as_deref(), value.as_deref(), &cli.format),
             ProjectCommands::Import { file, dir } => cmd_project::cmd_project_import(&file, &dir, &cli.format),
@@ -900,5 +908,41 @@ fn main() {
             eprintln!("Error: {render_err:#}");
         }
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn parse_flash_test(args: &[&str]) -> FlashCommands {
+        let mut cli_args = vec!["luatos-cli", "flash", "test"];
+        cli_args.extend_from_slice(args);
+        let cli = Cli::try_parse_from(cli_args).expect("命令行解析失败");
+        let Commands::Flash { action, .. } = cli.command else {
+            panic!("未解析到 flash 子命令");
+        };
+        action
+    }
+
+    #[test]
+    fn flash_test_keyword_defaults_when_absent() {
+        let action = parse_flash_test(&["--soc", "soc.bin", "--port", "COM6"]);
+        let FlashCommands::Test { keyword, .. } = action else {
+            panic!("未解析到 flash test 命令");
+        };
+        assert_eq!(keyword, None);
+        assert_eq!(resolve_flash_test_keywords(keyword), vec![DEFAULT_FLASH_TEST_KEYWORD.to_string()]);
+    }
+
+    #[test]
+    fn flash_test_keyword_should_not_mix_with_default_when_provided() {
+        let action = parse_flash_test(&["--soc", "soc.bin", "--port", "COM6", "--keyword", "READY"]);
+        let FlashCommands::Test { keyword, .. } = action else {
+            panic!("未解析到 flash test 命令");
+        };
+        assert_eq!(keyword, Some(vec!["READY".to_string()]));
+        assert_eq!(resolve_flash_test_keywords(keyword), vec!["READY".to_string()]);
     }
 }

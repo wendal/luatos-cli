@@ -452,6 +452,37 @@ pub fn cmd_flash_ext_erase(port: &str, baud: u32, partition: &str, ext_prog: boo
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KeywordEvaluation {
+    results: Vec<(String, bool)>,
+    missing_keywords: Vec<String>,
+    all_passed: bool,
+}
+
+fn evaluate_keyword_results(all_lines: &[String], keywords: &[String]) -> KeywordEvaluation {
+    let mut results = Vec::with_capacity(keywords.len());
+    let mut missing_keywords = Vec::new();
+    for kw in keywords {
+        let found = all_lines.iter().any(|line| line.contains(kw.as_str()));
+        results.push((kw.clone(), found));
+        if !found {
+            missing_keywords.push(kw.clone());
+        }
+    }
+
+    let all_passed = missing_keywords.is_empty();
+    KeywordEvaluation {
+        results,
+        missing_keywords,
+        all_passed,
+    }
+}
+
+fn should_overlay_script_for_flash_test(chip: &str, script_folders: Option<&[String]>) -> bool {
+    let has_script = script_folders.is_some_and(|folders| !folders.is_empty());
+    has_script && matches!(chip, "air1601" | "air1602" | "ccm4211")
+}
+
 /// Closed-loop flash test: flash firmware → capture boot log → check keywords → PASS/FAIL.
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_flash_test(
@@ -500,6 +531,12 @@ pub fn cmd_flash_test(
         "air1601" | "air1602" | "ccm4211" => {
             let on_progress2 = make_progress_callback(format, "flash.test", step);
             luatos_flash::ccm4211::flash_ccm4211(soc, port, &on_progress2, cancel.clone())?;
+            if should_overlay_script_for_flash_test(chip.as_str(), script_folders) {
+                event::emit_message(format, "flash.test", MessageLevel::Info, "Applying script overlay from --script folders...")?;
+                let folders = script_folders.expect("script folders required");
+                let script_data = build_script_image_checked(folders, &info)?;
+                luatos_flash::ccm4211::flash_script_ccm4211(soc, port, &script_data, &on_progress2, cancel.clone())?;
+            }
             Vec::new()
         }
         "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" => {
@@ -702,13 +739,10 @@ pub fn cmd_flash_test(
     }
 
     // Step 3: Evaluate keywords
-    let mut keyword_results: Vec<(String, bool)> = Vec::new();
-    for kw in keywords {
-        let found = all_lines.iter().any(|line| line.contains(kw.as_str()));
-        keyword_results.push((kw.clone(), found));
-    }
-
-    let all_passed = keyword_results.iter().all(|(_, found)| *found);
+    let evaluated = evaluate_keyword_results(&all_lines, keywords);
+    let keyword_results = evaluated.results;
+    let missing_keywords = evaluated.missing_keywords;
+    let all_passed = evaluated.all_passed;
     let result_str = if all_passed { "PASS" } else { "FAIL" };
 
     // Step 4: Output
@@ -722,6 +756,9 @@ pub fn cmd_flash_test(
             for (kw, found) in &keyword_results {
                 let icon = if *found { "✓" } else { "✗" };
                 println!("  [{icon}] Keyword \"{kw}\": {}", if *found { "FOUND" } else { "NOT FOUND" });
+            }
+            if !all_passed {
+                println!("  Missing keywords: {}", missing_keywords.join(", "));
             }
             if !all_lines.is_empty() {
                 println!("\n--- Boot Log ({} lines) ---", all_lines.len());
@@ -742,6 +779,7 @@ pub fn cmd_flash_test(
                 "keywords": keyword_results.iter().map(|(kw, found)| {
                     serde_json::json!({ "keyword": kw, "found": found })
                 }).collect::<Vec<_>>(),
+                "missing_keywords": missing_keywords,
                 "boot_log": all_lines,
                 "log_line_count": all_lines.len(),
             }),
@@ -753,4 +791,46 @@ pub fn cmd_flash_test(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_overlay_script_for_ccm4211_flash_test_when_script_present() {
+        let script = vec!["tmp-script".to_string()];
+        assert!(should_overlay_script_for_flash_test("air1601", Some(&script)));
+        assert!(should_overlay_script_for_flash_test("air1602", Some(&script)));
+        assert!(should_overlay_script_for_flash_test("ccm4211", Some(&script)));
+    }
+
+    #[test]
+    fn should_not_overlay_script_for_flash_test_when_script_absent_or_chip_unsupported() {
+        let script = vec!["tmp-script".to_string()];
+        assert!(!should_overlay_script_for_flash_test("air1601", None));
+        assert!(!should_overlay_script_for_flash_test("air1601", Some(&[])));
+        assert!(!should_overlay_script_for_flash_test("bk72xx", Some(&script)));
+    }
+
+    #[test]
+    fn evaluate_keyword_results_marks_missing_keyword() {
+        let all_lines = vec!["Boot OK".to_string(), "READY token".to_string()];
+        let keywords = vec!["READY".to_string(), "LuatOS@".to_string()];
+
+        let evaluated = evaluate_keyword_results(&all_lines, &keywords);
+        assert!(!evaluated.all_passed);
+        assert_eq!(evaluated.results, vec![("READY".to_string(), true), ("LuatOS@".to_string(), false),]);
+        assert_eq!(evaluated.missing_keywords, vec!["LuatOS@".to_string()]);
+    }
+
+    #[test]
+    fn evaluate_keyword_results_passes_when_all_found() {
+        let all_lines = vec!["Boot LuatOS@ READY".to_string()];
+        let keywords = vec!["READY".to_string(), "LuatOS@".to_string()];
+
+        let evaluated = evaluate_keyword_results(&all_lines, &keywords);
+        assert!(evaluated.all_passed);
+        assert_eq!(evaluated.missing_keywords, Vec::<String>::new());
+    }
 }
