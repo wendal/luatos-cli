@@ -1,6 +1,7 @@
 use anyhow::Context;
 
 use crate::{
+    cmd_log,
     event::{self, MessageLevel},
     OutputFormat,
 };
@@ -20,9 +21,104 @@ fn check_script_size(image_len: usize, partition_size: usize) -> anyhow::Result<
             overflow as f64 / 1024.0,
         );
     }
+
     Ok(())
 }
 
+fn build_script_image_checked(folders: &[String], info: &luatos_soc::SocInfo) -> anyhow::Result<Vec<u8>> {
+    let folder_paths: Vec<std::path::PathBuf> = folders.iter().map(std::path::PathBuf::from).collect();
+    let path_refs: Vec<&std::path::Path> = folder_paths.iter().map(|p| p.as_path()).collect();
+    let script_data = luatos_luadb::build::build_script_image(
+        &path_refs,
+        info.script_use_luac(),
+        info.script_bitw(),
+        info.use_bkcrc(),
+        true, // strip debug info
+    )?;
+    check_script_size(script_data.len(), info.script_size())?;
+    Ok(script_data)
+}
+
+fn tail_log_after_flash(soc: &str, port: &str, timeout_secs: u64, format: &OutputFormat) -> anyhow::Result<()> {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use std::time::Duration;
+
+    let info = luatos_soc::read_soc_info(soc)?;
+    let chip = info.chip.chip_type.as_str();
+    let (use_binary_log, is_ec718, log_baud) = cmd_log::resolve_log_mode(chip, info.log_baud_rate());
+
+    let log_port: String = if is_ec718 {
+        match luatos_flash::ec718::wait_for_log_port(15) {
+            Some(p) => p,
+            None => port.to_string(),
+        }
+    } else {
+        port.to_string()
+    };
+
+    event::emit_message(
+        format,
+        "flash.run",
+        MessageLevel::Info,
+        format!("刷机完成，继续监听日志 {timeout_secs}s: {log_port} @ {log_baud}"),
+    )?;
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_timer = stop.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(timeout_secs));
+        stop_timer.store(true, Ordering::Relaxed);
+    });
+
+    if use_binary_log {
+        let decoder = std::sync::Mutex::new(if is_ec718 { None } else { Some(luatos_log::SocLogDecoder::new()) });
+        let ec718_decoder = std::sync::Mutex::new(if is_ec718 { Some(luatos_log::Ec718LogDecoder::new()) } else { None });
+        let fmt = *format;
+        let init_data = Some(luatos_flash::ec718::build_log_probe());
+        luatos_serial::stream_binary(
+            &log_port,
+            log_baud,
+            stop,
+            Box::new(move |data| {
+                if let Ok(mut dec) = decoder.lock() {
+                    if let Some(ref mut soc_dec) = *dec {
+                        for entry in soc_dec.feed(data) {
+                            let _ = event::emit_log_entry(&fmt, "flash.run.tail", &entry);
+                        }
+                    }
+                }
+                if let Ok(mut dec) = ec718_decoder.lock() {
+                    if let Some(ref mut ec_dec) = *dec {
+                        for entry in ec_dec.feed(data) {
+                            let _ = event::emit_log_entry(&fmt, "flash.run.tail", &entry);
+                        }
+                    }
+                }
+            }),
+            init_data.as_deref(),
+            is_ec718,
+        )?;
+    } else {
+        let dispatcher = luatos_log::LogDispatcher::default_parsers();
+        let fmt = *format;
+        luatos_serial::stream_log_lines(
+            &log_port,
+            log_baud,
+            stop,
+            Box::new(move |line| {
+                let entry = dispatcher.parse(line);
+                let _ = event::emit_log_entry(&fmt, "flash.run.tail", &entry);
+            }),
+        )?;
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn cmd_flash_run(
     soc: &str,
     port: &str,
@@ -31,6 +127,7 @@ pub fn cmd_flash_run(
     step: u8,
     format: &OutputFormat,
     reset_config: Option<luatos_flash::sf32lb5x::Sf32ResetConfig>,
+    tail_log_secs: u64,
 ) -> anyhow::Result<()> {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let format_clone = *format;
@@ -108,6 +205,10 @@ pub fn cmd_flash_run(
         _ => {
             anyhow::bail!("Unsupported chip type: {chip}. Supported: bk72xx, air6208, air101, air1601, air1602, ec7xx");
         }
+    }
+
+    if tail_log_secs > 0 {
+        tail_log_after_flash(soc, port, tail_log_secs, format)?;
     }
 
     Ok(())
@@ -218,16 +319,7 @@ pub fn cmd_flash_partition(
         "air1601" | "air1602" | "ccm4211" => match op {
             "script" => {
                 let folders = script_folders.expect("script folder required");
-                let folder_paths: Vec<std::path::PathBuf> = folders.iter().map(std::path::PathBuf::from).collect();
-                let path_refs: Vec<&std::path::Path> = folder_paths.iter().map(|p| p.as_path()).collect();
-                let script_data = luatos_luadb::build::build_script_image(
-                    &path_refs,
-                    info.script_use_luac(),
-                    info.script_bitw(),
-                    info.use_bkcrc(),
-                    true, // strip debug info
-                )?;
-                check_script_size(script_data.len(), info.script_size())?;
+                let script_data = build_script_image_checked(folders, &info)?;
                 luatos_flash::ccm4211::flash_script_ccm4211(soc, port, &script_data, &on_progress, cancel)?;
             }
             "clear-fs" => {
@@ -241,16 +333,7 @@ pub fn cmd_flash_partition(
         "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" => match op {
             "script" => {
                 let folders = script_folders.expect("script folder required");
-                let folder_paths: Vec<std::path::PathBuf> = folders.iter().map(std::path::PathBuf::from).collect();
-                let path_refs: Vec<&std::path::Path> = folder_paths.iter().map(|p| p.as_path()).collect();
-                let script_data = luatos_luadb::build::build_script_image(
-                    &path_refs,
-                    info.script_use_luac(),
-                    info.script_bitw(),
-                    info.use_bkcrc(),
-                    true, // strip debug info
-                )?;
-                check_script_size(script_data.len(), info.script_size())?;
+                let script_data = build_script_image_checked(folders, &info)?;
                 let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress)?;
                 luatos_flash::ec718::flash_script_ec718(soc, &boot_port, &script_data, &on_progress, cancel)?;
             }
@@ -402,13 +485,7 @@ pub fn cmd_flash_test(
     // Step 1: Flash the firmware
     let info = luatos_soc::read_soc_info(soc)?;
     let chip = info.chip.chip_type.clone();
-    let log_br = info.log_baud_rate();
-    // For EC718 USB CDC, 2000000 baud is not supported; use 921600
-    let log_br = if matches!(chip.as_str(), "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg") && log_br == 2000000 {
-        921600
-    } else {
-        log_br
-    };
+    let (_, _, log_br) = cmd_log::resolve_log_mode(chip.as_str(), info.log_baud_rate());
 
     let boot_lines_from_flash: Vec<String> = match chip.as_str() {
         "bk72xx" | "air8101" => {
@@ -444,8 +521,7 @@ pub fn cmd_flash_test(
     let mut all_lines = boot_lines_from_flash;
 
     // Determine if this chip uses binary SOC log protocol
-    let is_ec718 = matches!(chip.as_str(), "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg");
-    let use_binary_log = matches!(chip.as_str(), "air1601" | "air1602" | "ccm4211") || is_ec718;
+    let (use_binary_log, is_ec718, _) = cmd_log::resolve_log_mode(chip.as_str(), log_br);
 
     // For EC718: after flash+reset, the boot port disappears and the module
     // re-enumerates as running mode (VID=0x19D1). We need to wait for the

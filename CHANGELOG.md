@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 ### 变更
 
+#### AI 工具调用友好性改进（文档拆分 + 型号帮助 + 刷机后日志续接）
+
+- **README 按型号拆分**：首页改为轻量索引，新增 `docs/models/*.md` 型号文档，按 Air1601/Air8000/Air8101/Air6208/SF32 分流
+- **`--help` 二级菜单入口**：顶层帮助新增型号导航提示，新增 `guide models` / `guide model --model <型号>` 输出推荐命令与文档位置
+- **刷机后继续监听日志**：`flash run` 新增 `--tail-log-secs`，按芯片自动选择日志模式与波特率，降低启动日志丢失概率
+- **命令逻辑抽象**：提取日志模式判定 `resolve_log_mode` 与脚本镜像构建共享逻辑，减少 `cmd_flash` / `cmd_log` 重复代码
+
 #### Air1602 (CCM4211) 刷机/日志别名支持
 
 - 将 `Air1602` 作为 `Air1601 / CCM4211` 的别名接入刷机、分区操作、闭环测试、日志探测、FOTA、设备控制、GUI 与 MCP 工具

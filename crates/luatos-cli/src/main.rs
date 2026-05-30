@@ -14,6 +14,7 @@ mod cmd_device;
 mod cmd_doctor;
 mod cmd_flash;
 mod cmd_fota;
+mod cmd_guide;
 mod cmd_log;
 mod cmd_project;
 mod cmd_project_wizard;
@@ -22,8 +23,19 @@ mod cmd_serial;
 mod cmd_soc;
 mod event;
 
+const SECONDARY_HELP: &str = r#"二级帮助入口（按型号）:
+  luatos-cli guide models
+  luatos-cli guide model --model air1601
+  luatos-cli guide model --model air8000
+
+常见任务入口:
+  luatos-cli flash run --help
+  luatos-cli log view --help
+  luatos-cli log view-binary --help
+"#;
+
 #[derive(Parser)]
-#[command(name = "luatos-cli", version, about = "LuatOS CLI tool — flash, log, project management")]
+#[command(name = "luatos-cli", version, about = "LuatOS CLI tool — flash, log, project management", after_help = SECONDARY_HELP)]
 struct Cli {
     /// Output format
     #[arg(long, default_value = "text", global = true)]
@@ -31,6 +43,18 @@ struct Cli {
 
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Subcommand)]
+enum GuideCommands {
+    /// 列出支持的型号入口与推荐命令
+    Models,
+    /// 查看指定型号的推荐刷机/日志命令
+    Model {
+        /// 型号别名，例如 air1601/air1602/ccm4211/air8000
+        #[arg(long)]
+        model: String,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, clap::ValueEnum)]
@@ -97,6 +121,11 @@ enum Commands {
     Fota {
         #[command(subcommand)]
         action: FotaCommands,
+    },
+    /// 型号二级帮助入口（AI/脚本友好）
+    Guide {
+        #[command(subcommand)]
+        action: GuideCommands,
     },
 }
 
@@ -198,6 +227,9 @@ enum FlashCommands {
         /// 进入 boot 后等待 ROM BL 初始化的时长（毫秒，默认 500）
         #[arg(long, default_value = "500")]
         boot_wait_ms: u64,
+        /// 刷机完成后继续监听串口日志秒数（0=不监听）
+        #[arg(long, default_value = "0")]
+        tail_log_secs: u64,
     },
     /// Flash script partition only (most common during development)
     Script {
@@ -649,6 +681,7 @@ fn main() {
                 rts_reset,
                 reset_ms,
                 boot_wait_ms,
+                tail_log_secs,
             } => {
                 let script_opt = if script.is_empty() { None } else { Some(script.as_slice()) };
                 let reset_config = if auto_reset {
@@ -662,7 +695,7 @@ fn main() {
                 } else {
                     None
                 };
-                cmd_flash::cmd_flash_run(&soc, &port, baud, script_opt, progress_step, &cli.format, reset_config)
+                cmd_flash::cmd_flash_run(&soc, &port, baud, script_opt, progress_step, &cli.format, reset_config, tail_log_secs)
             }
             FlashCommands::Script {
                 soc,
@@ -831,6 +864,10 @@ fn main() {
                 script_only,
                 &cli.format,
             ),
+        },
+        Commands::Guide { action } => match action {
+            GuideCommands::Models => cmd_guide::cmd_guide_models(&cli.format),
+            GuideCommands::Model { model } => cmd_guide::cmd_guide_model(&model, &cli.format),
         },
         Commands::Doctor { dir } => cmd_doctor::cmd_doctor(&dir, &cli.format),
         Commands::Version => {
