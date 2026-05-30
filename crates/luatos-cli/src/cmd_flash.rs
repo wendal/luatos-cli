@@ -478,6 +478,34 @@ fn evaluate_keyword_results(all_lines: &[String], keywords: &[String]) -> Keywor
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FlashTestOutcome {
+    pass: KeywordEvaluation,
+    fail_keyword_results: Vec<(String, bool)>,
+    matched_fail_keywords: Vec<String>,
+    fast_failed: bool,
+    all_passed: bool,
+}
+
+fn evaluate_keyword_hits(all_lines: &[String], keywords: &[String]) -> Vec<(String, bool)> {
+    keywords.iter().map(|kw| (kw.clone(), all_lines.iter().any(|line| line.contains(kw.as_str())))).collect()
+}
+
+fn evaluate_flash_test_outcome(all_lines: &[String], pass_keywords: &[String], fail_keywords: &[String]) -> FlashTestOutcome {
+    let pass = evaluate_keyword_results(all_lines, pass_keywords);
+    let fail_keyword_results = evaluate_keyword_hits(all_lines, fail_keywords);
+    let matched_fail_keywords = fail_keyword_results.iter().filter(|(_, found)| *found).map(|(kw, _)| kw.clone()).collect::<Vec<_>>();
+    let fast_failed = !matched_fail_keywords.is_empty();
+    let all_passed = pass.all_passed && !fast_failed;
+    FlashTestOutcome {
+        pass,
+        fail_keyword_results,
+        matched_fail_keywords,
+        fast_failed,
+        all_passed,
+    }
+}
+
 fn should_overlay_script_for_flash_test(chip: &str, script_folders: Option<&[String]>) -> bool {
     let has_script = script_folders.is_some_and(|folders| !folders.is_empty());
     has_script && matches!(chip, "air1601" | "air1602" | "ccm4211")
@@ -492,6 +520,7 @@ pub fn cmd_flash_test(
     script_folders: Option<&[String]>,
     timeout_secs: u64,
     keywords: &[String],
+    fail_keywords: &[String],
     step: u8,
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
@@ -609,6 +638,7 @@ pub fn cmd_flash_test(
         let start = Instant::now();
         let timeout = Duration::from_secs(timeout_secs);
         let mut buf = vec![0u8; 4096];
+        let mut early_outcome: Option<FlashTestOutcome> = None;
 
         if use_binary_log {
             if is_ec718 {
@@ -632,8 +662,9 @@ pub fn cmd_flash_test(
                                 );
                                 all_lines.push(msg);
                             }
-                            let found_all = keywords.iter().all(|kw| all_lines.iter().any(|line| line.contains(kw.as_str())));
-                            if found_all {
+                            let outcome = evaluate_flash_test_outcome(&all_lines, keywords, fail_keywords);
+                            if outcome.fast_failed || outcome.pass.all_passed {
+                                early_outcome = Some(outcome);
                                 break;
                             }
                         }
@@ -664,8 +695,9 @@ pub fn cmd_flash_test(
                                 );
                                 all_lines.push(msg);
                             }
-                            let found_all = keywords.iter().all(|kw| all_lines.iter().any(|line| line.contains(kw.as_str())));
-                            if found_all {
+                            let outcome = evaluate_flash_test_outcome(&all_lines, keywords, fail_keywords);
+                            if outcome.fast_failed || outcome.pass.all_passed {
+                                early_outcome = Some(outcome);
                                 break;
                             }
                         }
@@ -705,9 +737,9 @@ pub fn cmd_flash_test(
                             }
                         }
 
-                        // Early exit if we already found all keywords
-                        let found_all = keywords.iter().all(|kw| all_lines.iter().any(|line| line.contains(kw.as_str())));
-                        if found_all {
+                        let outcome = evaluate_flash_test_outcome(&all_lines, keywords, fail_keywords);
+                        if outcome.fast_failed || outcome.pass.all_passed {
+                            early_outcome = Some(outcome);
                             break;
                         }
                     }
@@ -733,16 +765,23 @@ pub fn cmd_flash_test(
                 all_lines.push(line);
             }
         }
+
+        if early_outcome.is_some() {
+            log::debug!("flash.test exited log capture early due to keyword decision");
+        }
     } else if all_lines.is_empty() {
         // Could not open serial and no lines from flash
         log::warn!("Could not open serial port for boot log capture");
     }
 
     // Step 3: Evaluate keywords
-    let evaluated = evaluate_keyword_results(&all_lines, keywords);
-    let keyword_results = evaluated.results;
-    let missing_keywords = evaluated.missing_keywords;
-    let all_passed = evaluated.all_passed;
+    let outcome = evaluate_flash_test_outcome(&all_lines, keywords, fail_keywords);
+    let keyword_results = outcome.pass.results;
+    let missing_keywords = outcome.pass.missing_keywords;
+    let fail_keyword_results = outcome.fail_keyword_results;
+    let matched_fail_keywords = outcome.matched_fail_keywords;
+    let fast_failed = outcome.fast_failed;
+    let all_passed = outcome.all_passed;
     let result_str = if all_passed { "PASS" } else { "FAIL" };
 
     // Step 4: Output
@@ -756,6 +795,15 @@ pub fn cmd_flash_test(
             for (kw, found) in &keyword_results {
                 let icon = if *found { "✓" } else { "✗" };
                 println!("  [{icon}] Keyword \"{kw}\": {}", if *found { "FOUND" } else { "NOT FOUND" });
+            }
+            if !fail_keyword_results.is_empty() {
+                for (kw, found) in &fail_keyword_results {
+                    let icon = if *found { "✗" } else { "✓" };
+                    println!("  [{icon}] Fail keyword \"{kw}\": {}", if *found { "HIT" } else { "NOT HIT" });
+                }
+            }
+            if fast_failed {
+                println!("  Fast-fail keywords hit: {}", matched_fail_keywords.join(", "));
             }
             if !all_passed {
                 println!("  Missing keywords: {}", missing_keywords.join(", "));
@@ -779,6 +827,11 @@ pub fn cmd_flash_test(
                 "keywords": keyword_results.iter().map(|(kw, found)| {
                     serde_json::json!({ "keyword": kw, "found": found })
                 }).collect::<Vec<_>>(),
+                "fail_keywords": fail_keyword_results.iter().map(|(kw, found)| {
+                    serde_json::json!({ "keyword": kw, "found": found })
+                }).collect::<Vec<_>>(),
+                "matched_fail_keywords": matched_fail_keywords,
+                "fast_failed": fast_failed,
                 "missing_keywords": missing_keywords,
                 "boot_log": all_lines,
                 "log_line_count": all_lines.len(),
@@ -832,5 +885,29 @@ mod tests {
         let evaluated = evaluate_keyword_results(&all_lines, &keywords);
         assert!(evaluated.all_passed);
         assert_eq!(evaluated.missing_keywords, Vec::<String>::new());
+    }
+
+    #[test]
+    fn evaluate_flash_test_outcome_fast_fails_when_fail_keyword_matched() {
+        let all_lines = vec!["panic: assert failed".to_string(), "LuatOS@ ready".to_string()];
+        let pass_keywords = vec!["LuatOS@".to_string()];
+        let fail_keywords = vec!["panic".to_string(), "hardfault".to_string()];
+
+        let outcome = evaluate_flash_test_outcome(&all_lines, &pass_keywords, &fail_keywords);
+        assert!(!outcome.all_passed);
+        assert!(outcome.fast_failed);
+        assert_eq!(outcome.matched_fail_keywords, vec!["panic".to_string()]);
+    }
+
+    #[test]
+    fn evaluate_flash_test_outcome_does_not_fast_fail_when_fail_keywords_unset() {
+        let all_lines = vec!["LuatOS@ ready".to_string()];
+        let pass_keywords = vec!["LuatOS@".to_string()];
+        let fail_keywords = Vec::<String>::new();
+
+        let outcome = evaluate_flash_test_outcome(&all_lines, &pass_keywords, &fail_keywords);
+        assert!(outcome.all_passed);
+        assert!(!outcome.fast_failed);
+        assert_eq!(outcome.matched_fail_keywords, Vec::<String>::new());
     }
 }

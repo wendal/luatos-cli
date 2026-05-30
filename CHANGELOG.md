@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.1] - 2026-05-30
+
+### 变更
+
+#### flash test 快速判 FAIL 支持
+
+- 新增 `--fail-keyword`（可重复）用于快速判 FAIL：命中任意一项立即失败；未传时不启用快速失败判定
+- `flash test` 结果为 `FAIL` 时，文本输出新增 `Missing keywords` 汇总，便于快速定位未命中项
+- JSON/JSONL 结果新增 `missing_keywords`、`fail_keywords`、`matched_fail_keywords`、`fast_failed` 字段，便于 MCP/自动化流程直接消费
+- 修复 Air1601/Air1602 `flash test --script` 被忽略的问题：现在会在全量刷机后覆盖脚本分区，再进行关键字判定
+- `flash test` 关键字默认策略收敛：未传 `--keyword` 时默认 `LuatOS@`，显式传入时仅按传入关键字判定
+
 ## [Unreleased]
 
 ### 变更
@@ -10,6 +22,7 @@ All notable changes to this project will be documented in this file.
 
 - `flash test` 关键字默认策略收敛：未传 `--keyword` 时默认 `LuatOS@`，显式传入时仅按传入关键字判定
 - 修复 Air1601/Air1602 `flash test --script` 被忽略的问题：现在会在全量刷机后覆盖脚本分区，再进行关键字判定
+- 新增 `--fail-keyword`（可重复）用于快速判 FAIL：命中任意一项立即失败；未传时不启用快速失败判定
 - `flash test` 结果为 `FAIL` 时，文本输出新增 `Missing keywords` 汇总，便于快速定位未命中项
 - JSON/JSONL 结果新增 `missing_keywords` 字段，便于 MCP/自动化流程直接消费
 

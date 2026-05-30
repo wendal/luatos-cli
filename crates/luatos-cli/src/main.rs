@@ -364,6 +364,9 @@ enum FlashCommands {
         /// Keywords to search for in boot log (default: "LuatOS@")
         #[arg(long)]
         keyword: Option<Vec<String>>,
+        /// Fast-fail keywords: match any one to fail immediately (optional, repeatable)
+        #[arg(long = "fail-keyword")]
+        fail_keyword: Option<Vec<String>>,
     },
 }
 
@@ -767,10 +770,12 @@ fn main() {
                 script,
                 timeout,
                 keyword,
+                fail_keyword,
             } => {
                 let script_opt = if script.is_empty() { None } else { Some(script.as_slice()) };
                 let keywords = resolve_flash_test_keywords(keyword);
-                cmd_flash::cmd_flash_test(&soc, &port, baud, script_opt, timeout, &keywords, progress_step, &cli.format)
+                let fail_keywords = fail_keyword.unwrap_or_default();
+                cmd_flash::cmd_flash_test(&soc, &port, baud, script_opt, timeout, &keywords, &fail_keywords, progress_step, &cli.format)
             }
         },
         Commands::Log { action } => match action {
@@ -929,20 +934,31 @@ mod tests {
     #[test]
     fn flash_test_keyword_defaults_when_absent() {
         let action = parse_flash_test(&["--soc", "soc.bin", "--port", "COM6"]);
-        let FlashCommands::Test { keyword, .. } = action else {
+        let FlashCommands::Test { keyword, fail_keyword, .. } = action else {
             panic!("未解析到 flash test 命令");
         };
         assert_eq!(keyword, None);
+        assert_eq!(fail_keyword, None);
         assert_eq!(resolve_flash_test_keywords(keyword), vec![DEFAULT_FLASH_TEST_KEYWORD.to_string()]);
     }
 
     #[test]
     fn flash_test_keyword_should_not_mix_with_default_when_provided() {
         let action = parse_flash_test(&["--soc", "soc.bin", "--port", "COM6", "--keyword", "READY"]);
-        let FlashCommands::Test { keyword, .. } = action else {
+        let FlashCommands::Test { keyword, fail_keyword, .. } = action else {
             panic!("未解析到 flash test 命令");
         };
         assert_eq!(keyword, Some(vec!["READY".to_string()]));
+        assert_eq!(fail_keyword, None);
         assert_eq!(resolve_flash_test_keywords(keyword), vec!["READY".to_string()]);
+    }
+
+    #[test]
+    fn flash_test_fail_keyword_should_parse_repeated_values() {
+        let action = parse_flash_test(&["--soc", "soc.bin", "--port", "COM6", "--fail-keyword", "PANIC", "--fail-keyword", "ASSERT"]);
+        let FlashCommands::Test { fail_keyword, .. } = action else {
+            panic!("未解析到 flash test 命令");
+        };
+        assert_eq!(fail_keyword, Some(vec!["PANIC".to_string(), "ASSERT".to_string()]));
     }
 }

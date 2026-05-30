@@ -154,6 +154,8 @@ struct FlashTestArgs {
     timeout: Option<u64>,
     #[schemars(description = "要检查的关键字列表")]
     keyword: Option<Vec<String>>,
+    #[schemars(description = "快速判失败关键字列表，命中任意一个立即失败（可选）")]
+    fail_keyword: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -446,6 +448,7 @@ impl LuatosMcp {
         cli_args.push("--timeout".into());
         cli_args.push(args.timeout.unwrap_or(15).to_string());
         push_repeat_flag(&mut cli_args, "--keyword", args.keyword.unwrap_or_else(|| vec!["LuatOS@".into()]));
+        push_repeat_flag(&mut cli_args, "--fail-keyword", args.fail_keyword.unwrap_or_default());
         self.run_tool("flash.test", cli_args, context).await
     }
 }

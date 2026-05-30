@@ -65,6 +65,7 @@ luatos-cli doctor --help
 
 - 未传 `--keyword` 时，默认检查 `LuatOS@`
 - 显式传入 `--keyword` 时，仅按传入关键字判定
+- 可选 `--fail-keyword`（可重复）用于快速判失败：命中任意一项立即结束并判定 FAIL
 - Air1601/Air1602 机型执行 `flash test --script <dir>` 时，会先全量刷机，再覆盖脚本分区后再抓日志判定关键字
 - 结果为 `FAIL` 时会输出缺失关键字列表（JSON 输出为 `missing_keywords`）
 
