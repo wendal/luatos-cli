@@ -2,7 +2,7 @@
 
 ## 概述
 
-OTA（Over-The-Air，空中升级）是 LuatOS 模组固件远程升级的核心机制。本工具提供的 `fota build` 命令用于将 `.soc` 固件包转换成模组可识别的 `.sota` 升级包。
+OTA（Over-The-Air，空中升级）是 LuatOS 模组固件远程升级的核心机制。本工具提供的 `fota build` 命令用于将 `.soc` 固件包转换成模组可识别的升级包（如 `.sota` / BK72XX 新格式 `.bin`）。
 
 该功能已用纯 Rust 重新实现，完全替代了原 `soc_tools.exe` 中的 `zip_file` 和 `make_ota_file` 命令，产物与原 C++ 工具二进制兼容。
 
@@ -15,6 +15,7 @@ OTA（Over-The-Air，空中升级）是 LuatOS 模组固件远程升级的核心
 │  CLI 层: luatos-cli/src/cmd_fota.rs                       │
 │  ├── EC7xx / Air8000 → 差分FOTA (FotaToolkit + Rust)      │
 │  ├── Air1601 / CCM4211 → 全量FOTA (纯Rust) / --script-only│
+│  ├── Air8101 / BK72XX → 新格式全量/脚本FOTA (纯Rust)       │
 │  └── Air6208 / XT804  → 全量FOTA (air101_flash)           │
 ├───────────────────────────────────────────────────────────┤
 │  库层: luatos-soc/src/ota.rs                              │
@@ -39,10 +40,10 @@ luatos-cli fota build --new <新固件.soc> [--old <旧固件.soc>] [--output <�
 |------|------|------|
 | `--new` | 是 | 新固件 `.soc` 文件路径 |
 | `--old` | 否 | 旧固件 `.soc` 文件路径（提供时为差分FOTA，否则为全量FOTA） |
-| `-o` `--output` | 否 | 输出路径，默认 `<芯片名>_fota.sota` |
+| `-o` `--output` | 否 | 输出路径，默认按芯片生成（如 `<芯片名>_fota.sota` / `bk72xx_fota.bin`） |
 | `--fota-toolkit` | 否 | `FotaToolkit.exe` 路径（仅差分FOTA需要，默认自动搜索） |
 | `--soc-tools` | 否 | **已弃用**，保留仅为兼容旧命令 |
-| `--script-only` | 否 | 生成仅脚本的升级包（CCM4211专用，跳过ROM压缩） |
+| `--script-only` | 否 | 生成仅脚本的升级包（CCM4211、BK72XX 支持） |
 
 ### 使用示例
 
@@ -55,6 +56,12 @@ luatos-cli fota build --new air1601_v1.0.soc
 
 # CCM4211 仅脚本热更新（跳过 ROM 压缩，产物体积小）
 luatos-cli fota build --new ccm4211_v1.0.soc --script-only
+
+# Air8101(BK72XX) 新格式全量 FOTA
+luatos-cli fota build --new air8101_v1.0.soc -o air8101_full_fota.bin
+
+# Air8101(BK72XX) 新格式脚本 FOTA
+luatos-cli fota build --new air8101_v1.0.soc --script-only -o air8101_script_fota.bin
 
 # 指定输出文件名
 luatos-cli fota build --new firmware.soc --output upgrade.sota
@@ -69,6 +76,8 @@ luatos-cli fota build --new firmware.soc --output upgrade.sota
 | **EC7xx / EC618 / Air8000** | 差分FOTA | 外部工具 `FotaToolkit.exe` 生成差分包 → Rust 组装 `.sota` |
 | **Air1601 / CCM4211** | 全量FOTA | 纯Rust：LZMA 压缩固件块 → 组装 `.sota` |
 | | **仅脚本升级** | `--script-only`：仅压缩脚本分区，跳过 ROM，适合 Lua 热更新 |
+| **Air8101 / BK72XX** | 新格式全量FOTA | 纯Rust：CP/AP/Script 合成 RBL 载荷 → 固定 gzip 头 + AES256-CBC → 输出 `.bin` |
+| | 新格式脚本升级 | `--script-only`：1KB 头 + BK CRC16 脚本块（仅新格式） |
 | **Air6208 / XT804** | 全量FOTA | `air101_flash.exe` 生成镜像 → 剥离 secboot 头 → 输出 |
 
 ---
@@ -193,7 +202,7 @@ pub fn assemble_ota_package(
 
 **全量 FOTA**（不提供 `--old`）：Air1601/CCM4211 会压缩 ROM+脚本打包；Air6208/XT804 通过 air101_flash 生成镜像。
 
-**仅脚本 FOTA**（`--script-only`）：Air1601/CCM4211 跳过 ROM，只压缩脚本分区，适合 Lua 热修复。
+**仅脚本 FOTA**（`--script-only`）：Air1601/CCM4211 跳过 ROM，只压缩脚本分区；BK72XX 生成新格式脚本升级包。
 
 ### Q: 如何验证生成的 OTA 包？
 
@@ -211,7 +220,10 @@ pub fn assemble_ota_package(
 - ✅ 升级速度快
 - ✅ 不涉及 ROM 压缩，构建更快
 
-**限制**：仅支持 Air1601 / CCM4211 芯片，且 `.soc` 中必须包含有效的 `download.script_addr` 配置。
+**限制**：
+
+- BK72XX 仅支持 `rom.fs.script.bkcrc=true` 的新格式（不支持旧 `LFTA` 格式）
+- BK72XX `.soc` 需包含 `cp.bin`、`ap.bin`、`script.bin` 以及有效 `rom.fs.ap.offset`/`download.script_addr`
 
 ### Q: 运行单元测试
 
@@ -229,7 +241,8 @@ cargo test -p luatos-soc
 |------|------|
 | [crates/luatos-cli/src/cmd_fota.rs](../crates/luatos-cli/src/cmd_fota.rs) | CLI 命令层：`cmd_fota_build()` 入口，工具自动发现，芯片分派逻辑 |
 | [crates/luatos-soc/src/ota.rs](../crates/luatos-soc/src/ota.rs) | OTA 库层：`lzma_compress_file()`、`assemble_ota_package()` 及 LZMA 块压缩核心 |
-| [crates/luatos-soc/Cargo.toml](../crates/luatos-soc/Cargo.toml) | 依赖声明：`crc32fast`（CRC32）、`xz2`+`lzma-sys`（LZMA）、`md-5`（MD5） |
+| [docs/air8101-fota-format.md](./air8101-fota-format.md) | Air8101/BK72XX 新格式 FOTA 结构与字段定义 |
+| [crates/luatos-soc/Cargo.toml](../crates/luatos-soc/Cargo.toml) | 依赖声明：`crc32fast`、`flate2`、`aes/cbc`、`md-5` |
 
 ### 代码中的关键常量
 

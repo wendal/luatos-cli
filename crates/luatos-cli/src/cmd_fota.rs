@@ -3,6 +3,7 @@
 // Supported chip families:
 //   EC7xx / EC618 / Air8000  - differential (--new + --old) via FotaToolkit.exe + Rust OTA assembler
 //   Air1601 / Air1602 / CCM4211 - full via Rust OTA (LZMA compress + assemble), --script-only for script-only update
+//   Air8101 / BK72XX            - new-format full/script FOTA via Rust BK72XX packer
 //   Air6208 / XT804          - full only via air101_flash.exe (bundled in the .soc)
 //
 // External tools required:
@@ -230,6 +231,49 @@ fn build_ccm4211_script_only_fota(new_soc: &str, out_path: &Path) -> Result<()> 
     Ok(())
 }
 
+fn build_bk72xx_fota(new_soc: &str, out_path: &Path, script_only: bool) -> Result<()> {
+    let tmp = tempfile::tempdir().context("tempdir")?;
+    let up = unpack(new_soc, &tmp.path().join("soc"))?;
+    let info = &up.info;
+
+    anyhow::ensure!(
+        info.use_bkcrc(),
+        "BK72XX old-format FOTA is not supported in luatos-cli yet (requires info.json rom.fs.script.bkcrc=true)"
+    );
+
+    let script_bin = up.dir.join(&info.script.file);
+    anyhow::ensure!(script_bin.exists(), "script file not found: {}", script_bin.display());
+
+    if script_only {
+        luatos_soc::ota::build_bk72xx_script_fota_new(&script_bin, out_path)?;
+        return Ok(());
+    }
+
+    let cp_bin = up.dir.join("cp.bin");
+    let ap_bin = up.dir.join("ap.bin");
+    anyhow::ensure!(cp_bin.exists(), "cp.bin not found in SOC: {}", cp_bin.display());
+    anyhow::ensure!(ap_bin.exists(), "ap.bin not found in SOC: {}", ap_bin.display());
+
+    let ap_offset_str = info
+        .rom
+        .fs
+        .as_ref()
+        .and_then(|fs| fs.ap.as_ref())
+        .and_then(|ap| ap.offset.as_deref())
+        .ok_or_else(|| anyhow::anyhow!("info.json missing rom.fs.ap.offset"))?;
+    let ap_offset = parse_hex_addr(ap_offset_str).ok_or_else(|| anyhow::anyhow!("invalid rom.fs.ap.offset: {ap_offset_str}"))? as u32;
+
+    let script_addr_str = info
+        .download
+        .script_addr
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("info.json missing download.script_addr"))?;
+    let script_addr = parse_hex_addr(script_addr_str).ok_or_else(|| anyhow::anyhow!("invalid download.script_addr: {script_addr_str}"))? as u32;
+
+    luatos_soc::ota::build_bk72xx_full_fota_new(&cp_bin, &ap_bin, &script_bin, ap_offset, script_addr, out_path)?;
+    Ok(())
+}
+
 // ─── Air6208 / XT804 - full FOTA ─────────────────────────────────────────────
 
 fn build_air6208_fota(new_soc: &str, out_base: &Path) -> Result<Air6208FotaResult> {
@@ -434,6 +478,17 @@ pub fn cmd_fota_build(
             print_result(format, chip, new_soc, old_soc, &[(&out_path, size)])?;
         }
 
+        // Air8101 / BK72XX - full or script-only (new format only)
+        "bk72xx" | "air8101" => {
+            if old_soc.is_some() {
+                log::warn!("--old is ignored for Air8101/BK72XX: only full/script package generation is supported");
+            }
+            let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{chip}_fota.bin")));
+            build_bk72xx_fota(new_soc, &out_path, script_only)?;
+            let size = fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
+            print_result(format, chip, new_soc, old_soc, &[(&out_path, size)])?;
+        }
+
         // Air6208 / XT804 - full only
         "air6208" | "xt804" => {
             if old_soc.is_some() {
@@ -468,7 +523,7 @@ pub fn cmd_fota_build(
 
         other => bail!(
             "FOTA not supported for chip '{other}'. \
-             Supported: EC7xx/EC618/Air8000 (differential), Air1601/Air1602/CCM4211 (full or --script-only), Air6208/XT804 (full)."
+             Supported: EC7xx/EC618/Air8000 (differential), Air1601/Air1602/CCM4211 (full or --script-only), Air8101/BK72XX (new-format full or --script-only), Air6208/XT804 (full)."
         ),
     }
 

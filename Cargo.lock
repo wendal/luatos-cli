@@ -2123,8 +2123,13 @@ dependencies = [
 name = "luatos-soc"
 version = "1.8.1"
 dependencies = [
+ "aes",
  "anyhow",
+ "cbc",
  "cc",
+ "cipher",
+ "crc32fast",
+ "flate2",
  "log",
  "md-5",
  "serde",

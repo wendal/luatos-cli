@@ -14,7 +14,13 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
+use aes::Aes256;
 use anyhow::{Context, Result};
+use cbc::Encryptor;
+use cipher::block_padding::Pkcs7;
+use cipher::{BlockEncryptMut, KeyIvInit};
+use flate2::write::GzEncoder;
+use flate2::Compression;
 
 use md5::Digest;
 
@@ -245,6 +251,180 @@ pub fn lzma_compress_file(input_path: &Path, output_path: &Path, magic: u32, sta
 
     file.write_all(&out_blocks)?;
 
+    Ok(())
+}
+
+const BK72XX_SCRIPT_FOTA_MAGIC: u32 = 0x4C554154; // "Luat"
+const BK72XX_CP_FIXED_BYTES: usize = 0xF0000;
+const BK72XX_FOTA_ALGO_GZIP_AES256: u16 = 258;
+const BK72XX_AES_KEY: &[u8; 32] = b"0123456789ABCDEF0123456789ABCDEF";
+const BK72XX_AES_IV: &[u8; 16] = b"0123456789ABCDEF";
+const BK72XX_FIXED_GZIP_HEADER: [u8; 10] = [0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00];
+
+fn trim_trailing_ff(data: &[u8]) -> &[u8] {
+    let mut end = data.len();
+    while end > 0 && data[end - 1] == 0xFF {
+        end -= 1;
+    }
+    &data[..end]
+}
+
+fn pad_to_alignment_ff(data: &mut Vec<u8>, align: usize) {
+    let rem = data.len() % align;
+    if rem != 0 {
+        data.extend(std::iter::repeat_n(0xFF, align - rem));
+    }
+}
+
+fn bk_crc16_32bytes(chunk: &[u8]) -> u16 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &b in chunk {
+        crc ^= (b as u32) << 8;
+        for _ in 0..8 {
+            if (crc & 0x8000) != 0 {
+                crc = (crc << 1) ^ 0x8005;
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    (crc & 0xFFFF) as u16
+}
+
+fn add_bk_crc_to_data(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity((data.len() / 32 + 1) * 34);
+    let mut pos = 0usize;
+    while pos < data.len() {
+        let end = std::cmp::min(pos + 32, data.len());
+        let mut chunk = data[pos..end].to_vec();
+        if chunk.len() < 32 {
+            chunk.resize(32, 0xFF);
+        }
+        let crc = bk_crc16_32bytes(&chunk);
+        out.extend_from_slice(&chunk);
+        out.extend_from_slice(&crc.to_be_bytes());
+        pos = end;
+    }
+    out
+}
+
+/// Build BK72XX new-format script-only FOTA package.
+/// Format: 1KB 0xFF + magic(u32 LE) + payload_len(u32 LE) + script_with_crc16
+pub fn build_bk72xx_script_fota_new(script_path: &Path, output_path: &Path) -> Result<()> {
+    let script_raw = fs::read(script_path).with_context(|| format!("read {}", script_path.display()))?;
+    let mut script = trim_trailing_ff(&script_raw).to_vec();
+    pad_to_alignment_ff(&mut script, 32);
+
+    let mut script_with_crc = add_bk_crc_to_data(&script);
+    pad_to_alignment_ff(&mut script_with_crc, 4);
+
+    let mut out = Vec::with_capacity(1024 + 8 + script_with_crc.len());
+    out.extend(std::iter::repeat_n(0xFF, 1024));
+    out.extend_from_slice(&BK72XX_SCRIPT_FOTA_MAGIC.to_le_bytes());
+    out.extend_from_slice(&(script_with_crc.len() as u32).to_le_bytes());
+    out.extend_from_slice(&script_with_crc);
+
+    fs::write(output_path, out).with_context(|| format!("write {}", output_path.display()))?;
+    Ok(())
+}
+
+fn fnv1a_hash(data: &[u8]) -> u32 {
+    let mut hash: u32 = 0x811c9dc5;
+    for &b in data {
+        hash ^= b as u32;
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
+fn gzip_with_fixed_header(data: &[u8]) -> Result<Vec<u8>> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::best());
+    encoder.write_all(data).context("gzip write")?;
+    let mut compressed = encoder.finish().context("gzip finish")?;
+    anyhow::ensure!(compressed.len() >= 10, "gzip output too small");
+    compressed[..10].copy_from_slice(&BK72XX_FIXED_GZIP_HEADER);
+    Ok(compressed)
+}
+
+fn aes256_cbc_pkcs7_encrypt(data: &[u8]) -> Result<Vec<u8>> {
+    let cipher = Encryptor::<Aes256>::new_from_slices(BK72XX_AES_KEY, BK72XX_AES_IV).context("init AES-256-CBC")?;
+    let mut buf = vec![0u8; data.len() + 16];
+    buf[..data.len()].copy_from_slice(data);
+    let encrypted = cipher
+        .encrypt_padded_mut::<Pkcs7>(&mut buf, data.len())
+        .map_err(|_| anyhow::anyhow!("AES-256-CBC padding/encrypt failed"))?;
+    Ok(encrypted.to_vec())
+}
+
+/// Build BK72XX new-format full FOTA package (RBL).
+pub fn build_bk72xx_full_fota_new(cp_bin_path: &Path, ap_bin_path: &Path, script_bin_path: &Path, ap_offset: u32, script_abs_addr: u32, output_path: &Path) -> Result<()> {
+    anyhow::ensure!(script_abs_addr >= ap_offset, "script address(0x{script_abs_addr:08X}) < ap offset(0x{ap_offset:08X})");
+
+    let cp_bin = fs::read(cp_bin_path).with_context(|| format!("read {}", cp_bin_path.display()))?;
+    let ap_bin = fs::read(ap_bin_path).with_context(|| format!("read {}", ap_bin_path.display()))?;
+    let script_raw = fs::read(script_bin_path).with_context(|| format!("read {}", script_bin_path.display()))?;
+
+    let script_offset_flash = (script_abs_addr - ap_offset) as usize;
+    let script_offset_rbl_raw = script_offset_flash * 32 / 34;
+    let ap_script_offset = script_offset_rbl_raw.div_ceil(32) * 32;
+
+    let mut ap_with_padding = ap_bin;
+    ap_with_padding.extend(std::iter::repeat_n(0xFF, 8));
+    anyhow::ensure!(
+        ap_with_padding.len() <= ap_script_offset,
+        "AP image size({}) exceeds script offset in AP({})",
+        ap_with_padding.len(),
+        ap_script_offset
+    );
+    ap_with_padding.resize(ap_script_offset, 0xFF);
+
+    let mut script_data = trim_trailing_ff(&script_raw).to_vec();
+    pad_to_alignment_ff(&mut script_data, 32);
+    let mut ap_with_script = ap_with_padding;
+    ap_with_script.extend_from_slice(&script_data);
+
+    let cp_padded = if cp_bin.len() < BK72XX_CP_FIXED_BYTES {
+        let mut v = cp_bin;
+        v.resize(BK72XX_CP_FIXED_BYTES, 0xFF);
+        v
+    } else {
+        cp_bin
+    };
+    let mut raw_payload = cp_padded;
+    raw_payload.extend_from_slice(&ap_with_script);
+
+    let compressed = gzip_with_fixed_header(&raw_payload)?;
+    let encrypted = aes256_cbc_pkcs7_encrypt(&compressed)?;
+
+    let body_crc32 = crc32fast::hash(&encrypted);
+    let hash_val = fnv1a_hash(&raw_payload);
+    let raw_size = raw_payload.len() as u32;
+    let com_size = encrypted.len() as u32;
+
+    let mut header = Vec::with_capacity(96);
+    header.extend_from_slice(b"RBL\0");
+    header.extend_from_slice(&BK72XX_FOTA_ALGO_GZIP_AES256.to_le_bytes());
+    header.extend_from_slice(&[0u8; 6]); // ctime, fixed zero
+    let mut part_name = [0u8; 16];
+    part_name[..3].copy_from_slice(b"app");
+    header.extend_from_slice(&part_name);
+    let mut download_version = [0u8; 24];
+    download_version[0] = b'2';
+    header.extend_from_slice(&download_version);
+    let mut current_version = [0u8; 24];
+    current_version[..20].copy_from_slice(b"00010203040506070809");
+    header.extend_from_slice(&current_version);
+    header.extend_from_slice(&body_crc32.to_le_bytes());
+    header.extend_from_slice(&hash_val.to_le_bytes());
+    header.extend_from_slice(&raw_size.to_le_bytes());
+    header.extend_from_slice(&com_size.to_le_bytes());
+    anyhow::ensure!(header.len() == 92, "invalid RBL header size: {}", header.len());
+    let head_crc32 = crc32fast::hash(&header);
+    header.extend_from_slice(&head_crc32.to_le_bytes());
+
+    let mut output = header;
+    output.extend_from_slice(&encrypted);
+    fs::write(output_path, output).with_context(|| format!("write {}", output_path.display()))?;
     Ok(())
 }
 
@@ -728,5 +908,42 @@ mod tests {
 
     fn hex_str(data: &[u8]) -> String {
         data.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+
+    #[test]
+    fn test_bk72xx_script_fota_new_format() {
+        let tmp = tempfile::tempdir().unwrap();
+        let script = tmp.path().join("script.bin");
+        let out = tmp.path().join("script_fota.bin");
+        fs::write(&script, b"print('hello')\n\xFF\xFF\xFF").unwrap();
+
+        build_bk72xx_script_fota_new(&script, &out).unwrap();
+
+        let data = fs::read(&out).unwrap();
+        assert!(data.len() > 1032);
+        assert!(data[..1024].iter().all(|&b| b == 0xFF));
+        assert_eq!(u32::from_le_bytes(data[1024..1028].try_into().unwrap()), 0x4C554154);
+        let payload_len = u32::from_le_bytes(data[1028..1032].try_into().unwrap()) as usize;
+        assert_eq!(payload_len, data.len() - 1032);
+    }
+
+    #[test]
+    fn test_bk72xx_full_fota_new_format_header() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cp = tmp.path().join("cp.bin");
+        let ap = tmp.path().join("ap.bin");
+        let script = tmp.path().join("script.bin");
+        let out = tmp.path().join("full_fota.bin");
+
+        fs::write(&cp, vec![0x11; 512]).unwrap();
+        fs::write(&ap, vec![0x22; 1024]).unwrap();
+        fs::write(&script, b"print('bk72xx')\n\xFF\xFF").unwrap();
+
+        build_bk72xx_full_fota_new(&cp, &ap, &script, 0x1000, 0x1800, &out).unwrap();
+
+        let data = fs::read(&out).unwrap();
+        assert!(data.len() > 96);
+        assert_eq!(&data[0..4], b"RBL\0");
+        assert_eq!(u32::from_le_bytes(data[92..96].try_into().unwrap()), crc32fast::hash(&data[..92]));
     }
 }
