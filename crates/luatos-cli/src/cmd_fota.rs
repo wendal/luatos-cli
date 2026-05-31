@@ -99,6 +99,35 @@ fn parse_hex_addr(s: &str) -> Option<u64> {
     u64::from_str_radix(hex, 16).ok()
 }
 
+fn extract_script_from_rom(up: &luatos_soc::UnpackedSoc, out_path: &Path) -> Result<()> {
+    let script_part = up
+        .info
+        .rom
+        .fs
+        .as_ref()
+        .and_then(|fs| fs.script.as_ref())
+        .ok_or_else(|| anyhow::anyhow!("info.json missing rom.fs.script"))?;
+
+    let offset_str = script_part
+        .offset
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("info.json missing rom.fs.script.offset"))?;
+    let offset = parse_hex_addr(offset_str).ok_or_else(|| anyhow::anyhow!("invalid rom.fs.script.offset: {offset_str}"))? as usize;
+
+    let size_kb = script_part
+        .size
+        .ok_or_else(|| anyhow::anyhow!("info.json missing rom.fs.script.size"))? as usize;
+    anyhow::ensure!(size_kb > 0, "invalid rom.fs.script.size: {size_kb}");
+    let size = size_kb * 1024;
+
+    let rom = fs::read(&up.rom_path).with_context(|| format!("read {}", up.rom_path.display()))?;
+    anyhow::ensure!(offset <= rom.len(), "rom.fs.script.offset out of range: {offset}");
+    anyhow::ensure!(offset + size <= rom.len(), "rom.fs.script range out of ROM bounds: {} > {}", offset + size, rom.len());
+
+    fs::write(out_path, &rom[offset..offset + size]).with_context(|| format!("write extracted script to {}", out_path.display()))?;
+    Ok(())
+}
+
 /// Run a command, surface stderr on failure, return an error if exit code != 0.
 fn run_cmd(mut cmd: Command) -> Result<()> {
     let status = cmd.status().with_context(|| format!("failed to launch {:?}", cmd.get_program()))?;
@@ -144,6 +173,46 @@ fn build_ec7xx_fota(new_soc: &str, old_soc: &str, chip: &str, toolkit_path: &Pat
 
     let _ = fs::remove_file(&delta);
     Ok(())
+}
+
+fn build_ec7xx_script_only_fota_from_unpacked(up: &luatos_soc::UnpackedSoc, out_path: &Path) -> Result<()> {
+    let info = &up.info;
+    let script_addr_str = info
+        .download
+        .script_addr
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("info.json missing download.script_addr"))?;
+    let script_addr =
+        parse_hex_addr(script_addr_str).ok_or_else(|| anyhow::anyhow!("invalid download.script_addr: {script_addr_str}"))? as u32;
+
+    let tmp = tempfile::tempdir().context("tempdir")?;
+    let script_bin = up.dir.join(&info.script.file);
+    let script_input_path = if script_bin.exists() {
+        script_bin
+    } else {
+        let extracted = tmp.path().join("script_extracted.bin");
+        extract_script_from_rom(up, &extracted).with_context(|| {
+            format!(
+                "script file not found: {} - script-only FOTA requires a script partition",
+                script_bin.display()
+            )
+        })?;
+        extracted
+    };
+
+    let script_zip = tmp.path().join("script.zip");
+    luatos_soc::ota::lzma_compress_file(&script_input_path, &script_zip, 0, script_addr, 0x40000, true).context("compress script for OTA")?;
+
+    let dummy = create_dummy(tmp.path())?;
+    luatos_soc::ota::assemble_ota_package(0, 0, "0", 0, "0", 0, &script_zip, &dummy, out_path).context("assemble OTA package")?;
+
+    Ok(())
+}
+
+fn build_ec7xx_script_only_fota(new_soc: &str, out_path: &Path) -> Result<()> {
+    let tmp = tempfile::tempdir().context("tempdir")?;
+    let up = unpack(new_soc, &tmp.path().join("soc"))?;
+    build_ec7xx_script_only_fota_from_unpacked(&up, out_path)
 }
 
 // ─── Air1601 / Air1602 / CCM4211 - full FOTA ────────────────────────────────
@@ -453,7 +522,11 @@ pub fn cmd_fota_build(
         // EC7xx / EC618 - differential
         "ec7xx" | "ec618" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" | "air780epv" => {
             if script_only {
-                log::warn!("--script-only is not supported for EC7xx/EC618; ignored");
+                let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{chip}_fota.sota")));
+                build_ec7xx_script_only_fota(new_soc, &out_path)?;
+                let size = fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
+                print_result(format, chip, new_soc, old_soc, &[(&out_path, size)])?;
+                return Ok(());
             }
             let old = old_soc.ok_or_else(|| anyhow::anyhow!("Full FOTA for EC7xx/EC618 is not yet supported. Please provide --old <old.soc> for differential FOTA."))?;
             let (toolkit, toolkit_dir) = find_fota_toolkit(chip, fota_toolkit_path)?;
@@ -569,6 +642,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
+    use serde_json::Value;
     use tempfile::tempdir;
 
     use super::cmd_fota_build;
@@ -616,9 +690,10 @@ mod tests {
         let unpack_dir = tmp.path().join("unpacked");
         let unpacked = luatos_soc::unpack_soc(&src_soc, &unpack_dir).unwrap();
         let info_path = unpacked.dir.join("info.json");
-        let info_text = fs::read_to_string(&info_path).unwrap();
-        let rewritten = info_text.replace("\"script.bin\"", "\"missing_script.bin\"");
-        fs::write(&info_path, rewritten).unwrap();
+        let mut info_json: Value = serde_json::from_slice(&fs::read(&info_path).unwrap()).unwrap();
+        info_json["script"]["file"] = Value::String("missing_script.bin".to_string());
+        info_json["rom"]["fs"]["script"] = Value::Null;
+        fs::write(&info_path, serde_json::to_vec(&info_json).unwrap()).unwrap();
 
         let broken_soc = tmp.path().join("broken.zip");
         luatos_soc::pack_soc(&unpacked.dir, &broken_soc.to_string_lossy()).unwrap();
