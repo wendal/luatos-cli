@@ -108,15 +108,10 @@ fn extract_script_from_rom(up: &luatos_soc::UnpackedSoc, out_path: &Path) -> Res
         .and_then(|fs| fs.script.as_ref())
         .ok_or_else(|| anyhow::anyhow!("info.json missing rom.fs.script"))?;
 
-    let offset_str = script_part
-        .offset
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("info.json missing rom.fs.script.offset"))?;
+    let offset_str = script_part.offset.as_deref().ok_or_else(|| anyhow::anyhow!("info.json missing rom.fs.script.offset"))?;
     let offset = parse_hex_addr(offset_str).ok_or_else(|| anyhow::anyhow!("invalid rom.fs.script.offset: {offset_str}"))? as usize;
 
-    let size_kb = script_part
-        .size
-        .ok_or_else(|| anyhow::anyhow!("info.json missing rom.fs.script.size"))? as usize;
+    let size_kb = script_part.size.ok_or_else(|| anyhow::anyhow!("info.json missing rom.fs.script.size"))? as usize;
     anyhow::ensure!(size_kb > 0, "invalid rom.fs.script.size: {size_kb}");
     let size = size_kb * 1024;
 
@@ -182,8 +177,7 @@ fn build_ec7xx_script_only_fota_from_unpacked(up: &luatos_soc::UnpackedSoc, out_
         .script_addr
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("info.json missing download.script_addr"))?;
-    let script_addr =
-        parse_hex_addr(script_addr_str).ok_or_else(|| anyhow::anyhow!("invalid download.script_addr: {script_addr_str}"))? as u32;
+    let script_addr = parse_hex_addr(script_addr_str).ok_or_else(|| anyhow::anyhow!("invalid download.script_addr: {script_addr_str}"))? as u32;
 
     let tmp = tempfile::tempdir().context("tempdir")?;
     let script_bin = up.dir.join(&info.script.file);
@@ -191,12 +185,7 @@ fn build_ec7xx_script_only_fota_from_unpacked(up: &luatos_soc::UnpackedSoc, out_
         script_bin
     } else {
         let extracted = tmp.path().join("script_extracted.bin");
-        extract_script_from_rom(up, &extracted).with_context(|| {
-            format!(
-                "script file not found: {} - script-only FOTA requires a script partition",
-                script_bin.display()
-            )
-        })?;
+        extract_script_from_rom(up, &extracted).with_context(|| format!("script file not found: {} - script-only FOTA requires a script partition", script_bin.display()))?;
         extracted
     };
 
@@ -709,9 +698,6 @@ mod tests {
             &OutputFormat::Text,
         );
         let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("script file not found"),
-            "expected missing script error, got: {err}"
-        );
+        assert!(err.contains("script file not found"), "expected missing script error, got: {err}");
     }
 }
