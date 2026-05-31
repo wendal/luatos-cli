@@ -563,3 +563,80 @@ fn print_result(format: &OutputFormat, chip: &str, new_soc: &str, old_soc: Optio
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use tempfile::tempdir;
+
+    use super::cmd_fota_build;
+    use crate::OutputFormat;
+
+    fn repo_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
+    }
+
+    fn ec7xx_soc_path() -> String {
+        repo_root()
+            .join("refs")
+            .join("soc_files")
+            .join("LuatOS-SoC_V2029_Air780EPM_1.soc")
+            .to_string_lossy()
+            .to_string()
+    }
+
+    #[test]
+    fn ec7xx_script_only_builds_without_old_soc() {
+        let tmp = tempdir().unwrap();
+        let out = tmp.path().join("air780epm_script.sota");
+        let soc = ec7xx_soc_path();
+
+        let result = cmd_fota_build(
+            &soc,
+            None,
+            Some(out.to_str().unwrap()),
+            Some("C:\\definitely\\missing\\FotaToolkit.exe"),
+            None,
+            true,
+            &OutputFormat::Text,
+        );
+        assert!(result.is_ok(), "expected script-only build to succeed, got: {result:?}");
+
+        let data = fs::read(&out).unwrap();
+        assert!(u32::from_le_bytes(data[52..56].try_into().unwrap()) > 0);
+        assert_eq!(u32::from_le_bytes(data[56..60].try_into().unwrap()), 0);
+    }
+
+    #[test]
+    fn ec7xx_script_only_rejects_missing_script_bin() {
+        let tmp = tempdir().unwrap();
+        let src_soc = ec7xx_soc_path();
+        let unpack_dir = tmp.path().join("unpacked");
+        let unpacked = luatos_soc::unpack_soc(&src_soc, &unpack_dir).unwrap();
+        let info_path = unpacked.dir.join("info.json");
+        let info_text = fs::read_to_string(&info_path).unwrap();
+        let rewritten = info_text.replace("\"script.bin\"", "\"missing_script.bin\"");
+        fs::write(&info_path, rewritten).unwrap();
+
+        let broken_soc = tmp.path().join("broken.zip");
+        luatos_soc::pack_soc(&unpacked.dir, &broken_soc.to_string_lossy()).unwrap();
+
+        let out = tmp.path().join("out.sota");
+        let result = cmd_fota_build(
+            &broken_soc.to_string_lossy(),
+            None,
+            Some(out.to_str().unwrap()),
+            Some("C:\\definitely\\missing\\FotaToolkit.exe"),
+            None,
+            true,
+            &OutputFormat::Text,
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("script file not found"),
+            "expected missing script error, got: {err}"
+        );
+    }
+}
