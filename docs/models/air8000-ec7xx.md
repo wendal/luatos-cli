@@ -18,6 +18,9 @@ luatos-cli flash run --soc firmware.soc --port auto --tail-log-secs 30
 # 刷脚本区
 luatos-cli flash script --soc firmware.soc --port auto --script lua/
 
+# 仅脚本 FOTA 包
+luatos-cli fota build --new firmware.soc --script-only
+
 # 日志查看（EC718 建议 921600 + probe）
 luatos-cli log view-binary --port auto --baud 921600 --probe
 ```

@@ -43,13 +43,16 @@ luatos-cli fota build --new <新固件.soc> [--old <旧固件.soc>] [--output <�
 | `-o` `--output` | 否 | 输出路径，默认按芯片生成（如 `<芯片名>_fota.sota` / `bk72xx_fota.bin`） |
 | `--fota-toolkit` | 否 | `FotaToolkit.exe` 路径（仅差分FOTA需要，默认自动搜索） |
 | `--soc-tools` | 否 | **已弃用**，保留仅为兼容旧命令 |
-| `--script-only` | 否 | 生成仅脚本的升级包（CCM4211、BK72XX 支持） |
+| `--script-only` | 否 | 生成仅脚本的升级包（EC7xx/Air8000、CCM4211、BK72XX 支持） |
 
 ### 使用示例
 
 ```bash
 # EC7xx 差分 FOTA（提供新旧两版固件）
 luatos-cli fota build --new v2.0.soc --old v1.0.soc
+
+# EC7xx / Air8000 仅脚本 FOTA（不需要 --old）
+luatos-cli fota build --new air780epm_v2.0.soc --script-only
 
 # Air1601 全量 FOTA（仅提供新版固件）
 luatos-cli fota build --new air1601_v1.0.soc
@@ -73,7 +76,7 @@ luatos-cli fota build --new firmware.soc --output upgrade.sota
 
 | 芯片族 | FOTA模式 | 核心流程 |
 |--------|----------|----------|
-| **EC7xx / EC618 / Air8000** | 差分FOTA | 外部工具 `FotaToolkit.exe` 生成差分包 → Rust 组装 `.sota` |
+| **EC7xx / EC618 / Air8000** | 差分FOTA / 仅脚本升级 | 差分：`FotaToolkit.exe` 生成差分包；脚本：直接压缩脚本分区；两者均由 Rust 组装 `.sota` |
 | **Air1601 / CCM4211** | 全量FOTA | 纯Rust：LZMA 压缩固件块 → 组装 `.sota` |
 | | **仅脚本升级** | `--script-only`：仅压缩脚本分区，跳过 ROM，适合 Lua 热更新 |
 | **Air8101 / BK72XX** | 新格式全量FOTA | 纯Rust：CP/AP/Script 合成 RBL 载荷 → 固定 gzip 头 + AES256-CBC → 输出 `.bin` |
@@ -202,7 +205,7 @@ pub fn assemble_ota_package(
 
 **全量 FOTA**（不提供 `--old`）：Air1601/CCM4211 会压缩 ROM+脚本打包；Air6208/XT804 通过 air101_flash 生成镜像。
 
-**仅脚本 FOTA**（`--script-only`）：Air1601/CCM4211 跳过 ROM，只压缩脚本分区；BK72XX 生成新格式脚本升级包。
+**仅脚本 FOTA**（`--script-only`）：EC7xx/Air8000 与 Air1601/CCM4211 跳过 ROM，只压缩脚本分区；BK72XX 生成新格式脚本升级包。
 
 ### Q: 如何验证生成的 OTA 包？
 
@@ -224,6 +227,7 @@ pub fn assemble_ota_package(
 
 - BK72XX 仅支持 `rom.fs.script.bkcrc=true` 的新格式（不支持旧 `LFTA` 格式）
 - BK72XX `.soc` 需包含 `cp.bin`、`ap.bin`、`script.bin` 以及有效 `rom.fs.ap.offset`/`download.script_addr`
+- EC7xx/Air8000 的脚本-only 产物仍为 `.sota`（与差分包后缀一致）
 
 ### Q: 运行单元测试
 

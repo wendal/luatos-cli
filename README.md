@@ -7,7 +7,7 @@ LuatOS 命令行工具集（纯 Rust）——刷机、日志、项目管理、�
 ## 功能特性
 
 - **多芯片刷机**：Air8101(BK7258)、Air6208(XT804)、Air1601/Air1602(CCM4211)、Air8000(EC718)、SF32LB58
-- **FOTA 打包**：支持 EC7xx 差分、CCM4211 全量/脚本、Air8101(BK72XX) 新格式全量/脚本
+- **FOTA 打包**：支持 EC7xx 差分/脚本、CCM4211 全量/脚本、Air8101(BK72XX) 新格式全量/脚本
 - **二级帮助入口**：`--help` 提示型号入口，`guide models` / `guide model --model <型号>` 直接给推荐命令
 - **刷机后继续监听**：`flash run --tail-log-secs <N>` 刷机后自动按型号波特率续接日志，减少开机日志丢失
 - **日志系统**：文本 / 二进制日志查看、录制、解析，支持智能诊断
@@ -41,6 +41,9 @@ luatos-cli log view-binary --port COM10 --baud 2000000 --probe
 
 # Air8101(BK72XX) 新格式脚本 FOTA
 luatos-cli fota build --new air8101.soc --script-only -o air8101_script_fota.bin
+
+# Air780EPM / Air780EHM / Air8000 仅脚本 FOTA
+luatos-cli fota build --new firmware.soc --script-only
 ```
 
 ## 型号文档（按型号拆分）
@@ -81,7 +84,7 @@ luatos-cli doctor --help
 | Air6208 | XT804 (air6208) | ✅ | ✅ | ✅ | ✅ | ✅（全量） | 二进制 | ✅ |
 | Air101/103 | XT804 | ✅ | ✅ | — | — | ✅（全量） | 二进制 | ✅ |
 | Air1601 / Air1602 | CCM4211 | ✅ | ✅ | ✅ | ✅ | ✅（全量/脚本） | 二进制 (`--probe`) | ✅ |
-| Air8000 / Air780E | EC718 (ec7xx) | ✅ | ✅ | — | — | ✅（差分） | 二进制 (`--probe`) | ✅ |
+| Air8000 / Air780E | EC718 (ec7xx) | ✅ | ✅ | — | — | ✅（差分/脚本） | 二进制 (`--probe`) | ✅ |
 | Air8101(SF32) | SF32LB58 | ✅ | ✅ | — | ✅ | — | 文本 | — |
 
 ## 结构化输出
