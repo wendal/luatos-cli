@@ -1,7 +1,8 @@
 // fota build - FOTA (firmware-over-the-air) package generation.
 //
 // Supported chip families:
-//   EC7xx / EC618 / Air8000  - differential (--new + --old) via FotaToolkit.exe + Rust OTA assembler
+//   EC7xx / EC618 / Air8000  - differential (--new + --old) via FotaToolkit + Rust OTA assembler
+//                              script-only (--script-only) via Rust LZMA compress -> update.bin
 //   Air1601 / Air1602 / CCM4211 - full via Rust OTA (LZMA compress + assemble), --script-only for script-only update
 //   Air6208 / XT804          - full only via air101_flash.exe (bundled in the .soc)
 //
@@ -26,7 +27,15 @@ use crate::{event, OutputFormat};
 
 // ─── Tool discovery ──────────────────────────────────────────────────────────
 
-const DTOOLS_SEARCH_ROOTS: &[&str] = &["dtools", "refs/origin_tools/dtools", "../refs/origin_tools/dtools", "../../refs/origin_tools/dtools"];
+const DTOOLS_SEARCH_ROOTS: &[&str] = &[
+    "dtools",
+    "FotaToolkit_V3.6.4.0",
+    "refs/origin_tools/dtools",
+    "../refs/origin_tools/dtools",
+    "../../refs/origin_tools/dtools",
+    "../FotaToolkit_V3.6.4.0",
+    "../../FotaToolkit_V3.6.4.0",
+];
 
 fn exe_dir() -> PathBuf {
     std::env::current_exe()
@@ -62,17 +71,25 @@ fn find_fota_toolkit(chip: &str, explicit: Option<&str>) -> Result<(PathBuf, Pat
 
     let base = exe_dir();
     let variant = chip_dtools_variant(chip);
+    let toolkit_name = if cfg!(target_os = "windows") { "FotaToolkit.exe" } else { "FotaToolkit" };
     for root in DTOOLS_SEARCH_ROOTS {
+        // Try with chip variant subdirectory (dtools/ec7xx/FotaToolkit)
         let dir = base.join(root).join(variant);
-        let candidate = dir.join("FotaToolkit.exe");
+        let candidate = dir.join(toolkit_name);
+        if candidate.exists() {
+            return Ok((candidate, dir));
+        }
+        // Try without chip subdirectory (FotaToolkit_V3.6.4.0/FotaToolkit)
+        let dir = base.join(root);
+        let candidate = dir.join(toolkit_name);
         if candidate.exists() {
             return Ok((candidate, dir));
         }
     }
 
     bail!(
-        "FotaToolkit.exe not found for chip '{chip}' (variant: {variant}). \
-         Provide --fota-toolkit <path> or place dtools/ next to luatos-cli."
+        "FotaToolkit not found for chip '{chip}' (variant: {variant}). \
+         Provide --fota-toolkit <path> or place FotaToolkit_V3.6.4.0/ next to luatos-cli."
     )
 }
 
@@ -109,39 +126,87 @@ fn run_cmd(mut cmd: Command) -> Result<()> {
 
 // ─── EC7xx / EC618 - differential FOTA ───────────────────────────────────────
 
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst).with_context(|| format!("create {}", dst.display()))?;
+    for entry in fs::read_dir(src).with_context(|| format!("read {}", src.display()))? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let target = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), &target).with_context(|| format!("copy {}", entry.path().display()))?;
+        }
+    }
+    Ok(())
+}
+
 fn build_ec7xx_fota(new_soc: &str, old_soc: &str, chip: &str, toolkit_path: &Path, toolkit_dir: &Path, out_path: &Path) -> Result<()> {
     let tmp = tempfile::tempdir().context("tempdir")?;
+    let work_dir = tmp.path();
 
-    let new_up = unpack(new_soc, &tmp.path().join("new"))?;
-    let old_up = unpack(old_soc, &tmp.path().join("old"))?;
+    let new_up = unpack(new_soc, &work_dir.join("new"))?;
+    let old_up = unpack(old_soc, &work_dir.join("old"))?;
 
-    let config_arg = format!("config\\{}", chip_fota_config(chip));
-    let work_old = toolkit_dir.join("old.binpkg");
-    let work_new = toolkit_dir.join("new.binpkg");
+    // Copy binpkg to isolated temp directory (concurrent-safe)
+    fs::copy(&old_up.rom_path, work_dir.join("old.binpkg")).context("copy old.binpkg")?;
+    fs::copy(&new_up.rom_path, work_dir.join("new.binpkg")).context("copy new.binpkg")?;
 
-    fs::copy(&old_up.rom_path, &work_old).context("copy old.binpkg")?;
-    fs::copy(&new_up.rom_path, &work_new).context("copy new.binpkg")?;
+    // Copy config/ and dep/ from toolkit_dir to work_dir so FotaToolkit can find them
+    let config_src = toolkit_dir.join("config");
+    if config_src.exists() {
+        copy_dir_recursive(&config_src, &work_dir.join("config"))?;
+    }
+    let dep_src = toolkit_dir.join("dep");
+    if dep_src.exists() {
+        copy_dir_recursive(&dep_src, &work_dir.join("dep"))?;
+    }
 
-    let delta = toolkit_dir.join("delta.par");
-    log::info!("FotaToolkit: {:?} -d {} BINPKG delta.par old.binpkg new.binpkg", toolkit_path, config_arg);
+    let config_arg = Path::new("config").join(chip_fota_config(chip));
+    let config_arg_str = config_arg.to_string_lossy().to_string();
+
+    log::info!("FotaToolkit: {:?} -d {} BINPKG delta.par old.binpkg new.binpkg", toolkit_path, config_arg_str);
     let status = Command::new(toolkit_path)
-        .args(["-d", &config_arg, "BINPKG", "delta.par", "old.binpkg", "new.binpkg"])
-        .current_dir(toolkit_dir)
+        .args(["-d", &config_arg_str, "BINPKG", "delta.par", "old.binpkg", "new.binpkg"])
+        .current_dir(work_dir)
         .status()
         .with_context(|| format!("launch {:?}", toolkit_path))?;
 
-    let _ = fs::remove_file(&work_old);
-    let _ = fs::remove_file(&work_new);
     if !status.success() {
-        bail!("FotaToolkit.exe failed (exit {:?})", status.code());
+        bail!("FotaToolkit failed (exit {:?})", status.code());
     }
+    let delta = work_dir.join("delta.par");
     anyhow::ensure!(delta.exists(), "delta.par not found after FotaToolkit");
 
-    let dummy = create_dummy(tmp.path())?;
+    let dummy = create_dummy(work_dir)?;
 
     luatos_soc::ota::assemble_ota_package(0, 0, "0", 0, "0", 0, &dummy, &delta, out_path).context("assemble OTA package")?;
 
-    let _ = fs::remove_file(&delta);
+    Ok(())
+}
+
+/// Build script-only FOTA for EC7xx/EC618 - compresses only the script partition
+/// into update.bin (LZMA + SectorMd5Header), skipping ROM and FotaToolkit.
+fn build_ec7xx_script_only_fota(new_soc: &str, out_path: &Path) -> Result<()> {
+    let tmp = tempfile::tempdir().context("tempdir")?;
+    let up = unpack(new_soc, &tmp.path().join("soc"))?;
+    let info = &up.info;
+
+    let script_addr = info.script_addr();
+    let magic = info.fota.as_ref()
+        .and_then(|f| f.get("magic_num"))
+        .and_then(|v| v.as_str())
+        .and_then(|s| parse_hex_addr(s))
+        .unwrap_or(0) as u32;
+
+    let script_bin = up.dir.join(&info.script.file);
+    anyhow::ensure!(script_bin.exists(), "script file not found: {}", script_bin.display());
+
+    luatos_soc::ota::lzma_compress_file(
+        &script_bin, out_path,
+        magic, script_addr, 0x40000, true,
+    ).context("compress script for OTA")?;
+
     Ok(())
 }
 
@@ -406,17 +471,21 @@ pub fn cmd_fota_build(
     let chip = info.chip.chip_type.as_str();
 
     match chip {
-        // EC7xx / EC618 - differential
+        // EC7xx / EC618 - differential or script-only
         "ec7xx" | "ec618" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" | "air780epv" => {
             if script_only {
-                log::warn!("--script-only is not supported for EC7xx/EC618; ignored");
+                let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from("update.bin"));
+                build_ec7xx_script_only_fota(new_soc, &out_path)?;
+                let size = fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
+                print_result(format, chip, new_soc, old_soc, &[(&out_path, size)])?;
+            } else {
+                let old = old_soc.ok_or_else(|| anyhow::anyhow!("Full FOTA for EC7xx/EC618 is not yet supported. Please provide --old <old.soc> for differential FOTA."))?;
+                let (toolkit, toolkit_dir) = find_fota_toolkit(chip, fota_toolkit_path)?;
+                let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{chip}_fota.sota")));
+                build_ec7xx_fota(new_soc, old, chip, &toolkit, &toolkit_dir, &out_path)?;
+                let size = fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
+                print_result(format, chip, new_soc, old_soc, &[(&out_path, size)])?;
             }
-            let old = old_soc.ok_or_else(|| anyhow::anyhow!("Full FOTA for EC7xx/EC618 is not yet supported. Please provide --old <old.soc> for differential FOTA."))?;
-            let (toolkit, toolkit_dir) = find_fota_toolkit(chip, fota_toolkit_path)?;
-            let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{chip}_fota.sota")));
-            build_ec7xx_fota(new_soc, old, chip, &toolkit, &toolkit_dir, &out_path)?;
-            let size = fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
-            print_result(format, chip, new_soc, old_soc, &[(&out_path, size)])?;
         }
 
         // Air1601 / Air1602 / CCM4211 - full or script-only

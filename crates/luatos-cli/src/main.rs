@@ -646,7 +646,7 @@ enum FotaCommands {
         /// Path to soc_tools.exe (auto-detected if omitted)
         #[arg(long)]
         soc_tools: Option<String>,
-        /// Build a script-only FOTA package (CCM4211 only, skips ROM compression)
+        /// Build a script-only FOTA package (EC7xx/CCM4211, skips ROM compression, outputs update.bin)
         #[arg(long)]
         script_only: bool,
     },
