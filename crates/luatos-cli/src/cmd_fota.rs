@@ -186,26 +186,35 @@ fn build_ec7xx_fota(new_soc: &str, old_soc: &str, chip: &str, toolkit_path: &Pat
 }
 
 /// Build script-only FOTA for EC7xx/EC618 - compresses only the script partition
-/// into update.bin (LZMA + SectorMd5Header), skipping ROM and FotaToolkit.
+/// into a .sota package (92-byte header + LZMA compressed script), skipping ROM and FotaToolkit.
 fn build_ec7xx_script_only_fota(new_soc: &str, out_path: &Path) -> Result<()> {
     let tmp = tempfile::tempdir().context("tempdir")?;
     let up = unpack(new_soc, &tmp.path().join("soc"))?;
     let info = &up.info;
 
-    let script_addr = info.script_addr();
-    let magic = info.fota.as_ref()
+    let magic_str = info
+        .fota
+        .as_ref()
         .and_then(|f| f.get("magic_num"))
         .and_then(|v| v.as_str())
-        .and_then(|s| parse_hex_addr(s))
-        .unwrap_or(0) as u32;
+        .ok_or_else(|| anyhow::anyhow!("info.json missing fota.magic_num"))?;
+    let magic = parse_hex_addr(magic_str).ok_or_else(|| anyhow::anyhow!("invalid fota.magic_num: {magic_str}"))? as u32;
+
+    let script_addr = info
+        .download
+        .script_addr
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("info.json missing download.script_addr"))?;
+    let script_addr = parse_hex_addr(script_addr).ok_or_else(|| anyhow::anyhow!("invalid download.script_addr: {script_addr}"))? as u32;
 
     let script_bin = up.dir.join(&info.script.file);
     anyhow::ensure!(script_bin.exists(), "script file not found: {}", script_bin.display());
 
-    luatos_soc::ota::lzma_compress_file(
-        &script_bin, out_path,
-        magic, script_addr, 0x40000, true,
-    ).context("compress script for OTA")?;
+    let s_zip = tmp.path().join("script.zip");
+    luatos_soc::ota::lzma_compress_file(&script_bin, &s_zip, magic, script_addr, 0x40000, true).context("compress script for OTA")?;
+
+    let dummy = create_dummy(tmp.path())?;
+    luatos_soc::ota::assemble_ota_package(magic, 0xFFFFFFFF, "0", 0, "0", 0, &s_zip, &dummy, out_path).context("assemble OTA package")?;
 
     Ok(())
 }
@@ -474,7 +483,7 @@ pub fn cmd_fota_build(
         // EC7xx / EC618 - differential or script-only
         "ec7xx" | "ec618" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" | "air780epv" => {
             if script_only {
-                let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from("update.bin"));
+                let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{chip}_script_fota.sota")));
                 build_ec7xx_script_only_fota(new_soc, &out_path)?;
                 let size = fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
                 print_result(format, chip, new_soc, old_soc, &[(&out_path, size)])?;
