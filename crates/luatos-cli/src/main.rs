@@ -393,7 +393,7 @@ enum LogCommands {
         /// Serial port (e.g. COM7, or "auto" for EC718 auto-detect)
         #[arg(long)]
         port: String,
-        /// Baud rate (default: 2000000)
+        /// Baud rate (default: 2000000, 6000000 for Air1601 V1013+)
         #[arg(long, default_value = "2000000")]
         baud: u32,
         /// Send probe command to trigger log output (required for Air1601/Air1602/CCM4211/EC718)

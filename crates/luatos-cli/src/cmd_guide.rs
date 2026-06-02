@@ -15,7 +15,7 @@ const GUIDES: &[ModelGuide] = &[
         aliases: &["air1601", "air1602", "ccm4211"],
         description: "Air1601/Air1602/CCM4211（SOC 二进制日志，建议 --probe）",
         flash_example: "luatos-cli flash run --soc firmware.soc --port COM10",
-        log_example: "luatos-cli log view-binary --port COM10 --baud 2000000 --probe",
+        log_example: "luatos-cli log view-binary --port COM10 --baud 6000000 --probe",
         docs_path: "docs\\models\\air1601-air1602.md",
     },
     ModelGuide {
