@@ -166,14 +166,29 @@ fn build_ec7xx_fota(new_soc: &str, old_soc: &str, chip: &str, toolkit_path: &Pat
     let config_arg_str = config_arg.to_string_lossy().to_string();
 
     log::info!("FotaToolkit: {:?} -d {} BINPKG delta.par old.binpkg new.binpkg", toolkit_path, config_arg_str);
-    let status = Command::new(toolkit_path)
+    let output = Command::new(toolkit_path)
         .args(["-d", &config_arg_str, "BINPKG", "delta.par", "old.binpkg", "new.binpkg"])
         .current_dir(work_dir)
-        .status()
+        .output()
         .with_context(|| format!("launch {:?}", toolkit_path))?;
 
-    if !status.success() {
-        bail!("FotaToolkit failed (exit {:?})", status.code());
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !stderr.is_empty() {
+            log::error!("FotaToolkit stderr: {}", stderr.trim());
+        }
+        if !stdout.is_empty() {
+            log::error!("FotaToolkit stdout: {}", stdout.trim());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            if let Some(sig) = output.status.signal() {
+                bail!("FotaToolkit killed by signal {} (SIGSEGV=11, SIGKILL=9). Check: 1) execute permission, 2) shared libraries (ldd FotaToolkit), 3) CPU arch compatibility", sig);
+            }
+        }
+        bail!("FotaToolkit failed (exit {:?})", output.status.code());
     }
     let delta = work_dir.join("delta.par");
     anyhow::ensure!(delta.exists(), "delta.par not found after FotaToolkit");
