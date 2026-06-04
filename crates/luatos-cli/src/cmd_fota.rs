@@ -148,6 +148,13 @@ fn build_ec7xx_fota(new_soc: &str, old_soc: &str, chip: &str, toolkit_path: &Pat
     let new_up = unpack(new_soc, &work_dir.join("new"))?;
     let old_up = unpack(old_soc, &work_dir.join("old"))?;
 
+    let magic_str = new_up.info
+        .fota.as_ref()
+        .and_then(|f| f.get("magic_num"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("info.json missing fota.magic_num"))?;
+    let magic = parse_hex_addr(magic_str).ok_or_else(|| anyhow::anyhow!("invalid fota.magic_num: {magic_str}"))? as u32;
+
     // Copy binpkg to isolated temp directory (concurrent-safe)
     fs::copy(&old_up.rom_path, work_dir.join("old.binpkg")).context("copy old.binpkg")?;
     fs::copy(&new_up.rom_path, work_dir.join("new.binpkg")).context("copy new.binpkg")?;
@@ -195,7 +202,7 @@ fn build_ec7xx_fota(new_soc: &str, old_soc: &str, chip: &str, toolkit_path: &Pat
 
     let dummy = create_dummy(work_dir)?;
 
-    luatos_soc::ota::assemble_ota_package(0, 0, "0", 0, "0", 0, &dummy, &delta, out_path).context("assemble OTA package")?;
+    luatos_soc::ota::assemble_ota_package(magic, 0xFFFFFFFF, "0", 0, "0", 0, &dummy, &delta, out_path).context("assemble OTA package")?;
 
     Ok(())
 }
@@ -498,14 +505,15 @@ pub fn cmd_fota_build(
         // EC7xx / EC618 - differential or script-only
         "ec7xx" | "ec618" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" | "air780epv" => {
             if script_only {
-                let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{chip}_script_fota.sota")));
+                let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{chip}_script_fota.bin")));
                 build_ec7xx_script_only_fota(new_soc, &out_path)?;
                 let size = fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
                 print_result(format, chip, new_soc, old_soc, &[(&out_path, size)])?;
             } else {
                 let old = old_soc.ok_or_else(|| anyhow::anyhow!("Full FOTA for EC7xx/EC618 is not yet supported. Please provide --old <old.soc> for differential FOTA."))?;
                 let (toolkit, toolkit_dir) = find_fota_toolkit(chip, fota_toolkit_path)?;
-                let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{chip}_fota.sota")));
+                let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{chip}_fota.bin")));
+
                 build_ec7xx_fota(new_soc, old, chip, &toolkit, &toolkit_dir, &out_path)?;
                 let size = fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
                 print_result(format, chip, new_soc, old_soc, &[(&out_path, size)])?;
@@ -514,7 +522,7 @@ pub fn cmd_fota_build(
 
         // Air1601 / Air1602 / CCM4211 - full or script-only
         "air1601" | "air1602" | "ccm4211" => {
-            let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{chip}_fota.sota")));
+            let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{chip}_fota.bin")));
             if script_only {
                 build_ccm4211_script_only_fota(new_soc, &out_path)?;
             } else {
