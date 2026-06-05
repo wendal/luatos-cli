@@ -31,9 +31,7 @@ const DTOOLS_SEARCH_ROOTS: &[&str] = &[
     "FotaToolkit_V3.6.4.0",
     "dtools",
     "../FotaToolkit_V3.6.4.0",
-    "../../FotaToolkit_V3.6.4.0",
-    "../refs/origin_tools/dtools",
-    "../../refs/origin_tools/dtools",
+    "../../FotaToolkit_V3.6.4.0"
 ];
 
 fn exe_dir() -> PathBuf {
