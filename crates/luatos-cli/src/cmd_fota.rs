@@ -28,13 +28,12 @@ use crate::{event, OutputFormat};
 // ─── Tool discovery ──────────────────────────────────────────────────────────
 
 const DTOOLS_SEARCH_ROOTS: &[&str] = &[
-    "dtools",
     "FotaToolkit_V3.6.4.0",
-    "refs/origin_tools/dtools",
-    "../refs/origin_tools/dtools",
-    "../../refs/origin_tools/dtools",
+    "dtools",
     "../FotaToolkit_V3.6.4.0",
     "../../FotaToolkit_V3.6.4.0",
+    "../refs/origin_tools/dtools",
+    "../../refs/origin_tools/dtools",
 ];
 
 fn exe_dir() -> PathBuf {
@@ -54,7 +53,7 @@ fn chip_dtools_variant(chip: &str) -> &'static str {
 fn chip_fota_config(chip: &str) -> &'static str {
     match chip {
         "ec618" => "ec618.json",
-        "air780ehm" => "ec718hm.json",
+        "air780ehm" | "air8000" => "ec718hm.json",
         "air780epv" | "ec718pv" => "ec718pv.json",
         "air780epm" | "ec718pm" => "ec718pm.json",
         _ => "ec718p.json",
@@ -141,6 +140,24 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+fn select_rom_path(dir: &Path, info_rom_file: &str) -> PathBuf {
+    // Match dtools/main.py diff_soc() logic: prefer non-luatos binpkg when available
+    let mut binpkgs: Vec<_> = std::fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|ext| ext == "binpkg").unwrap_or(false))
+        .map(|e| e.path())
+        .collect();
+    if binpkgs.len() > 1 {
+        binpkgs.retain(|p| {
+            p.file_name().and_then(|n| n.to_str()).map(|n| n != "luatos.binpkg").unwrap_or(true)
+        });
+    }
+    binpkgs.into_iter().next().unwrap_or_else(|| dir.join(info_rom_file))
+}
+
 fn build_ec7xx_fota(new_soc: &str, old_soc: &str, chip: &str, toolkit_path: &Path, toolkit_dir: &Path, out_path: &Path) -> Result<()> {
     let tmp = tempfile::tempdir().context("tempdir")?;
     let work_dir = tmp.path();
@@ -155,9 +172,13 @@ fn build_ec7xx_fota(new_soc: &str, old_soc: &str, chip: &str, toolkit_path: &Pat
         .ok_or_else(|| anyhow::anyhow!("info.json missing fota.magic_num"))?;
     let magic = parse_hex_addr(magic_str).ok_or_else(|| anyhow::anyhow!("invalid fota.magic_num: {magic_str}"))? as u32;
 
+    // Select the correct binpkg file (prefer core.binpkg over luatos.binpkg, matching dtools/main.py)
+    let old_binpkg = select_rom_path(&old_up.dir, &old_up.info.rom.file);
+    let new_binpkg = select_rom_path(&new_up.dir, &new_up.info.rom.file);
+
     // Copy binpkg to isolated temp directory (concurrent-safe)
-    fs::copy(&old_up.rom_path, work_dir.join("old.binpkg")).context("copy old.binpkg")?;
-    fs::copy(&new_up.rom_path, work_dir.join("new.binpkg")).context("copy new.binpkg")?;
+    fs::copy(&old_binpkg, work_dir.join("old.binpkg")).context("copy old.binpkg")?;
+    fs::copy(&new_binpkg, work_dir.join("new.binpkg")).context("copy new.binpkg")?;
 
     // Copy config/ and dep/ from toolkit_dir to work_dir so FotaToolkit can find them
     let config_src = toolkit_dir.join("config");
@@ -172,9 +193,44 @@ fn build_ec7xx_fota(new_soc: &str, old_soc: &str, chip: &str, toolkit_path: &Pat
     let config_arg = Path::new("config").join(chip_fota_config(chip));
     let config_arg_str = config_arg.to_string_lossy().to_string();
 
-    log::info!("FotaToolkit: {:?} -d {} BINPKG delta.par old.binpkg new.binpkg", toolkit_path, config_arg_str);
+    // Try to detect the specific chip variant from mem_map.txt
+    // (info.json only says "ec7xx", but FotaToolkit needs the right config like ec718hm.json)
+    let mem_map_path = new_up.dir.join("mem_map.txt");
+    let actual_config = if mem_map_path.exists() {
+        let mem_text = fs::read_to_string(&mem_map_path).unwrap_or_default();
+        // Match lines like: #define TYPE_EC718HM 1
+        let config_name = mem_text
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                if line.starts_with("#define TYPE_") && line.ends_with(" 1") {
+                    let name = line.trim_start_matches("#define TYPE_").trim_end_matches(" 1").trim();
+                    Some(name.to_lowercase())
+                } else {
+                    None
+                }
+            })
+            // Prefer the more specific variant (longer name = more specific)
+            .max_by_key(|n| n.len())
+            .unwrap_or_default();
+        if !config_name.is_empty() {
+            let cfg = format!("{}.json", config_name);
+            if config_src.join(&cfg).exists() {
+                Path::new("config").join(&cfg)
+            } else {
+                config_arg.clone()
+            }
+        } else {
+            config_arg.clone()
+        }
+    } else {
+        config_arg.clone()
+    };
+    let actual_config_str = actual_config.to_string_lossy().to_string();
+
+    log::info!("FotaToolkit: {:?} -d {} BINPKG delta.par old.binpkg new.binpkg", toolkit_path, actual_config_str);
     let output = Command::new(toolkit_path)
-        .args(["-d", &config_arg_str, "BINPKG", "delta.par", "old.binpkg", "new.binpkg"])
+        .args(["-d", &actual_config_str, "BINPKG", "delta.par", "old.binpkg", "new.binpkg"])
         .current_dir(work_dir)
         .output()
         .with_context(|| format!("launch {:?}", toolkit_path))?;
@@ -198,17 +254,44 @@ fn build_ec7xx_fota(new_soc: &str, old_soc: &str, chip: &str, toolkit_path: &Pat
         bail!("FotaToolkit failed (exit {:?})", output.status.code());
     }
     let delta = work_dir.join("delta.par");
-    anyhow::ensure!(delta.exists(), "delta.par not found after FotaToolkit");
+    if !delta.exists() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stdout.is_empty() {
+            log::info!("FotaToolkit stdout: {}", stdout.trim());
+        }
+        if !stderr.is_empty() {
+            log::info!("FotaToolkit stderr: {}", stderr.trim());
+        }
+        if stdout.contains("same images") || stderr.contains("same images") {
+            log::info!("Firmware cores identical — auto-fallback to script-only FOTA");
+            // Fall back to script-only: compress and assemble only the script partition
+            return build_ec7xx_script_only_fota(new_soc, out_path);
+        }
+        bail!("delta.par not found after FotaToolkit. Check FotaToolkit logs above for details.");
+    }
 
-    let dummy = create_dummy(work_dir)?;
+    // common_data = compressed script (full, if present), sdk_data = delta.par (firmware diff)
+    let script_bin = new_up.dir.join(&new_up.info.script.file);
+    let common = if script_bin.exists() {
+        let script_addr = new_up.info
+            .download.script_addr.as_deref()
+            .ok_or_else(|| anyhow::anyhow!("info.json missing download.script_addr"))?;
+        let script_addr = parse_hex_addr(script_addr).ok_or_else(|| anyhow::anyhow!("invalid download.script_addr: {script_addr}"))? as u32;
+        let s_zip = work_dir.join("script.zip");
+        luatos_soc::ota::lzma_compress_file(&script_bin, &s_zip, magic, script_addr, 0x40000, true).context("compress script for OTA")?;
+        s_zip
+    } else {
+        create_dummy(work_dir)?
+    };
 
-    luatos_soc::ota::assemble_ota_package(magic, 0xFFFFFFFF, "0", 0, "0", 0, &dummy, &delta, out_path).context("assemble OTA package")?;
+    luatos_soc::ota::assemble_ota_package(magic, 0, "0", 0, "0", 0, &common, &delta, out_path).context("assemble OTA package")?;
 
     Ok(())
 }
 
 /// Build script-only FOTA for EC7xx/EC618 - compresses only the script partition
-/// into a .sota package (92-byte header + LZMA compressed script), skipping ROM and FotaToolkit.
+/// into a .bin package (92-byte header + LZMA compressed script), skipping ROM and FotaToolkit.
 fn build_ec7xx_script_only_fota(new_soc: &str, out_path: &Path) -> Result<()> {
     let tmp = tempfile::tempdir().context("tempdir")?;
     let up = unpack(new_soc, &tmp.path().join("soc"))?;
@@ -236,7 +319,7 @@ fn build_ec7xx_script_only_fota(new_soc: &str, out_path: &Path) -> Result<()> {
     luatos_soc::ota::lzma_compress_file(&script_bin, &s_zip, magic, script_addr, 0x40000, true).context("compress script for OTA")?;
 
     let dummy = create_dummy(tmp.path())?;
-    luatos_soc::ota::assemble_ota_package(magic, 0xFFFFFFFF, "0", 0, "0", 0, &s_zip, &dummy, out_path).context("assemble OTA package")?;
+    luatos_soc::ota::assemble_ota_package(magic, 0, "0", 0, "0", 0, &s_zip, &dummy, out_path).context("assemble OTA package")?;
 
     Ok(())
 }
@@ -283,7 +366,7 @@ fn build_ccm4211_fota(new_soc: &str, out_path: &Path) -> Result<()> {
     }
 
     let dummy = create_dummy(tmp.path())?;
-    luatos_soc::ota::assemble_ota_package(magic, 0xFFFFFFFF, "0", 0, "0", 0, &total_zip, &dummy, out_path).context("assemble OTA package")?;
+    luatos_soc::ota::assemble_ota_package(magic, 0, "0", 0, "0", 0, &total_zip, &dummy, out_path).context("assemble OTA package")?;
 
     Ok(())
 }
@@ -321,7 +404,7 @@ fn build_ccm4211_script_only_fota(new_soc: &str, out_path: &Path) -> Result<()> 
     luatos_soc::ota::lzma_compress_file(&script_bin, &s_zip, magic, script_addr, 0x40000, true).context("compress script for OTA")?;
 
     let dummy = create_dummy(tmp.path())?;
-    luatos_soc::ota::assemble_ota_package(magic, 0xFFFFFFFF, "0", 0, "0", 0, &s_zip, &dummy, out_path).context("assemble OTA package")?;
+    luatos_soc::ota::assemble_ota_package(magic, 0, "0", 0, "0", 0, &s_zip, &dummy, out_path).context("assemble OTA package")?;
 
     Ok(())
 }
