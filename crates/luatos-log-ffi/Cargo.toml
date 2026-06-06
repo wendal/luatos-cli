@@ -1,0 +1,13 @@
+[package]
+name = "luatos-log-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "C ABI export of luatos-log SOC binary log decoder (Air1601/CCM4211)"
+links = "luatos_log_ffi"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+luatos-log = { path = "../luatos-log" }

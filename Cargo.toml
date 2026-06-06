@@ -9,6 +9,7 @@ members = [
     "crates/luatos-serial",
     "crates/luatos-project",
     "crates/luatos-log",
+    "crates/luatos-log-ffi",
     "crates/luatos-resource",
     "crates/sftool-lib",
     "crates/luatos-mfgui",

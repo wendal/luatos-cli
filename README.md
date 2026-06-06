@@ -20,6 +20,25 @@ LuatOS 命令行工具集（纯 Rust）——刷机、日志、项目管理、�
 cargo build --release -p luatos-cli
 ```
 
+## C 共享库 (luatos-log-ffi)
+
+SOC 日志解码同样以 C ABI 形式发布, 方便 Python (`ctypes`)、C/C++、Go (`cgo`)、C# (P/Invoke) 等语言直接消费. 与第三方 `pySoclogAnalyze` DLL 签名完全兼容 (含日志帧/命令帧双模式), 现有用户可**无感替换** DLL.
+
+```bash
+# C 示例
+gcc -O2 -std=c99 -I crates/luatos-log-ffi/include \
+    crates/luatos-log-ffi/examples/c/demo.c \
+    -L target/release -lluatos_log_ffi -o demo
+LD_LIBRARY_PATH=target/release ./demo
+
+# Python ctypes
+python3 crates/luatos-log-ffi/examples/python/demo_ctypes.py
+```
+
+从 [GitHub Releases](https://github.com/wendal/luatos-cli/releases) 下载预编译的 `luatos-log-ffi-<target>.{zip,tar.gz}` 包 (含 .dll/.so/.dylib + 头文件 + 示例), 4 个目标平台 (windows-msvc / linux-gnu / darwin x64+arm64) 全覆盖.
+
+详见 [docs/luatos-log-c-abi.md](docs/luatos-log-c-abi.md).
+
 ## 快速开始
 
 ```bash
