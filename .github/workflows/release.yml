@@ -81,9 +81,93 @@ jobs:
           name: luatos-cli-${{ matrix.target }}
           path: luatos-cli-${{ matrix.target }}.*
 
+  build-ffi:
+    name: Build FFI ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            dll: luatos_log_ffi.dll
+            archive_fmt: zip
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            dll: libluatos_log_ffi.so
+            archive_fmt: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            dll: libluatos_log_ffi.dylib
+            archive_fmt: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            dll: libluatos_log_ffi.dylib
+            archive_fmt: tar.gz
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ffi-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build FFI (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p luatos-log-ffi
+          mkdir dist
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.dll }}" "dist/"
+          Copy-Item "crates/luatos-log-ffi/include/luatos_log.h" "dist/"
+          Copy-Item "crates/luatos-log-ffi/examples/c/demo.c" "dist/"
+          Copy-Item "crates/luatos-log-ffi/examples/python/demo_ctypes.py" "dist/"
+          Compress-Archive -Path "dist/*" -DestinationPath "luatos-log-ffi-${{ matrix.target }}.zip"
+
+      - name: Build FFI (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p luatos-log-ffi
+          mkdir dist
+          cp target/${{ matrix.target }}/release/${{ matrix.dll }} dist/
+          cp crates/luatos-log-ffi/include/luatos_log.h dist/
+          cp crates/luatos-log-ffi/examples/c/demo.c dist/
+          cp crates/luatos-log-ffi/examples/python/demo_ctypes.py dist/
+          tar czf luatos-log-ffi-${{ matrix.target }}.tar.gz -C dist .
+
+      - name: Build FFI (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p luatos-log-ffi
+          mkdir dist
+          cp target/${{ matrix.target }}/release/${{ matrix.dll }} dist/
+          cp crates/luatos-log-ffi/include/luatos_log.h dist/
+          cp crates/luatos-log-ffi/examples/c/demo.c dist/
+          cp crates/luatos-log-ffi/examples/python/demo_ctypes.py dist/
+          tar czf luatos-log-ffi-${{ matrix.target }}.tar.gz -C dist .
+
+      - name: Upload FFI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: luatos-log-ffi-${{ matrix.target }}
+          path: luatos-log-ffi-${{ matrix.target }}.*
+
   release:
     name: Create GitHub Release
-    needs: build
+    needs: [build, build-ffi]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

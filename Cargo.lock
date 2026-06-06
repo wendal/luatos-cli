@@ -2031,6 +2031,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "luatos-log-ffi"
+version = "1.8.1"
+dependencies = [
+ "luatos-log",
+]
+
+[[package]]
 name = "luatos-luadb"
 version = "1.8.1"
 dependencies = [

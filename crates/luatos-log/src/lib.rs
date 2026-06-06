@@ -420,6 +420,13 @@ impl SocLogDecoder {
 
     /// Decode a complete frame (between 0xA5 markers) into a LogEntry.
     fn decode_frame(&self, data: &[u8]) -> Option<LogEntry> {
+        self.decode_frame_with_header(data).map(|(e, _)| e)
+    }
+
+    /// Decode a complete frame and also return the parsed 24-byte header.
+    ///
+    /// 适用于需要访问原始 header 字段 (ms/cmd/sn/cpu 等) 的调用方, 例如 FFI 导出.
+    pub fn decode_frame_with_header(&self, data: &[u8]) -> Option<(LogEntry, SocLogFrameHeader)> {
         // Minimum: 24-byte header + 2-byte CRC
         if data.len() < 26 {
             return None;
@@ -475,14 +482,118 @@ impl SocLogDecoder {
         let now = Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
         let device_time = format!("{}.{:03}", ms / 1000, ms % 1000);
 
-        Some(LogEntry {
+        let header = SocLogFrameHeader {
+            ms,
+            tag: tag_raw,
+            cmd: 0, // 日志帧 cmd 固定为 0
+            sn: u16::from_le_bytes(payload[20..22].try_into().ok()?),
+            msg_type,
+            cpu: payload[23],
+        };
+
+        let entry = LogEntry {
             timestamp: now,
             device_time: Some(device_time),
             level,
             module: if module.is_empty() { None } else { Some(module) },
             message,
             raw: format!("[SOC frame {} bytes]", data.len()),
-        })
+        };
+        Some((entry, header))
+    }
+
+    /// 一次性 (stateless) 解码单帧 SOC 帧.
+    ///
+    /// 与 [`SocLogDecoder::feed`] 不同, 此方法不维护状态, 每次调用都视为独立.
+    /// 适合 FFI / 一次性解析场景.
+    ///
+    /// 输入 `data` 可包含任意前缀噪声 (如其他协议字节) + 一个完整的 0xA5 ... 0xA5
+    /// 帧. 本方法会跳过首个 0xA5 之前的所有字节, 找到最后一对 0xA5 作为帧首尾.
+    /// 帧尾之后的多余字节 (例如下一帧开头) 被忽略.
+    ///
+    /// 返回:
+    /// - [`SocFrame::Log`] — cmd == 0 日志帧, 携带 `LogEntry` 与 `SocLogFrameHeader`
+    /// - [`SocFrame::Cmd`] — cmd != 0 命令帧, 携带 `SocCmdFrame`
+    /// - `None` — 未找到 0xA5 边界, CRC 校验失败, header 长度不足, 或帧超过 8192 字节
+    pub fn decode_one(data: &[u8]) -> Option<SocFrame> {
+        // 1. 找首尾 0xA5 (取最末一对)
+        let start = data.iter().position(|&b| b == 0xA5)?;
+        let end_rel = data[start + 1..].iter().rposition(|&b| b == 0xA5)?;
+        let abs_end = start + 1 + end_rel;
+        if abs_end <= start + 1 {
+            return None;
+        }
+
+        // 2. 反 escape (0xA6 0x01 -> 0xA5, 0xA6 0x02 -> 0xA6, 其他按 & 0x03 屏蔽)
+        let mut unescaped = Vec::with_capacity(abs_end - start - 1);
+        let mut i = start + 1;
+        while i < abs_end {
+            let b = data[i];
+            if b == 0xA6 {
+                if i + 1 >= abs_end {
+                    return None;
+                }
+                let n = data[i + 1];
+                let actual = match n {
+                    0x01 => 0xA5,
+                    0x02 => 0xA6,
+                    other => other & 0x03,
+                };
+                unescaped.push(actual);
+                i += 2;
+            } else {
+                unescaped.push(b);
+                i += 1;
+            }
+        }
+
+        // 3. 长度检查
+        if unescaped.len() > 8192 {
+            return None;
+        }
+        if unescaped.len() < 26 {
+            return None; // 24B header + 2B CRC
+        }
+
+        // 4. CRC 校验
+        let payload = &unescaped[..unescaped.len() - 2];
+        let crc_received = u16::from_le_bytes([unescaped[unescaped.len() - 2], unescaped[unescaped.len() - 1]]);
+        if crc16_soc_log(payload) != crc_received {
+            return None;
+        }
+
+        // 5. 按 cmd 分支
+        let cmd = u32::from_le_bytes(payload[16..20].try_into().ok()?);
+        if cmd == 0 {
+            // 日志帧: 复用现有 decode_frame_with_header (传入完整 unescaped, 含 CRC)
+            let dummy = SocLogDecoder::new();
+            let (entry, header) = dummy.decode_frame_with_header(&unescaped)?;
+            Some(SocFrame::Log(entry, header))
+        } else {
+            // 命令帧: ms(8) + address(4) + len(4) + cmd(4) + sn(2) + type(1) + cpu(1)
+            let ms = u64::from_le_bytes(payload[0..8].try_into().ok()?);
+            let address = u32::from_le_bytes(payload[8..12].try_into().ok()?);
+            let len = u32::from_le_bytes(payload[12..16].try_into().ok()?);
+            let sn = u16::from_le_bytes(payload[20..22].try_into().ok()?);
+            let msg_type = payload[22];
+            let cpu = payload[23];
+
+            // payload 截断到帧体内可用字节
+            let available = payload.len().saturating_sub(24);
+            let actual_len = (len as usize).min(available).min(64 * 1024);
+            let payload_bytes = payload[24..24 + actual_len].to_vec();
+
+            Some(SocFrame::Cmd(SocCmdFrame {
+                ms,
+                address,
+                len,
+                cmd,
+                sn,
+                msg_type,
+                cpu,
+                payload: payload_bytes,
+            }))
+        }
     }
 }
 
@@ -493,44 +604,24 @@ impl Default for SocLogDecoder {
 }
 
 /// CRC16 table used by SOC log protocol (device-side implementation).
-const SOC_LOG_CRC_TABLE: [u16; 256] = [
-    0x0000, 0xC0C1, 0xC181, 0x0140, 0xC301, 0x03C0, 0x0280, 0xC241,
-    0xC601, 0x06C0, 0x0780, 0xC741, 0x0500, 0xC5C1, 0xC481, 0x0440,
-    0xCC01, 0x0CC0, 0x0D80, 0xCD41, 0x0F00, 0xCFC1, 0xCE81, 0x0E40,
-    0x0A00, 0xCAC1, 0xCB81, 0x0B40, 0xC901, 0x09C0, 0x0880, 0xC841,
-    0xD801, 0x18C0, 0x1980, 0xD941, 0x1B00, 0xDBC1, 0xDA81, 0x1A40,
-    0x1E00, 0xDEC1, 0xDF81, 0x1F40, 0xDD01, 0x1DC0, 0x1C80, 0xDC41,
-    0x1400, 0xD4C1, 0xD581, 0x1540, 0xD701, 0x17C0, 0x1680, 0xD641,
-    0xD201, 0x12C0, 0x1380, 0xD341, 0x1100, 0xD1C1, 0xD081, 0x1040,
-    0xF001, 0x30C0, 0x3180, 0xF141, 0x3300, 0xF3C1, 0xF281, 0x3240,
-    0x3600, 0xF6C1, 0xF781, 0x3740, 0xF501, 0x35C0, 0x3480, 0xF441,
-    0x3C00, 0xFCC1, 0xFD81, 0x3D40, 0xFF01, 0x3FC0, 0x3E80, 0xFE41,
-    0xFA01, 0x3AC0, 0x3B80, 0xFB41, 0x3900, 0xF9C1, 0xF881, 0x3840,
-    0x2800, 0xE8C1, 0xE981, 0x2940, 0xEB01, 0x2BC0, 0x2A80, 0xEA41,
-    0xEE01, 0x2EC0, 0x2F80, 0xEF41, 0x2D00, 0xEDC1, 0xEC81, 0x2C40,
-    0xE401, 0x24C0, 0x2580, 0xE541, 0x2700, 0xE7C1, 0xE681, 0x2640,
-    0x2200, 0xE2C1, 0xE381, 0x2340, 0xE101, 0x21C0, 0x2080, 0xE041,
-    0xA001, 0x60C0, 0x6180, 0xA141, 0x6300, 0xA3C1, 0xA281, 0x6240,
-    0x6600, 0xA6C1, 0xA781, 0x6740, 0xA501, 0x65C0, 0x6480, 0xA441,
-    0x6C00, 0xACC1, 0xAD81, 0x6D40, 0xAF01, 0x6FC0, 0x6E80, 0xAE41,
-    0xAA01, 0x6AC0, 0x6B80, 0xAB41, 0x6900, 0xA9C1, 0xA881, 0x6840,
-    0x7800, 0xB8C1, 0xB981, 0x7940, 0xBB01, 0x7BC0, 0x7A80, 0xBA41,
-    0xBE01, 0x7EC0, 0x7F80, 0xBF41, 0x7D00, 0xBDC1, 0xBC81, 0x7C40,
-    0xB401, 0x74C0, 0x7580, 0xB541, 0x7700, 0xB7C1, 0xB681, 0x7640,
-    0x7200, 0xB2C1, 0xB381, 0x7340, 0xB101, 0x71C0, 0x7080, 0xB041,
-    0x5000, 0x90C1, 0x9181, 0x5140, 0x9301, 0x53C0, 0x5280, 0x9241,
-    0x9601, 0x56C0, 0x5780, 0x9741, 0x5500, 0x95C1, 0x9481, 0x5440,
-    0x9C01, 0x5CC0, 0x5D80, 0x9D41, 0x5F00, 0x9FC1, 0x9E81, 0x5E40,
-    0x5A00, 0x9AC1, 0x9B81, 0x5B40, 0x9901, 0x59C0, 0x5880, 0x9841,
-    0x8801, 0x48C0, 0x4980, 0x8941, 0x4B00, 0x8BC1, 0x8A81, 0x4A40,
-    0x4E00, 0x8EC1, 0x8F81, 0x4F40, 0x8D01, 0x4DC0, 0x4C80, 0x8C41,
-    0x4400, 0x84C1, 0x8581, 0x4540, 0x8701, 0x47C0, 0x4680, 0x8641,
-    0x8201, 0x42C0, 0x4380, 0x8341, 0x4100, 0x81C1, 0x8081, 0x4040,
+pub const SOC_LOG_CRC_TABLE: [u16; 256] = [
+    0x0000, 0xC0C1, 0xC181, 0x0140, 0xC301, 0x03C0, 0x0280, 0xC241, 0xC601, 0x06C0, 0x0780, 0xC741, 0x0500, 0xC5C1, 0xC481, 0x0440, 0xCC01, 0x0CC0, 0x0D80, 0xCD41, 0x0F00, 0xCFC1,
+    0xCE81, 0x0E40, 0x0A00, 0xCAC1, 0xCB81, 0x0B40, 0xC901, 0x09C0, 0x0880, 0xC841, 0xD801, 0x18C0, 0x1980, 0xD941, 0x1B00, 0xDBC1, 0xDA81, 0x1A40, 0x1E00, 0xDEC1, 0xDF81, 0x1F40,
+    0xDD01, 0x1DC0, 0x1C80, 0xDC41, 0x1400, 0xD4C1, 0xD581, 0x1540, 0xD701, 0x17C0, 0x1680, 0xD641, 0xD201, 0x12C0, 0x1380, 0xD341, 0x1100, 0xD1C1, 0xD081, 0x1040, 0xF001, 0x30C0,
+    0x3180, 0xF141, 0x3300, 0xF3C1, 0xF281, 0x3240, 0x3600, 0xF6C1, 0xF781, 0x3740, 0xF501, 0x35C0, 0x3480, 0xF441, 0x3C00, 0xFCC1, 0xFD81, 0x3D40, 0xFF01, 0x3FC0, 0x3E80, 0xFE41,
+    0xFA01, 0x3AC0, 0x3B80, 0xFB41, 0x3900, 0xF9C1, 0xF881, 0x3840, 0x2800, 0xE8C1, 0xE981, 0x2940, 0xEB01, 0x2BC0, 0x2A80, 0xEA41, 0xEE01, 0x2EC0, 0x2F80, 0xEF41, 0x2D00, 0xEDC1,
+    0xEC81, 0x2C40, 0xE401, 0x24C0, 0x2580, 0xE541, 0x2700, 0xE7C1, 0xE681, 0x2640, 0x2200, 0xE2C1, 0xE381, 0x2340, 0xE101, 0x21C0, 0x2080, 0xE041, 0xA001, 0x60C0, 0x6180, 0xA141,
+    0x6300, 0xA3C1, 0xA281, 0x6240, 0x6600, 0xA6C1, 0xA781, 0x6740, 0xA501, 0x65C0, 0x6480, 0xA441, 0x6C00, 0xACC1, 0xAD81, 0x6D40, 0xAF01, 0x6FC0, 0x6E80, 0xAE41, 0xAA01, 0x6AC0,
+    0x6B80, 0xAB41, 0x6900, 0xA9C1, 0xA881, 0x6840, 0x7800, 0xB8C1, 0xB981, 0x7940, 0xBB01, 0x7BC0, 0x7A80, 0xBA41, 0xBE01, 0x7EC0, 0x7F80, 0xBF41, 0x7D00, 0xBDC1, 0xBC81, 0x7C40,
+    0xB401, 0x74C0, 0x7580, 0xB541, 0x7700, 0xB7C1, 0xB681, 0x7640, 0x7200, 0xB2C1, 0xB381, 0x7340, 0xB101, 0x71C0, 0x7080, 0xB041, 0x5000, 0x90C1, 0x9181, 0x5140, 0x9301, 0x53C0,
+    0x5280, 0x9241, 0x9601, 0x56C0, 0x5780, 0x9741, 0x5500, 0x95C1, 0x9481, 0x5440, 0x9C01, 0x5CC0, 0x5D80, 0x9D41, 0x5F00, 0x9FC1, 0x9E81, 0x5E40, 0x5A00, 0x9AC1, 0x9B81, 0x5B40,
+    0x9901, 0x59C0, 0x5880, 0x9841, 0x8801, 0x48C0, 0x4980, 0x8941, 0x4B00, 0x8BC1, 0x8A81, 0x4A40, 0x4E00, 0x8EC1, 0x8F81, 0x4F40, 0x8D01, 0x4DC0, 0x4C80, 0x8C41, 0x4400, 0x84C1,
+    0x8581, 0x4540, 0x8701, 0x47C0, 0x4680, 0x8641, 0x8201, 0x42C0, 0x4380, 0x8341, 0x4100, 0x81C1, 0x8081, 0x4040,
 ];
 
 /// CRC16 computed using device-side table lookup algorithm.
 /// This matches the SOC log protocol used by Air1601/CCM4211.
-fn crc16_soc_log(data: &[u8]) -> u16 {
+pub fn crc16_soc_log(data: &[u8]) -> u16 {
     let mut crc: u16 = 0;
     for &byte in data {
         let xor = ((byte as u16) ^ crc) as u8;
@@ -544,6 +635,77 @@ fn crc16_soc_log(data: &[u8]) -> u16 {
 #[allow(dead_code)]
 fn crc16_modbus(data: &[u8]) -> u16 {
     crc16_soc_log(data)
+}
+
+// ─── 公开类型 (供 FFI / 第三方使用) ──────────────────────────────────────────
+
+/// SOC 日志帧 (cmd == 0) 的 24 字节 header 解析结果.
+///
+/// 对应 `payload[0..24]` 的字段拆解. 供 FFI 与高级消费者使用,
+/// 普通日志解析请使用 [`LogEntry`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SocLogFrameHeader {
+    /// 设备时间戳 (毫秒, payload[0..8])
+    pub ms: u64,
+    /// 原始 tag 位域 (payload[8..16], 含 level + 8 个 7-bit 字符)
+    pub tag: u64,
+    /// 命令码 (payload[16..20], 日志帧固定为 0)
+    pub cmd: u32,
+    /// 序列号 (payload[20..22])
+    pub sn: u16,
+    /// 消息类型 (payload[22], 0 = printf, 其他 = raw)
+    pub msg_type: u8,
+    /// CPU 编号 (payload[23])
+    pub cpu: u8,
+}
+
+/// SOC 命令帧 (cmd != 0) 的解码结果.
+///
+/// 在 CCM4211 SOC 协议中, `cmd != 0` 表示这是一个**命令帧** (Flash 读/写操作
+/// 的请求或响应), 其 24 字节 header 布局与日志帧不同:
+///
+/// | bytes  | 字段        |
+/// |--------|------------|
+/// | 0..8   | `ms: u64`  |
+/// | 8..12  | `address: u32` |
+/// | 12..16 | `len: u32`  |
+/// | 16..20 | `cmd: u32`  |
+/// | 20..22 | `sn: u16`   |
+/// | 22     | `type: u8`  |
+/// | 23     | `cpu: u8`   |
+/// | 24..   | `len` 字节 raw payload |
+///
+/// 这与第三方 `pySoclogAnalyze` DLL 的"命令帧模式"完全一致.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SocCmdFrame {
+    /// 设备时间戳 (毫秒)
+    pub ms: u64,
+    /// Flash 操作地址
+    pub address: u32,
+    /// payload 长度 (字节)
+    pub len: u32,
+    /// 命令码
+    pub cmd: u32,
+    /// 序列号
+    pub sn: u16,
+    /// 消息类型
+    pub msg_type: u8,
+    /// CPU 编号
+    pub cpu: u8,
+    /// 实际 payload 字节 (长度 = `min(len, 帧体长度)`, 不超过 64 KB)
+    pub payload: Vec<u8>,
+}
+
+/// SOC 帧的统一枚举, 表示一次 `decode_one` 调用的解码结果.
+///
+/// - [`SocFrame::Log`] — 日志帧 (cmd == 0), 携带人类可读的 `LogEntry` 与原始 header.
+/// - [`SocFrame::Cmd`] — 命令帧 (cmd != 0), 携带 `SocCmdFrame`.
+#[derive(Debug, Clone)]
+pub enum SocFrame {
+    /// 日志帧, cmd == 0
+    Log(LogEntry, SocLogFrameHeader),
+    /// 命令帧, cmd != 0
+    Cmd(SocCmdFrame),
 }
 
 /// Decode tag name from the tag bitfield (7 bits per character, up to 8 chars).
@@ -1388,5 +1550,121 @@ mod tests {
         let (level, _, msg) = parse_level_prefix("no prefix here");
         assert_eq!(level, LogLevel::Info); // default
         assert_eq!(msg, "no prefix here");
+    }
+
+    /// Helper: 构造一个 0xA5..0xA5 帧 (含 escape 处理 + CRC16)
+    fn build_soc_frame(payload: &[u8]) -> Vec<u8> {
+        let crc = crc16_soc_log(payload);
+        let mut frame = vec![0xA5u8];
+        // 写入 payload (含 escape)
+        for &b in payload {
+            match b {
+                0xA5 => frame.extend_from_slice(&[0xA6, 0x01]),
+                0xA6 => frame.extend_from_slice(&[0xA6, 0x02]),
+                _ => frame.push(b),
+            }
+        }
+        // 写入 CRC (含 escape)
+        for &b in &crc.to_le_bytes() {
+            match b {
+                0xA5 => frame.extend_from_slice(&[0xA6, 0x01]),
+                0xA6 => frame.extend_from_slice(&[0xA6, 0x02]),
+                _ => frame.push(b),
+            }
+        }
+        frame.push(0xA5);
+        frame
+    }
+
+    #[test]
+    fn decode_one_log_frame() {
+        // 日志帧: ms=5000, level=2(Info), cmd=0, sn=1, "hello"
+        let mut payload = vec![0u8; 24];
+        payload[0..8].copy_from_slice(&5000u64.to_le_bytes());
+        payload[8..16].copy_from_slice(&2u64.to_le_bytes()); // level=2, 无 tag
+        payload[16..20].copy_from_slice(&0u32.to_le_bytes()); // cmd=0
+        payload[20..22].copy_from_slice(&1u16.to_le_bytes());
+        payload[22] = 0; // type
+        payload[23] = 0; // cpu
+                         // body: "hello\0\0\0" (8 字节)
+        payload.extend_from_slice(b"hello\0\0\0");
+
+        let frame = build_soc_frame(&payload);
+        let decoded = SocLogDecoder::decode_one(&frame).expect("decode_one failed");
+        match decoded {
+            SocFrame::Log(entry, header) => {
+                assert_eq!(header.ms, 5000);
+                assert_eq!(header.cmd, 0);
+                assert_eq!(header.sn, 1);
+                assert_eq!(header.cpu, 0);
+                assert_eq!(entry.message, "hello");
+                assert_eq!(entry.device_time.as_deref(), Some("5.000"));
+            }
+            SocFrame::Cmd(_) => panic!("expected Log, got Cmd"),
+        }
+    }
+
+    #[test]
+    fn decode_one_cmd_frame() {
+        // 命令帧: ms=10000, address=0x12345678, len=4, cmd=0x09, payload=[0xDE,0xAD,0xBE,0xEF]
+        let mut payload = vec![0u8; 24 + 4];
+        payload[0..8].copy_from_slice(&10000u64.to_le_bytes());
+        payload[8..12].copy_from_slice(&0x12345678u32.to_le_bytes()); // address
+        payload[12..16].copy_from_slice(&4u32.to_le_bytes()); // len
+        payload[16..20].copy_from_slice(&0x09u32.to_le_bytes()); // cmd
+        payload[20..22].copy_from_slice(&7u16.to_le_bytes());
+        payload[22] = 1; // type
+        payload[23] = 2; // cpu
+        payload[24..28].copy_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+
+        let frame = build_soc_frame(&payload);
+        let decoded = SocLogDecoder::decode_one(&frame).expect("decode_one failed");
+        match decoded {
+            SocFrame::Cmd(c) => {
+                assert_eq!(c.ms, 10000);
+                assert_eq!(c.address, 0x12345678);
+                assert_eq!(c.len, 4);
+                assert_eq!(c.cmd, 0x09);
+                assert_eq!(c.sn, 7);
+                assert_eq!(c.msg_type, 1);
+                assert_eq!(c.cpu, 2);
+                assert_eq!(c.payload, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+            }
+            SocFrame::Log(_, _) => panic!("expected Cmd, got Log"),
+        }
+    }
+
+    #[test]
+    fn decode_one_bad_crc() {
+        // 构造一个会 CRC 失败的帧
+        let mut payload = vec![0u8; 24];
+        payload[0..8].copy_from_slice(&1000u64.to_le_bytes());
+        payload[8..16].copy_from_slice(&2u64.to_le_bytes());
+        payload[16..20].copy_from_slice(&0u32.to_le_bytes());
+        payload[20..22].copy_from_slice(&1u16.to_le_bytes());
+        payload[22] = 0;
+        payload[23] = 0;
+        // 故意算错的 CRC: 全 0
+        let mut frame = vec![0xA5u8];
+        for &b in &payload {
+            frame.push(b);
+        }
+        frame.extend_from_slice(&[0xFF, 0xFF]); // 错的 CRC
+        frame.push(0xA5);
+        assert!(SocLogDecoder::decode_one(&frame).is_none());
+    }
+
+    #[test]
+    fn decode_one_no_a5_markers() {
+        // 没有 0xA5 边界, 返回 None
+        let data = [0u8; 32];
+        assert!(SocLogDecoder::decode_one(&data).is_none());
+    }
+
+    #[test]
+    fn decode_one_truncated() {
+        // 只有 0xA5 头, 没有 0xA5 尾
+        let data = [0xA5, 0x00, 0x01, 0x02];
+        assert!(SocLogDecoder::decode_one(&data).is_none());
     }
 }

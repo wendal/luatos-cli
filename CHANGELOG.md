@@ -18,6 +18,27 @@ All notable changes to this project will be documented in this file.
 
 ### 变更
 
+#### C ABI 导出 luatos-log（luatos-log-ffi）
+
+- 新增 `luatos-log-ffi` cdylib crate，导出 `luatos_soclog_analyze()` 与 `pySoclogAnalyze()` 别名（与第三方 `pySoclogAnalyze` DLL 签名完全一致）
+- 函数可解码 Air1601/CCM4211 SOC 二进制日志帧，支持**日志帧/命令帧双模式**：
+  - 日志帧（`cmd==0`）：输出 `[device_time] L/module message` 文本
+  - 命令帧（`cmd!=0`）：输出 raw payload 字节，并填充 `*address` 字段
+- 错误码：0=OK、-1=CRC、-2=header 长度、-3=buffer 太小、-4=参数、-5=空数据、-6=截断
+- 新增手写 C 头 `crates/luatos-log-ffi/include/luatos_log.h`（MSVC / gcc 兼容）
+- 新增 C / Python ctypes 调用示例（`examples/c/demo.c`、`examples/python/demo_ctypes.py`）
+- 新增文档 `docs/luatos-log-c-abi.md`，覆盖编译、调用、线程安全、已知限制
+- 新增 `release.yml` 任务 `build-ffi`，4 个目标（windows-msvc / linux-gnu / darwin x64+arm64）产出 .dll/.so/.dylib 并打包
+- `luatos-log` 内部改动（**不破坏 semver**）：
+  - `crc16_soc_log` 由 `fn` 改为 `pub fn`
+  - `SOC_LOG_CRC_TABLE` 由 `const` 改为 `pub const`
+  - 新增 `pub struct SocLogFrameHeader { ms, tag, cmd, sn, msg_type, cpu }`
+  - 新增 `pub struct SocCmdFrame { ms, address, len, cmd, sn, msg_type, cpu, payload }`
+  - 新增 `pub enum SocFrame { Log(LogEntry, SocLogFrameHeader), Cmd(SocCmdFrame) }`
+  - 新增 `pub fn SocLogDecoder::decode_one(data: &[u8]) -> Option<SocFrame>` (stateless 单帧入口)
+  - 新增 `pub fn SocLogDecoder::decode_frame_with_header(data: &[u8]) -> Option<(LogEntry, SocLogFrameHeader)>`
+- 单元测试：luatos-log 新增 5 个 decode_one 测试（35 → 35+5=40 tests），luatos-log-ffi 新增 9 个 c_abi 测试，全部通过
+
 #### FOTA：新增 Air8101(BK72XX) 新格式包生成
 
 - `fota build` 新增 `bk72xx/air8101` 分支：支持新格式**全量**与`--script-only`脚本包生成
