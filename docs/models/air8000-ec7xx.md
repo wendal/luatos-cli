@@ -21,6 +21,12 @@ luatos-cli flash script --soc firmware.soc --port auto --script lua/
 # 仅脚本 FOTA 包
 luatos-cli fota build --new firmware.soc --script-only
 
+# 差分 FOTA：底层固件相同时自动回落到脚本更新包（默认行为）
+luatos-cli fota build --new v2.soc --old v1.soc
+
+# 差分 FOTA：强制走 FotaToolkit 生成 delta.par（关闭自动回落）
+luatos-cli fota build --new v2.soc --old v1.soc --force-par
+
 # 日志查看（EC718 建议 921600 + probe）
 luatos-cli log view-binary --port auto --baud 921600 --probe
 ```

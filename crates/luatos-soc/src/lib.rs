@@ -5,6 +5,7 @@
 //   - ROM binary (e.g. luatos.bin)
 //   - Optional: air602_flash.exe, luac, etc.
 
+pub mod binpkg_diff;
 pub mod combine;
 mod info;
 pub mod ota;

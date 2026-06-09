@@ -134,11 +134,18 @@ fn run_cmd(mut cmd: Command) -> Result<()> {
 
 // ─── EC7xx / EC618 - differential FOTA ───────────────────────────────────────
 
-fn build_ec7xx_fota(new_soc: &str, old_soc: &str, chip: &str, toolkit_path: &Path, toolkit_dir: &Path, out_path: &Path) -> Result<()> {
+/// Differential EC7xx FOTA core. Caller has already unpacked both SOCs and
+/// provided the toolkit; this avoids re-unpacking when the dispatcher wants
+/// to peek at the binpkg before deciding whether to call FotaToolkit.
+fn build_ec7xx_fota_from_unpacked(
+    new_up: &luatos_soc::UnpackedSoc,
+    old_up: &luatos_soc::UnpackedSoc,
+    chip: &str,
+    toolkit_path: &Path,
+    toolkit_dir: &Path,
+    out_path: &Path,
+) -> Result<()> {
     let tmp = tempfile::tempdir().context("tempdir")?;
-
-    let new_up = unpack(new_soc, &tmp.path().join("new"))?;
-    let old_up = unpack(old_soc, &tmp.path().join("old"))?;
 
     let config_arg = format!("config\\{}", chip_fota_config(chip));
     let work_old = toolkit_dir.join("old.binpkg");
@@ -490,6 +497,9 @@ struct Air6208FotaResult {
 
 // ─── Public command handler ─────────────────────────────────────────────────
 
+// 8-arg CLI entry point — mirrors the FotaCommands::Build clap struct directly
+// rather than threading a config object. Acceptable to silence the lint here.
+#[allow(clippy::too_many_arguments)]
 pub fn cmd_fota_build(
     new_soc: &str,
     old_soc: Option<&str>,
@@ -497,6 +507,7 @@ pub fn cmd_fota_build(
     fota_toolkit_path: Option<&str>,
     _soc_tools_path: Option<&str>,
     script_only: bool,
+    force_par: bool,
     format: &OutputFormat,
 ) -> Result<()> {
     anyhow::ensure!(Path::new(new_soc).exists(), "New SOC not found: {new_soc}");
@@ -510,19 +521,47 @@ pub fn cmd_fota_build(
     match chip {
         // EC7xx / EC618 - differential
         "ec7xx" | "ec618" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" | "air780epv" => {
+            let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{chip}_fota.sota")));
+
             if script_only {
-                let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{chip}_fota.sota")));
                 build_ec7xx_script_only_fota(new_soc, &out_path)?;
                 let size = fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
                 print_result(format, chip, new_soc, old_soc, &[(&out_path, size)])?;
                 return Ok(());
             }
-            let old = old_soc.ok_or_else(|| anyhow::anyhow!("Full FOTA for EC7xx/EC618 is not yet supported. Please provide --old <old.soc> for differential FOTA."))?;
-            let (toolkit, toolkit_dir) = find_fota_toolkit(chip, fota_toolkit_path)?;
-            let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{chip}_fota.sota")));
-            build_ec7xx_fota(new_soc, old, chip, &toolkit, &toolkit_dir, &out_path)?;
+            let old = old_soc.ok_or_else(|| anyhow::anyhow!(
+                "Full FOTA for EC7xx/EC618 is not yet supported. \
+                 Provide --old <old.soc> for differential FOTA, or use --script-only."
+            ))?;
+
+            // Unpack both SOCs once; we need binpkg bytes for the auto-fallback
+            // detection before we can decide whether to invoke FotaToolkit.
+            let tmp = tempfile::tempdir().context("tempdir")?;
+            let new_up = unpack(new_soc, &tmp.path().join("new"))?;
+            let old_up = unpack(old, &tmp.path().join("old"))?;
+
+            let new_bytes = fs::read(&new_up.rom_path).with_context(|| format!("read {}", new_up.rom_path.display()))?;
+            let old_bytes = fs::read(&old_up.rom_path).with_context(|| format!("read {}", old_up.rom_path.display()))?;
+
+            let fallback = !force_par
+                && matches!(
+                    luatos_soc::binpkg_diff::compare_binpkg_underlying(&old_bytes, &new_bytes)?,
+                    luatos_soc::binpkg_diff::BinpkgDiff::Identical
+                );
+
+            if fallback {
+                log::warn!(
+                    "old/new binpkg 底层固件相同(剔除 script entry 后元数据完全一致),\
+                     自动回落到 --script-only 路径。如需强制走差分 FOTA,请加 --force-par。"
+                );
+                build_ec7xx_script_only_fota_from_unpacked(&new_up, &out_path)?;
+            } else {
+                let (toolkit, toolkit_dir) = find_fota_toolkit(chip, fota_toolkit_path)?;
+                build_ec7xx_fota_from_unpacked(&new_up, &old_up, chip, &toolkit, &toolkit_dir, &out_path)?;
+            }
             let size = fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
             print_result(format, chip, new_soc, old_soc, &[(&out_path, size)])?;
+            return Ok(());
         }
 
         // Air1601 / Air1602 / CCM4211 - full or script-only
@@ -663,6 +702,7 @@ mod tests {
             Some("C:\\definitely\\missing\\FotaToolkit.exe"),
             None,
             true,
+            false,
             &OutputFormat::Text,
         );
         assert!(result.is_ok(), "expected script-only build to succeed, got: {result:?}");
@@ -695,9 +735,108 @@ mod tests {
             Some("C:\\definitely\\missing\\FotaToolkit.exe"),
             None,
             true,
+            false,
             &OutputFormat::Text,
         );
         let err = result.unwrap_err().to_string();
         assert!(err.contains("script file not found"), "expected missing script error, got: {err}");
+    }
+
+    /// When new == old binpkg exactly, the auto-fallback must take effect: the
+    /// FotaToolkit path is skipped (we point at a definitely-missing exe, which
+    /// would normally bail with "FotaToolkit not found"). Success here proves
+    /// the detection chose the script-only path.
+    #[test]
+    fn ec7xx_differential_falls_back_when_binpkg_identical() {
+        let tmp = tempdir().unwrap();
+        let out = tmp.path().join("air780epm_auto_fallback.sota");
+        let soc = ec7xx_soc_path();
+
+        let result = cmd_fota_build(
+            &soc,
+            Some(&soc), // new == old → binpkg byte-identical → Identical
+            Some(out.to_str().unwrap()),
+            Some("C:\\definitely\\missing\\FotaToolkit.exe"),
+            None,
+            false, // not --script-only
+            false, // not --force-par
+            &OutputFormat::Text,
+        );
+        assert!(result.is_ok(), "expected auto-fallback build to succeed, got: {result:?}");
+
+        let data = fs::read(&out).unwrap();
+        // Script-only FOTA places compressed script in the Common partition
+        // and leaves the SDK partition empty. The .sota OTA header reports
+        // sdk_data_len == 0 and common_data_len > 0.
+        assert!(
+            u32::from_le_bytes(data[52..56].try_into().unwrap()) > 0,
+            "common partition should be non-empty (script-only path)"
+        );
+        assert_eq!(u32::from_le_bytes(data[56..60].try_into().unwrap()), 0, "sdk partition should be empty (script-only path)");
+    }
+
+    /// With --force-par and identical binpkg, the FotaToolkit path runs
+    /// unconditionally. Pointing at a missing FotaToolkit.exe makes the call
+    /// bail with a clear "FotaToolkit not found" error — proving we did NOT
+    /// take the auto-fallback path.
+    #[test]
+    fn ec7xx_differential_force_par_skips_fallback() {
+        let tmp = tempdir().unwrap();
+        let out = tmp.path().join("air780epm_force_par.sota");
+        let soc = ec7xx_soc_path();
+
+        let result = cmd_fota_build(
+            &soc,
+            Some(&soc),
+            Some(out.to_str().unwrap()),
+            Some("C:\\definitely\\missing\\FotaToolkit.exe"),
+            None,
+            false,
+            true, // --force-par
+            &OutputFormat::Text,
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("FotaToolkit") && err.contains("not found"), "expected FotaToolkit-not-found error, got: {err}");
+    }
+
+    /// When the underlying firmware differs (we use two different EC7xx SOCs
+    /// whose binpkg layouts naturally differ), detection returns Differ and
+    /// the FotaToolkit path runs. The missing FotaToolkit then bails —
+    /// proving we did NOT take the fallback path.
+    #[test]
+    fn ec7xx_differential_with_different_binpkg_uses_par_path() {
+        let tmp = tempdir().unwrap();
+        let new_soc = ec7xx_soc_path();
+        // A different EC7xx-family SOC (Air8000) — its binpkg entries will
+        // almost certainly differ from the Air780EPM fixture on (name, addr,
+        // flash_size, img_size), forcing detection → Differ.
+        let old_soc = repo_root()
+            .join("refs")
+            .join("soc_files")
+            .join("LuatOS-SoC_V2031_Air8000_105.soc")
+            .to_string_lossy()
+            .to_string();
+        if !std::path::Path::new(&old_soc).exists() {
+            // Skip the test gracefully if the alternate fixture is absent.
+            eprintln!("skip: alternate fixture missing: {old_soc}");
+            return;
+        }
+
+        let out = tmp.path().join("par_path.sota");
+        let result = cmd_fota_build(
+            &new_soc,
+            Some(&old_soc),
+            Some(out.to_str().unwrap()),
+            Some("C:\\definitely\\missing\\FotaToolkit.exe"),
+            None,
+            false,
+            false, // no force-par
+            &OutputFormat::Text,
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("FotaToolkit") && err.contains("not found"),
+            "expected FotaToolkit-not-found error (par path), got: {err}"
+        );
     }
 }

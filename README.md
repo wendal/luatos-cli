@@ -7,7 +7,7 @@ LuatOS 命令行工具集（纯 Rust）——刷机、日志、项目管理、�
 ## 功能特性
 
 - **多芯片刷机**：Air8101(BK7258)、Air6208(XT804)、Air1601/Air1602(CCM4211)、Air8000(EC718)、SF32LB58
-- **FOTA 打包**：支持 EC7xx 差分/脚本、CCM4211 全量/脚本、Air8101(BK72XX) 新格式全量/脚本
+- **FOTA 打包**：支持 EC7xx 差分/脚本、CCM4211 全量/脚本、Air8101(BK72XX) 新格式全量/脚本；EC7xx 差分时若底层固件相同自动回落到脚本更新包（`--force-par` 可强制走差分）
 - **二级帮助入口**：`--help` 提示型号入口，`guide models` / `guide model --model <型号>` 直接给推荐命令
 - **刷机后继续监听**：`flash run --tail-log-secs <N>` 刷机后自动按型号波特率续接日志，减少开机日志丢失
 - **日志系统**：文本 / 二进制日志查看、录制、解析，支持智能诊断
@@ -63,6 +63,10 @@ luatos-cli fota build --new air8101.soc --script-only -o air8101_script_fota.bin
 
 # Air780EPM / Air780EHM / Air8000 仅脚本 FOTA
 luatos-cli fota build --new firmware.soc --script-only
+
+# EC7xx 差分 FOTA：底层固件相同时自动回落到脚本更新包
+luatos-cli fota build --new v2.soc --old v1.soc          # 自动回落
+luatos-cli fota build --new v2.soc --old v1.soc --force-par  # 强制走 FotaToolkit 差分
 ```
 
 ## 型号文档（按型号拆分）

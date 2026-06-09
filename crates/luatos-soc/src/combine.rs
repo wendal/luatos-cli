@@ -18,12 +18,18 @@ use crate::unpack::extract_7z;
 const ENTRY_META_SIZE: usize = 364;
 const PKGMODE_MAGIC: &[u8] = b"pkgmode";
 
-// ─── Internal minimal entry descriptor (address+size only) ─────────────────
-
-struct EntrySpan {
-    name: String,
-    addr: u32,
-    end: u32, // addr + max(flash_size, img_size)
+// ─── Public entry descriptor (address + size + image size) ──────────────────
+//
+// Exposed at crate level for downstream tools that need to inspect or
+// compare binpkg layouts (e.g. `binpkg_diff::compare_binpkg_underlying`).
+// The raw binpkg format stores flash_size and img_size independently;
+// `end` is a derived convenience (`addr + max(flash_size, img_size)`).
+pub struct EntrySpan {
+    pub name: String,
+    pub addr: u32,
+    pub flash_size: u32,
+    pub img_size: u32,
+    pub end: u32, // addr + max(flash_size, img_size)
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────────
@@ -96,8 +102,12 @@ fn is_ec7xx(chip: &str) -> bool {
     matches!(chip, "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" | "air780epv")
 }
 
-/// Read only the address + size of each binpkg entry (no data allocated).
-fn parse_entry_spans(data: &[u8]) -> Result<Vec<EntrySpan>> {
+/// Parse binpkg entries, returning address + size + image-size metadata for each.
+///
+/// Crate-public so sibling modules (e.g. `binpkg_diff`) can reuse the same
+/// parser instead of duplicating format knowledge. Parsing reads metadata only
+/// — the entry data sections are skipped via `img_size`.
+pub(crate) fn parse_entry_spans(data: &[u8]) -> Result<Vec<EntrySpan>> {
     let fsize = data.len();
     if fsize < 0x34 {
         bail!("binpkg too small ({fsize} bytes)");
@@ -120,7 +130,13 @@ fn parse_entry_spans(data: &[u8]) -> Result<Vec<EntrySpan>> {
         cursor += img_size as usize; // skip past data
 
         let end = addr.saturating_add(flash_size.max(img_size));
-        spans.push(EntrySpan { name, addr, end });
+        spans.push(EntrySpan {
+            name,
+            addr,
+            flash_size,
+            img_size,
+            end,
+        });
     }
 
     Ok(spans)
@@ -130,7 +146,10 @@ fn parse_entry_spans(data: &[u8]) -> Result<Vec<EntrySpan>> {
 ///
 /// The identifier is "flex_combine" so `entry_to_burn_type` in ec718.rs
 /// routes it as a `FlexFile` burn at the user address.
-fn append_entry(original: &[u8], name: &str, addr: u32, data: &[u8]) -> Vec<u8> {
+///
+/// Crate-public so `binpkg_diff` tests can synthesize binpkg archives
+/// without duplicating the format knowledge.
+pub(crate) fn append_entry(original: &[u8], name: &str, addr: u32, data: &[u8]) -> Vec<u8> {
     let hash = format!("{:x}", Sha256::digest(data));
     let img_size = data.len() as u32;
 

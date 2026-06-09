@@ -47,6 +47,16 @@ All notable changes to this project will be documented in this file.
 - 更新 OTA/型号/README 文档，补充 Air8101 FOTA 用法与支持矩阵
 - 同步 `refs/soc_files/` 到最新样本集合（含 `LuatOS-SoC_V2015_Air8101.soc`、`LuatOS-SoC_V1021_Air1602.soc`）
 
+#### FOTA：EC7xx / Air8000 / Air780E 差分自动回落
+
+- 当 `--new` 与 `--old` 的 binpkg entry 集合（剔除 `name == "script"` 的 entry 后）`(name, addr, flash_size, img_size)` 元数据完全一致时，CLI 自动跳过 FotaToolkit 差分，改走 `--script-only` 路径，`log::warn!` 提示已回落
+- 新增 `--force-par` 关闭自动回落，强制走差分 FOTA（供调试/边缘场景使用）
+- `luatos-soc` 新增 `binpkg_diff` 模块：公开 `BinpkgDiff` 枚举与 `compare_binpkg_underlying()` 函数；`combine::EntrySpan` 提升 `pub` 并增 `flash_size`/`img_size` 字段供下游复用
+- 边界：luadb-in-AP 形态（`rom.fs.script.offset == 0`，脚本嵌入 `ap` entry）下无独立 `script` entry，`ap.img_size` 变化自然被识别为"底层不同" → 走 FotaToolkit 差分（无需特例）
+- 检测失败（binpkg 不可读、单边无 entry 等）一律 `bail!` 报错，不静默走错路径
+- 单元测试：`luatos-soc::binpkg_diff` 9 个、集成测试 `cmd_fota` 5 个（含 3 个新 auto-fallback 用例）全部通过
+- 文档：`docs/ota-guide.md` 新增"EC7xx 差分 FOTA 自动回落"小节；`docs/models/air8000-ec7xx.md` 推荐命令补充；`README.md` 功能特性 + 快速开始同步
+
 #### flash test 关键字判定与失败诊断增强
 
 - `flash test` 关键字默认策略收敛：未传 `--keyword` 时默认 `LuatOS@`，显式传入时仅按传入关键字判定

@@ -44,6 +44,7 @@ luatos-cli fota build --new <新固件.soc> [--old <旧固件.soc>] [--output <�
 | `--fota-toolkit` | 否 | `FotaToolkit.exe` 路径（仅差分FOTA需要，默认自动搜索） |
 | `--soc-tools` | 否 | **已弃用**，保留仅为兼容旧命令 |
 | `--script-only` | 否 | 生成仅脚本的升级包（EC7xx/Air8000、CCM4211、BK72XX 支持） |
+| `--force-par` | 否 | EC7xx/Air8000 差分 FOTA：关闭自动回落，强制调用 FotaToolkit 生成差分包 |
 
 ### 使用示例
 
@@ -53,6 +54,13 @@ luatos-cli fota build --new v2.0.soc --old v1.0.soc
 
 # EC7xx / Air8000 仅脚本 FOTA（不需要 --old）
 luatos-cli fota build --new air780epm_v2.0.soc --script-only
+
+# EC7xx 差分 FOTA：底层固件相同时自动回落到脚本更新包
+luatos-cli fota build --new v2.0.soc --old v1.0.soc
+# 命中回落时输出: WARN old/new binpkg 底层固件相同...自动回落到 --script-only 路径
+
+# EC7xx 强制走差分 FOTA（关闭自动回落）
+luatos-cli fota build --new v2.0.soc --old v1.0.soc --force-par
 
 # Air1601 全量 FOTA（仅提供新版固件）
 luatos-cli fota build --new air1601_v1.0.soc
@@ -68,6 +76,36 @@ luatos-cli fota build --new air8101_v1.0.soc --script-only -o air8101_script_fot
 
 # 指定输出文件名
 luatos-cli fota build --new firmware.soc --output upgrade.sota
+```
+
+### EC7xx 差分 FOTA 自动回落
+
+EC7xx / Air8000 / Air780E 差分 FOTA 默认会检测 old/new `.soc` 内部 `binpkg` 的**底层固件**是否相同：
+
+- 解析两个 binpkg 的 entry 列表
+- 剔除 `name == "script"` 的 entry（脚本分区不属于"底层固件"）
+- 比较其余 entry 的 `(name, addr, flash_size, img_size)` 元数据集合
+- 集合完全一致 → 视为"底层固件相同"，**自动跳过 FotaToolkit**，改走纯 Rust 的脚本更新包路径（`--script-only` 同样的产物）
+- 不一致 → 正常调用 FotaToolkit 生成 `delta.par`
+
+适用场景：只改了 Lua 脚本但 ROM 底层未变的"热更新"打包，省掉 FotaToolkit 外部依赖与启动开销。
+
+命中回落时输出日志（示例）：
+
+```
+WARN old/new binpkg 底层固件相同(剔除 script entry 后元数据完全一致),
+     自动回落到 --script-only 路径。如需强制走差分 FOTA,请加 --force-par。
+```
+
+边界说明：
+
+- **luadb-in-AP 形态**（`info.json` 中 `rom.fs.script.offset == 0`、脚本嵌入 `ap` entry）：binpkg 中没有独立的 `script` entry，整个 `ap` entry 都参与比较；改脚本必改 `ap.img_size` → 自然识别为"底层不同"→ 走 FotaToolkit 差分，行为正确
+- **检测失败**（binpkg 不可读、单边无 entry 等）一律 `bail!` 报错，不静默走错路径
+
+如需关闭自动回落强制走差分，加 `--force-par`：
+
+```bash
+luatos-cli fota build --new v2.0.soc --old v1.0.soc --force-par
 ```
 
 ---
