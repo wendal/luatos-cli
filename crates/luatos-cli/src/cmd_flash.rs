@@ -846,6 +846,51 @@ pub fn cmd_flash_test(
     Ok(())
 }
 
+/// 刷写预编译的 script.bin（跳过 Lua 编译）
+/// 适用于用 Luatools 等外部工具编译的脚本镜像
+pub fn cmd_flash_script_bin(
+    soc: &str,
+    port: &str,
+    bin_path: &str,
+    on_progress: &luatos_flash::ProgressCallback,
+) -> anyhow::Result<()> {
+    use std::sync::{atomic::AtomicBool, Arc};
+
+    let script_data = std::fs::read(bin_path)
+        .with_context(|| format!("无法读取脚本镜像: {bin_path}"))?;
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let info = luatos_soc::read_soc_info(soc)?;
+    let chip = info.chip.chip_type.as_str();
+
+    match chip {
+        "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" => {
+            let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), on_progress)?;
+            luatos_flash::ec718::flash_script_ec718(soc, &boot_port, &script_data, on_progress, cancel)?;
+        }
+        "air1601" | "air1602" | "ccm4211" => {
+            luatos_flash::ccm4211::flash_script_ccm4211(soc, port, &script_data, on_progress, cancel)?;
+        }
+        _ => {
+            anyhow::bail!("--bin script flash not supported for chip '{chip}'. Use 'flash script' with --script folders instead.");
+        }
+    }
+
+    Ok(())
+}
+
+pub fn print_script_result(format: &OutputFormat) -> anyhow::Result<()> {
+    match format {
+        OutputFormat::Text => {
+            println!("Script flash completed successfully.");
+        }
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            event::emit_result(format, "flash.script", "ok", serde_json::json!({}))?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

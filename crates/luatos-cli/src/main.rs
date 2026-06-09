@@ -247,6 +247,9 @@ enum FlashCommands {
         /// Script folders containing .lua files (can specify multiple)
         #[arg(long)]
         script: Vec<String>,
+        /// Pre-compiled script.bin (skip Lua compilation, use external tool like Luatools)
+        #[arg(long)]
+        bin: Option<String>,
         /// 自动控制 DTR/RTS 进入/退出 ROM BL（适用于 CH340X 增强 DTR 改装硬件，仅 SF32LB58）
         #[arg(long)]
         auto_reset: bool,
@@ -711,24 +714,32 @@ fn main() {
                 port,
                 baud,
                 script,
+                bin,
                 auto_reset,
                 dtr_boot,
                 rts_reset,
                 reset_ms,
                 boot_wait_ms,
             } => {
-                let reset_config = if auto_reset {
-                    Some(luatos_flash::sf32lb5x::Sf32ResetConfig {
-                        dtr_boot: dtr_boot.as_bool(),
-                        rts_reset: rts_reset.as_bool(),
-                        reset_ms,
-                        boot_wait_ms,
-                        ..Default::default()
-                    })
+                if let Some(bin_path) = bin {
+                    let on_progress = cmd_flash::make_progress_callback(&cli.format, "flash.script".to_string(), progress_step);
+                    cmd_flash::cmd_flash_script_bin(&soc, &port, &bin_path, &on_progress)
+                        .and_then(|_| cmd_flash::print_script_result(&cli.format))
                 } else {
-                    None
-                };
-                cmd_flash::cmd_flash_partition("script", &soc, &port, Some(&script), progress_step, &cli.format, reset_config, baud)
+                    let reset_config = if auto_reset {
+                        Some(luatos_flash::sf32lb5x::Sf32ResetConfig {
+                            dtr_boot: dtr_boot.as_bool(),
+                            rts_reset: rts_reset.as_bool(),
+                            reset_ms,
+                            boot_wait_ms,
+                            ..Default::default()
+                        })
+                    } else {
+                        None
+                    };
+                    let script_opt: Option<&[String]> = if script.is_empty() { None } else { Some(script.as_slice()) };
+                    cmd_flash::cmd_flash_partition("script", &soc, &port, script_opt, progress_step, &cli.format, reset_config, baud)
+                }
             }
             FlashCommands::ClearFs { soc, port } => cmd_flash::cmd_flash_partition("clear-fs", &soc, &port, None, progress_step, &cli.format, None, None),
             FlashCommands::FlashFs { soc, port, script } => cmd_flash::cmd_flash_partition("flash-fs", &soc, &port, Some(&script), progress_step, &cli.format, None, None),
