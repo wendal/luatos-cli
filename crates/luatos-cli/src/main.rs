@@ -661,10 +661,6 @@ enum FotaCommands {
         /// Build a script-only FOTA package (EC7xx/Air8000, Air1601/Air1602/CCM4211, BK72XX)
         #[arg(long)]
         script_only: bool,
-        /// Force differential FOTA even when old/new binpkg underlying firmware matches
-        /// (skip the auto-fallback to --script-only for EC7xx/Air8000/Air780E)
-        #[arg(long, default_value_t = false)]
-        force_par: bool,
     },
 }
 
@@ -883,7 +879,6 @@ fn main() {
                 fota_toolkit,
                 soc_tools,
                 script_only,
-                force_par,
             } => cmd_fota::cmd_fota_build(
                 &new,
                 old.as_deref(),
@@ -891,7 +886,6 @@ fn main() {
                 fota_toolkit.as_deref(),
                 soc_tools.as_deref(),
                 script_only,
-                force_par,
                 &cli.format,
             ),
         },
