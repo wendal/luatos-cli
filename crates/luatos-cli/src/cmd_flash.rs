@@ -3,6 +3,7 @@ use anyhow::Context;
 use crate::{
     cmd_log,
     event::{self, MessageLevel},
+    reset_args::ResetArgs,
     OutputFormat,
 };
 
@@ -126,6 +127,7 @@ pub fn cmd_flash_run(
     script_folders: Option<&[String]>,
     step: u8,
     format: &OutputFormat,
+    reset: &ResetArgs,
     reset_config: Option<luatos_flash::sf32lb5x::Sf32ResetConfig>,
     tail_log_secs: u64,
 ) -> anyhow::Result<()> {
@@ -164,6 +166,7 @@ pub fn cmd_flash_run(
             }
         }
         "air6208" | "air101" | "air103" | "air601" => {
+            reset.execute(port)?;
             luatos_flash::xt804::flash_xt804(soc, port, on_progress, cancel)?;
             match format {
                 OutputFormat::Text => {
@@ -255,6 +258,7 @@ pub fn cmd_flash_partition(
     script_folders: Option<&[String]>,
     step: u8,
     format: &OutputFormat,
+    reset: &ResetArgs,
     reset_config: Option<luatos_flash::sf32lb5x::Sf32ResetConfig>,
     baud: Option<u32>,
 ) -> anyhow::Result<()> {
@@ -297,7 +301,9 @@ pub fn cmd_flash_partition(
             }
             _ => unreachable!(),
         },
-        "air6208" | "air101" | "air103" | "air601" => match op {
+        "air6208" | "air101" | "air103" | "air601" => {
+            reset.execute(port)?;
+            match op {
             "script" => {
                 let folders = script_folders.expect("script folder required");
                 let files = collect_script_files(folders)?;
@@ -315,6 +321,7 @@ pub fn cmd_flash_partition(
                 luatos_flash::xt804::clear_kv(soc, port, on_progress, cancel)?;
             }
             _ => unreachable!(),
+        }
         },
         "air1601" | "air1602" | "ccm4211" => match op {
             "script" => {

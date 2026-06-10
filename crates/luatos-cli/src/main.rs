@@ -16,12 +16,14 @@ mod cmd_flash;
 mod cmd_fota;
 mod cmd_guide;
 mod cmd_log;
+mod cmd_pipeline;
 mod cmd_project;
 mod cmd_project_wizard;
 mod cmd_resource;
 mod cmd_serial;
 mod cmd_soc;
 mod event;
+mod reset_args;
 
 const DEFAULT_FLASH_TEST_KEYWORD: &str = "LuatOS@";
 
@@ -90,6 +92,11 @@ enum Commands {
     Log {
         #[command(subcommand)]
         action: LogCommands,
+    },
+    /// Combined workflow commands (flash + reset + log)
+    Pipeline {
+        #[command(subcommand)]
+        action: PipelineCommands,
     },
     /// Project management
     Project {
@@ -214,6 +221,9 @@ enum FlashCommands {
         /// Script folder (optional, can specify multiple)
         #[arg(long)]
         script: Vec<String>,
+        /// RTS reset and boot-wait options
+        #[command(flatten)]
+        reset: reset_args::ResetArgs,
         /// 自动控制 DTR/RTS 进入/退出 ROM BL（适用于 CH340X 增强 DTR 改装硬件，仅 SF32LB58）
         #[arg(long)]
         auto_reset: bool,
@@ -222,13 +232,13 @@ enum FlashCommands {
         dtr_boot: SignalLevel,
         /// 触发复位时 RTS 的电平（high=CH340X RTS#拉低=RESET有效，默认 high）
         #[arg(long, value_enum, default_value = "high")]
-        rts_reset: SignalLevel,
+        sf32_rts_reset: SignalLevel,
         /// 复位脉冲宽度（毫秒，默认 100）
         #[arg(long, default_value = "100")]
         reset_ms: u64,
         /// 进入 boot 后等待 ROM BL 初始化的时长（毫秒，默认 500）
         #[arg(long, default_value = "500")]
-        boot_wait_ms: u64,
+        sf32_boot_wait_ms: u64,
         /// 刷机完成后继续监听串口日志秒数（0=不监听）
         #[arg(long, default_value = "0")]
         tail_log_secs: u64,
@@ -250,6 +260,9 @@ enum FlashCommands {
         /// Pre-compiled script.bin (skip Lua compilation, use external tool like Luatools)
         #[arg(long)]
         bin: Option<String>,
+        /// RTS reset and boot-wait options
+        #[command(flatten)]
+        reset: reset_args::ResetArgs,
         /// 自动控制 DTR/RTS 进入/退出 ROM BL（适用于 CH340X 增强 DTR 改装硬件，仅 SF32LB58）
         #[arg(long)]
         auto_reset: bool,
@@ -258,13 +271,13 @@ enum FlashCommands {
         dtr_boot: SignalLevel,
         /// 触发复位时 RTS 的电平（high=CH340X RTS#拉低=RESET有效，默认 high）
         #[arg(long, value_enum, default_value = "high")]
-        rts_reset: SignalLevel,
+        sf32_rts_reset: SignalLevel,
         /// 复位脉冲宽度（毫秒，默认 100）
         #[arg(long, default_value = "100")]
         reset_ms: u64,
         /// 进入 boot 后等待 ROM BL 初始化的时长（毫秒，默认 500）
         #[arg(long, default_value = "500")]
-        boot_wait_ms: u64,
+        sf32_boot_wait_ms: u64,
     },
     /// Clear filesystem partition (erase to 0xFF)
     ClearFs {
@@ -274,6 +287,9 @@ enum FlashCommands {
         /// Serial port (e.g. COM6)
         #[arg(long)]
         port: String,
+        /// RTS reset and boot-wait options
+        #[command(flatten)]
+        reset: reset_args::ResetArgs,
     },
     /// Build LuaDB and flash to filesystem partition
     FlashFs {
@@ -286,6 +302,9 @@ enum FlashCommands {
         /// Script folders containing files to pack (can specify multiple)
         #[arg(long)]
         script: Vec<String>,
+        /// RTS reset and boot-wait options
+        #[command(flatten)]
+        reset: reset_args::ResetArgs,
     },
     /// Clear FSKV (key-value store) partition
     ClearKv {
@@ -298,6 +317,9 @@ enum FlashCommands {
         /// 刷写波特率（stub 加载后协商，仅 SF32LB58；默认不切换）
         #[arg(long)]
         baud: Option<u32>,
+        /// RTS reset and boot-wait options
+        #[command(flatten)]
+        reset: reset_args::ResetArgs,
         /// 自动控制 DTR/RTS 进入/退出 ROM BL（适用于 CH340X 增强 DTR 改装硬件，仅 SF32LB58）
         #[arg(long)]
         auto_reset: bool,
@@ -306,13 +328,13 @@ enum FlashCommands {
         dtr_boot: SignalLevel,
         /// 触发复位时 RTS 的电平（high=CH340X RTS#拉低=RESET有效，默认 high）
         #[arg(long, value_enum, default_value = "high")]
-        rts_reset: SignalLevel,
+        sf32_rts_reset: SignalLevel,
         /// 复位脉冲宽度（毫秒，默认 100）
         #[arg(long, default_value = "100")]
         reset_ms: u64,
         /// 进入 boot 后等待 ROM BL 初始化的时长（毫秒，默认 500）
         #[arg(long, default_value = "500")]
-        boot_wait_ms: u64,
+        sf32_boot_wait_ms: u64,
     },
     /// Air6201 external SPI flash programming (write to script/fskv/lfs partition)
     ExtFlash {
@@ -390,12 +412,9 @@ enum LogCommands {
         /// Enable smart analysis: auto-detect common issues and show suggestions
         #[arg(long)]
         smart: bool,
-        /// 通过 RTS 脚复位模组后再开始采集日志（用于捕获开机日志）
-        #[arg(long)]
-        rts_reset: bool,
-        /// RTS 复位脉冲宽度（毫秒，默认 100）
-        #[arg(long, default_value = "100")]
-        rts_reset_ms: u64,
+        /// RTS reset and boot-wait options
+        #[command(flatten)]
+        reset: reset_args::ResetArgs,
     },
     /// View serial log in binary SOC mode (Air1601/Air1602, Air8000/EC718, etc.)
     ViewBinary {
@@ -414,12 +433,9 @@ enum LogCommands {
         /// Enable smart analysis: auto-detect common issues and show suggestions
         #[arg(long)]
         smart: bool,
-        /// 通过 RTS 脚复位模组后再开始采集日志（用于捕获开机日志）
-        #[arg(long)]
-        rts_reset: bool,
-        /// RTS 复位脉冲宽度（毫秒，默认 100）
-        #[arg(long, default_value = "100")]
-        rts_reset_ms: u64,
+        /// RTS reset and boot-wait options
+        #[command(flatten)]
+        reset: reset_args::ResetArgs,
     },
     /// Record serial log to file
     Record {
@@ -440,6 +456,34 @@ enum LogCommands {
     Parse {
         /// Path to log file
         path: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum PipelineCommands {
+    /// Flash firmware, automatically reset device, then view logs
+    FlashLog {
+        /// Path to .soc firmware file
+        #[arg(long)]
+        soc: String,
+        /// Serial port (e.g. COM6)
+        #[arg(long)]
+        port: String,
+        /// Baud rate for log capture (default 2000000)
+        #[arg(long, default_value = "2000000")]
+        baud: u32,
+        /// Send probe to trigger binary log output
+        #[arg(long)]
+        probe: bool,
+        /// Enable smart diagnostic analysis
+        #[arg(long)]
+        smart: bool,
+        /// Save raw binary log to directory
+        #[arg(long)]
+        save: Option<String>,
+
+        #[command(flatten)]
+        reset: reset_args::ResetArgs,
     },
 }
 
@@ -704,26 +748,27 @@ fn main() {
                 port,
                 baud,
                 script,
+                reset,
                 auto_reset,
                 dtr_boot,
-                rts_reset,
+                sf32_rts_reset,
                 reset_ms,
-                boot_wait_ms,
+                sf32_boot_wait_ms,
                 tail_log_secs,
             } => {
                 let script_opt = if script.is_empty() { None } else { Some(script.as_slice()) };
                 let reset_config = if auto_reset {
                     Some(luatos_flash::sf32lb5x::Sf32ResetConfig {
                         dtr_boot: dtr_boot.as_bool(),
-                        rts_reset: rts_reset.as_bool(),
+                        rts_reset: sf32_rts_reset.as_bool(),
                         reset_ms,
-                        boot_wait_ms,
+                        boot_wait_ms: sf32_boot_wait_ms,
                         ..Default::default()
                     })
                 } else {
                     None
                 };
-                cmd_flash::cmd_flash_run(&soc, &port, baud, script_opt, progress_step, &cli.format, reset_config, tail_log_secs)
+                cmd_flash::cmd_flash_run(&soc, &port, baud, script_opt, progress_step, &cli.format, &reset, reset_config, tail_log_secs)
             }
             FlashCommands::Script {
                 soc,
@@ -731,11 +776,12 @@ fn main() {
                 baud,
                 script,
                 bin,
+                reset,
                 auto_reset,
                 dtr_boot,
-                rts_reset,
+                sf32_rts_reset,
                 reset_ms,
-                boot_wait_ms,
+                sf32_boot_wait_ms,
             } => {
                 if let Some(bin_path) = bin {
                     let on_progress = cmd_flash::make_progress_callback(&cli.format, "flash.script".to_string(), progress_step);
@@ -745,42 +791,43 @@ fn main() {
                     let reset_config = if auto_reset {
                         Some(luatos_flash::sf32lb5x::Sf32ResetConfig {
                             dtr_boot: dtr_boot.as_bool(),
-                            rts_reset: rts_reset.as_bool(),
+                            rts_reset: sf32_rts_reset.as_bool(),
                             reset_ms,
-                            boot_wait_ms,
+                            boot_wait_ms: sf32_boot_wait_ms,
                             ..Default::default()
                         })
                     } else {
                         None
                     };
                     let script_opt: Option<&[String]> = if script.is_empty() { None } else { Some(script.as_slice()) };
-                    cmd_flash::cmd_flash_partition("script", &soc, &port, script_opt, progress_step, &cli.format, reset_config, baud)
+                    cmd_flash::cmd_flash_partition("script", &soc, &port, script_opt, progress_step, &cli.format, &reset, reset_config, baud)
                 }
             }
-            FlashCommands::ClearFs { soc, port } => cmd_flash::cmd_flash_partition("clear-fs", &soc, &port, None, progress_step, &cli.format, None, None),
-            FlashCommands::FlashFs { soc, port, script } => cmd_flash::cmd_flash_partition("flash-fs", &soc, &port, Some(&script), progress_step, &cli.format, None, None),
+            FlashCommands::ClearFs { soc, port, reset } => cmd_flash::cmd_flash_partition("clear-fs", &soc, &port, None, progress_step, &cli.format, &reset, None, None),
+            FlashCommands::FlashFs { soc, port, script, reset } => cmd_flash::cmd_flash_partition("flash-fs", &soc, &port, Some(&script), progress_step, &cli.format, &reset, None, None),
             FlashCommands::ClearKv {
                 soc,
                 port,
                 baud,
+                reset,
                 auto_reset,
                 dtr_boot,
-                rts_reset,
+                sf32_rts_reset,
                 reset_ms,
-                boot_wait_ms,
+                sf32_boot_wait_ms,
             } => {
                 let reset_config = if auto_reset {
                     Some(luatos_flash::sf32lb5x::Sf32ResetConfig {
                         dtr_boot: dtr_boot.as_bool(),
-                        rts_reset: rts_reset.as_bool(),
+                        rts_reset: sf32_rts_reset.as_bool(),
                         reset_ms,
-                        boot_wait_ms,
+                        boot_wait_ms: sf32_boot_wait_ms,
                         ..Default::default()
                     })
                 } else {
                     None
                 };
-                cmd_flash::cmd_flash_partition("clear-kv", &soc, &port, None, progress_step, &cli.format, reset_config, baud)
+                cmd_flash::cmd_flash_partition("clear-kv", &soc, &port, None, progress_step, &cli.format, &reset, reset_config, baud)
             }
             FlashCommands::ExtFlash {
                 port,
@@ -806,10 +853,30 @@ fn main() {
             }
         },
         Commands::Log { action } => match action {
-            LogCommands::View { port, baud, smart, rts_reset, rts_reset_ms } => cmd_log::cmd_log_view(&port, baud, smart, rts_reset, rts_reset_ms, &cli.format),
-            LogCommands::ViewBinary { port, baud, probe, save, smart, rts_reset, rts_reset_ms } => cmd_log::cmd_log_view_binary(&port, baud, probe, save.as_deref(), smart, rts_reset, rts_reset_ms, &cli.format),
+            LogCommands::View { port, baud, smart, reset } => cmd_log::cmd_log_view(&port, baud, smart, &reset, &cli.format),
+            LogCommands::ViewBinary { port, baud, probe, save, smart, reset } => cmd_log::cmd_log_view_binary(&port, baud, probe, save.as_deref(), smart, &reset, &cli.format),
             LogCommands::Record { port, baud, output, json } => cmd_log::cmd_log_record(&port, baud, &output, json, &cli.format),
             LogCommands::Parse { path } => cmd_log::cmd_log_parse(&path, &cli.format),
+        },
+        Commands::Pipeline { action } => match action {
+            PipelineCommands::FlashLog {
+                soc,
+                port,
+                baud,
+                probe,
+                smart,
+                save,
+                reset,
+            } => cmd_pipeline::cmd_pipeline_flash_log(
+                &soc,
+                &port,
+                baud,
+                probe,
+                smart,
+                save.as_deref(),
+                &reset,
+                &cli.format,
+            ),
         },
         Commands::Project { action } => match action {
             ProjectCommands::Wizard {
