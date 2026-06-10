@@ -199,6 +199,31 @@ pub fn stream_binary(port_name: &str, baud_rate: u32, stop: Arc<AtomicBool>, on_
     Ok(())
 }
 
+/// 通过 RTS 脚发送复位脉冲，使模组重启。
+///
+/// 典型时序（适用于 CH340X 改装硬件）：
+///   RTS=HIGH（RTS# 拉低 → RESET 有效）→ reset_ms → RTS=LOW（RTS# 释放 → RESET 释放）
+///
+/// 函数返回后串口已释放，可重新打开进行日志采集。
+pub fn rts_reset_pulse(port_name: &str, reset_ms: u64) -> anyhow::Result<()> {
+    let mut port = serialport::new(port_name, 115200)
+        .timeout(Duration::from_millis(200))
+        .open()
+        .map_err(|e| anyhow::anyhow!("打开串口 {port_name} 失败（RTS 复位）: {e}"))?;
+
+    // 拉高 RTS 触发复位（CH340X RTS# 为倒相输出：软件 HIGH → 引脚 LOW → RESET 有效）
+    port.write_request_to_send(true)
+        .map_err(|e| anyhow::anyhow!("设置 RTS 失败: {e}"))?;
+    std::thread::sleep(Duration::from_millis(reset_ms));
+
+    // 释放 RTS，模组开始启动
+    port.write_request_to_send(false)
+        .map_err(|e| anyhow::anyhow!("释放 RTS 失败: {e}"))?;
+
+    // port drop → 串口释放
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

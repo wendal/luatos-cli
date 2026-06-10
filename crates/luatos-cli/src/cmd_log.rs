@@ -10,12 +10,22 @@ pub fn resolve_log_mode(chip: &str, requested_baud: u32) -> (bool, bool, u32) {
     (use_binary_log, is_ec718, baud)
 }
 
-pub fn cmd_log_view(port: &str, baud: u32, smart: bool, format: &OutputFormat) -> anyhow::Result<()> {
+#[allow(clippy::too_many_arguments)]
+pub fn cmd_log_view(port: &str, baud: u32, smart: bool, rts_reset: bool, rts_reset_ms: u64, format: &OutputFormat) -> anyhow::Result<()> {
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
     let _ = ctrlc::set_handler(move || {
         stop_clone.store(true, std::sync::atomic::Ordering::Relaxed);
     });
+
+    // RTS 复位脉冲：先复位模组再开始采集，以捕获开机日志
+    if rts_reset {
+        event::emit_message(format, "log.view", MessageLevel::Info, format!("RTS 复位 {port}（脉冲 {rts_reset_ms}ms）..."))?;
+        luatos_serial::rts_reset_pulse(port, rts_reset_ms)?;
+        event::emit_message(format, "log.view", MessageLevel::Info, "复位完成，等待模组启动...")?;
+        // 等待模组启动并开始输出日志
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
 
     event::emit_message(format, "log.view", MessageLevel::Info, format!("Viewing log on {port} @ {baud} bps (Ctrl+C to stop)"))?;
     if smart {
@@ -170,12 +180,22 @@ fn open_new_file(dir: &std::path::Path, port_safe: &str) -> anyhow::Result<(std:
 
 // ─── cmd_log_view_binary ──────────────────────────────────────────────────────
 
-pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, save_dir: Option<&str>, smart: bool, format: &OutputFormat) -> anyhow::Result<()> {
+#[allow(clippy::too_many_arguments)]
+pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, save_dir: Option<&str>, smart: bool, rts_reset: bool, rts_reset_ms: u64, format: &OutputFormat) -> anyhow::Result<()> {
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
     let _ = ctrlc::set_handler(move || {
         stop_clone.store(true, std::sync::atomic::Ordering::Relaxed);
     });
+
+    // RTS 复位脉冲：先复位模组再开始采集，以捕获开机日志
+    if rts_reset {
+        event::emit_message(format, "log.view_binary", MessageLevel::Info, format!("RTS 复位 {port}（脉冲 {rts_reset_ms}ms）..."))?;
+        luatos_serial::rts_reset_pulse(port, rts_reset_ms)?;
+        event::emit_message(format, "log.view_binary", MessageLevel::Info, "复位完成，等待模组启动...")?;
+        // 等待模组启动并开始输出日志
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
 
     // Detect whether an EC718 module is connected (VID=0x19D1)
     let is_ec718 = luatos_flash::ec718::find_ec718_cmd_port().is_some();

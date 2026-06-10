@@ -390,6 +390,12 @@ enum LogCommands {
         /// Enable smart analysis: auto-detect common issues and show suggestions
         #[arg(long)]
         smart: bool,
+        /// 通过 RTS 脚复位模组后再开始采集日志（用于捕获开机日志）
+        #[arg(long)]
+        rts_reset: bool,
+        /// RTS 复位脉冲宽度（毫秒，默认 100）
+        #[arg(long, default_value = "100")]
+        rts_reset_ms: u64,
     },
     /// View serial log in binary SOC mode (Air1601/Air1602, Air8000/EC718, etc.)
     ViewBinary {
@@ -408,6 +414,12 @@ enum LogCommands {
         /// Enable smart analysis: auto-detect common issues and show suggestions
         #[arg(long)]
         smart: bool,
+        /// 通过 RTS 脚复位模组后再开始采集日志（用于捕获开机日志）
+        #[arg(long)]
+        rts_reset: bool,
+        /// RTS 复位脉冲宽度（毫秒，默认 100）
+        #[arg(long, default_value = "100")]
+        rts_reset_ms: u64,
     },
     /// Record serial log to file
     Record {
@@ -794,8 +806,8 @@ fn main() {
             }
         },
         Commands::Log { action } => match action {
-            LogCommands::View { port, baud, smart } => cmd_log::cmd_log_view(&port, baud, smart, &cli.format),
-            LogCommands::ViewBinary { port, baud, probe, save, smart } => cmd_log::cmd_log_view_binary(&port, baud, probe, save.as_deref(), smart, &cli.format),
+            LogCommands::View { port, baud, smart, rts_reset, rts_reset_ms } => cmd_log::cmd_log_view(&port, baud, smart, rts_reset, rts_reset_ms, &cli.format),
+            LogCommands::ViewBinary { port, baud, probe, save, smart, rts_reset, rts_reset_ms } => cmd_log::cmd_log_view_binary(&port, baud, probe, save.as_deref(), smart, rts_reset, rts_reset_ms, &cli.format),
             LogCommands::Record { port, baud, output, json } => cmd_log::cmd_log_record(&port, baud, &output, json, &cli.format),
             LogCommands::Parse { path } => cmd_log::cmd_log_parse(&path, &cli.format),
         },
