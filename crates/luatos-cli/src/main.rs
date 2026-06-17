@@ -896,9 +896,14 @@ fn main() {
         Commands::Doctor { dir } => cmd_doctor::cmd_doctor(&dir, &cli.format),
         Commands::Version => {
             let version = env!("CARGO_PKG_VERSION");
+            let target_os = std::env::consts::OS;
+            let target_arch = std::env::consts::ARCH;
+            let exe_suffix = std::env::consts::EXE_SUFFIX;
             match cli.format {
                 OutputFormat::Text => {
                     println!("luatos-cli v{version}");
+                    println!("target: {target_os}/{target_arch}");
+                    println!("exe_suffix: {}", if exe_suffix.is_empty() { "<none>" } else { exe_suffix });
                 }
                 OutputFormat::Json | OutputFormat::Jsonl => {
                     if let Err(err) = event::emit_result(
@@ -908,6 +913,9 @@ fn main() {
                         serde_json::json!({
                             "version": version,
                             "name": "luatos-cli",
+                            "target_os": target_os,
+                            "target_arch": target_arch,
+                            "exe_suffix": exe_suffix,
                         }),
                     ) {
                         eprintln!("Error: {err:#}");
