@@ -434,6 +434,13 @@ fn resolve_common_scripts(args: &TrunRunArgs, root: &Path) -> Option<PathBuf> {
     }
 }
 
+/// 注册 ctrl-c handler, 失败时静默忽略。
+///
+/// 同一进程内第二次注册 ctrlc handler 会得到 `Error::MultipleHandlers`,
+/// 在 `trun` 流里 `cmd_flash_run` 也会注册, 这边先到先得。
+/// 外部 `cancel` 仍然能被 `cmd_flash_run` 自己的 stop atomic 间接触发
+/// (因为两者都响应 ctrl-c); 而 trun 自己的 cancel 在 flash 完成后
+/// 不再用, 所以这是安全降级。
 fn install_ctrlc(format: &OutputFormat, cancel: Arc<AtomicBool>) {
     let f = *format;
     let c = cancel.clone();
@@ -515,30 +522,23 @@ fn flash_device(args: &TrunRunArgs, script_bin_path: &Path, combined_soc: Option
     Ok(Vec::new())
 }
 
-fn capture_log(args: &TrunRunArgs, boot_lines: &[String], timeout: u64, _format: &OutputFormat, cancel: &Arc<AtomicBool>) -> Result<(Vec<String>, Vec<SmartDiagnosticEntry>)> {
-    let (_use_binary, is_ec718, log_br) = {
-        let info = luatos_soc::read_soc_info(&args.soc)?;
-        cmd_log::resolve_log_mode(info.chip.chip_type.as_str(), info.log_baud_rate())
-    };
-    let baud = args.baud.unwrap_or(log_br);
-    let log_port = if is_ec718 {
-        match luatos_flash::ec718::wait_for_log_port(15) {
-            Some(p) => p,
-            None => args.port.clone(),
-        }
-    } else {
-        args.port.clone()
-    };
+fn capture_log(args: &TrunRunArgs, _boot_lines: &[String], timeout_secs: u64, format: &OutputFormat, cancel: &Arc<AtomicBool>) -> Result<(Vec<String>, Vec<SmartDiagnosticEntry>)> {
+    let early_kw: Vec<String> = if args.early_exit { args.keywords.clone() } else { Vec::new() };
 
-    let _ = (log_port, baud);
-    let _ = boot_lines;
-    let _ = timeout;
-    let smart_diag: Vec<SmartDiagnosticEntry> = Vec::new();
+    let outcome = cmd_log::capture_log_lines(&args.soc, &args.port, args.baud, timeout_secs, &early_kw, format, cancel).context("capture_log_lines failed")?;
 
-    if cancel.load(Ordering::Relaxed) {
-        return Ok((Vec::new(), smart_diag));
-    }
-    Ok((Vec::new(), smart_diag))
+    let smart_entries: Vec<SmartDiagnosticEntry> = outcome
+        .diagnostics
+        .into_iter()
+        .map(|d| SmartDiagnosticEntry {
+            level: format!("{:?}", d.severity),
+            category: d.rule,
+            message: d.suggestion,
+            count: 1,
+        })
+        .collect();
+
+    Ok((outcome.lines, smart_entries))
 }
 
 fn evaluate_keywords(lines: &[String], keywords: &[String]) -> Vec<KeywordHit> {
@@ -570,4 +570,54 @@ fn emit_outcome(format: &OutputFormat, outcome: &TrunOutcome) -> Result<()> {
     };
     event::emit_result(format, "testcase.run", status, serde_json::to_value(outcome)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_ctrlc_is_idempotent() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        let cancel = Arc::new(AtomicBool::new(false));
+        // 第一次: 模拟 trun 的 install_ctrlc
+        install_ctrlc(&crate::OutputFormat::Text, cancel.clone());
+        // 第二次: 模拟 flash 的 ctrlc::set_handler(...)?  (不带 ?)
+        let res = std::panic::catch_unwind(|| {
+            let c = cancel.clone();
+            let _ = ctrlc::set_handler(move || {
+                c.store(true, std::sync::atomic::Ordering::Relaxed);
+            });
+        });
+        assert!(res.is_ok(), "second set_handler must not panic");
+    }
+
+    #[test]
+    fn capture_log_invalid_soc_returns_err() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        let args = TrunRunArgs {
+            testcase: "x".into(),
+            luatos_root: None,
+            soc: "D:/nonexistent/fake.soc".into(),
+            port: "COM999".into(),
+            baud: None,
+            common_scripts: None,
+            progress_step: 10,
+            reset: crate::reset_args::ResetArgs::default(),
+            full_soc: false,
+            keep_soc: None,
+            keywords: vec![],
+            fail_keywords: vec![],
+            smart: true,
+            timeout: Some(1),
+            early_exit: true,
+            ctx: None,
+            full_ctx: None,
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let res = capture_log(&args, &[], 1, &crate::OutputFormat::Text, &cancel);
+        assert!(res.is_err(), "fake soc should return Err, got {res:?}");
+    }
 }

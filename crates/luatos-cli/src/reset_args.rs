@@ -2,7 +2,7 @@ use clap::Args;
 
 /// Shared reset arguments — can be flattened into any subcommand that needs
 /// to reset the device via RTS before starting its main operation.
-#[derive(Args, Debug, Clone)]
+#[derive(Args, Debug, Clone, Default)]
 pub struct ResetArgs {
     /// Send RTS reset pulse before starting the operation
     #[arg(long)]

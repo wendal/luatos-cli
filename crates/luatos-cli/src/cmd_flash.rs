@@ -134,14 +134,16 @@ pub fn cmd_flash_run(
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let format_clone = *format;
 
-    // Set up Ctrl+C handler
+    // Set up Ctrl+C handler (容错: trun 流程下, trun 已经注册过, 第二次注册返回
+    // Error::MultipleHandlers, 这里静默忽略。单独调用 cmd_flash run 时,
+    // 这是首次注册, 正常生效。)
     let cancel_clone = cancel.clone();
-    ctrlc::set_handler(move || {
+    let _ = ctrlc::set_handler(move || {
         if let Err(e) = event::emit_message(&format_clone, "flash.run", MessageLevel::Warn, "Cancelling flash...") {
             log::warn!("输出取消事件失败: {e}");
         }
         cancel_clone.store(true, std::sync::atomic::Ordering::Relaxed);
-    })?;
+    });
 
     let on_progress = make_progress_callback(format, "flash.run", step);
 
