@@ -1107,8 +1107,6 @@ mod tests {
             "LuatOS@",
             "--fail-keyword",
             "panic",
-            "--python",
-            "python",
         ]);
         let cmd_trun::TrunCommands::Run(args) = action else {
             panic!("期望 Run 分支");
@@ -1119,7 +1117,6 @@ mod tests {
         assert_eq!(args.port, "COM6");
         assert_eq!(args.keywords, vec!["LuatOS@".to_string()]);
         assert_eq!(args.fail_keywords, vec!["panic".to_string()]);
-        assert_eq!(args.python.as_deref(), Some("python"));
         assert!(!args.full_soc);
     }
 
@@ -1169,6 +1166,17 @@ mod tests {
     fn trun_run_removed_listener_args_rejected() {
         // --ctx-listen-port / --ctx-timeout / --no-listener 已随 listener 移除
         for extra in [&["--ctx-listen-port", "0"][..], &["--ctx-timeout", "60"][..], &["--no-listener"][..]] {
+            let mut argv: Vec<&str> = vec!["luatos-cli", "trun", "run", "exftp", "--soc", "x", "--port", "COM6"];
+            argv.extend_from_slice(extra);
+            let result = Cli::try_parse_from(argv);
+            assert!(result.is_err(), "应拒绝已移除参数: {:?}", extra);
+        }
+    }
+
+    #[test]
+    fn trun_run_removed_process_args_rejected() {
+        // --python / --force-preprocess 已随 process/ 子目录钩子移除
+        for extra in [&["--python", "python"][..], &["--force-preprocess"][..]] {
             let mut argv: Vec<&str> = vec!["luatos-cli", "trun", "run", "exftp", "--soc", "x", "--port", "COM6"];
             argv.extend_from_slice(extra);
             let result = Cli::try_parse_from(argv);

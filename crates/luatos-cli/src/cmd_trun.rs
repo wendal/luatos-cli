@@ -1,8 +1,8 @@
 //! `trun` 子命令（test run）
 //!
-//! 一站式完成"读 testcase → 合成 (script.bin + 自动烧入 ctx.json + soc)
-//! → 刷机 → 抓日志 → 关键字校验"，简化 luatos-autotest-v2 在开发期的
-//! 临时合成。
+//! 一站式完成"读 testcase → 合并 ctx.json → 合成 (script.bin 已烧入
+//! ctx.json + 可选 soc) → 刷机 → 抓日志 → 关键字校验"，简化
+//! luatos-autotest-v2 在开发期的临时合成。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -14,7 +14,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
 use serde::Serialize;
 
-use luatos_testcase::{build_ctx, build_script_bin, inject_identifiers, resolve_testcase, run_python_hook, scan_testcases, write_ctx_to_temp, HookContext, ResolvedTestcase};
+use luatos_testcase::{build_ctx, build_script_bin, inject_identifiers, resolve_testcase, scan_testcases, write_ctx_to_temp, ResolvedTestcase};
 
 use crate::cmd_flash;
 use crate::cmd_log;
@@ -115,20 +115,11 @@ pub struct TrunRunArgs {
     /// 完全覆盖 ctx.json（不再合并）
     #[arg(long, value_name = "FILE")]
     pub full_ctx: Option<String>,
-
-    /// Python 解释器路径（preprocess.py / midprocess.py 用）
-    #[arg(long)]
-    pub python: Option<String>,
-
-    /// 强制重跑 preprocess.py
-    #[arg(long)]
-    pub force_preprocess: bool,
 }
 
 /// testcase 阶段名（用于 emit_message 的 phase 字段）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
-    Preprocess,
     Build,
     Ctx,
     Flash,
@@ -139,7 +130,6 @@ pub enum Phase {
 impl Phase {
     pub fn as_str(self) -> &'static str {
         match self {
-            Phase::Preprocess => "preprocess",
             Phase::Build => "build",
             Phase::Ctx => "ctx",
             Phase::Flash => "flash",
@@ -197,7 +187,6 @@ pub struct ArtifactSummary {
     pub script_bin: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub combined_soc: Option<String>,
-    pub ctx_json: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keep_dir: Option<String>,
 }
@@ -305,12 +294,6 @@ fn cmd_trun_validate(testcase: &str, luatos_root: Option<&str>, format: &OutputF
                 "timeout: {}s, priority: {}, action_count: {}",
                 resolved.metas.timeout, resolved.metas.priority, resolved.metas.action_count
             );
-            if let Some(pp) = &resolved.preprocess_py {
-                println!("preprocess: {}", pp.display());
-            }
-            if let Some(mp) = &resolved.midprocess_py {
-                println!("midprocess: {}", mp.display());
-            }
         }
         OutputFormat::Json | OutputFormat::Jsonl => {
             event::emit_result(
@@ -324,8 +307,6 @@ fn cmd_trun_validate(testcase: &str, luatos_root: Option<&str>, format: &OutputF
                     "description": resolved.metas.description,
                     "timeout": resolved.metas.timeout,
                     "priority": resolved.metas.priority,
-                    "has_preprocess": resolved.preprocess_py.is_some(),
-                    "has_midprocess": resolved.midprocess_py.is_some(),
                 }),
             )?;
         }
@@ -358,42 +339,33 @@ pub fn cmd_trun_run(args: &TrunRunArgs, format: &OutputFormat) -> Result<Verdict
 
     let timeout = args.timeout.unwrap_or(resolved.metas.timeout);
 
-    // 4. 阶段：preprocess
-    let start = Instant::now();
-    let ctx_path = std::env::temp_dir().join("luatos_testcase_ctx.json");
-    if resolved.preprocess_py.is_some() {
-        let ctx = run_preprocess(args, &resolved, &ctx_path)?;
-        std::fs::write(&ctx_path, serde_json::to_string_pretty(&ctx)?).context("failed to write ctx.json after preprocess")?;
-    }
-    phase_durations.insert(Phase::Preprocess.as_str().to_string(), start.elapsed().as_millis() as u64);
-
-    // 5. 阶段：ctx（合并 + 注入 test_id，**不**起 HTTP 监听器）
+    // 4. 阶段：ctx（合并 + 注入 test_id，**不**起 HTTP 监听器）
     let start = Instant::now();
     let common_scripts = resolve_common_scripts(args, &root);
     let built_ctx = prepare_ctx(args, &root, common_scripts.as_deref())?;
     let ctx_test_id = built_ctx.test_id.clone();
     phase_durations.insert(Phase::Ctx.as_str().to_string(), start.elapsed().as_millis() as u64);
 
-    // 6. 阶段：build（自动把 ctx.json 烧入 script.bin）
+    // 5. 阶段：build（自动把 ctx.json 烧入 script.bin）
     let start = Instant::now();
     let script_bin = build_script_image(args, &resolved, &chip, &built_ctx.value)?;
     let script_bin_path = write_script_bin(&script_bin, args.keep_soc.as_deref())?;
     let combined_soc = if args.full_soc { Some(combine_soc(args, &script_bin, &soc_info)?) } else { None };
     phase_durations.insert(Phase::Build.as_str().to_string(), start.elapsed().as_millis() as u64);
 
-    // 7. 阶段：flash
+    // 6. 阶段：flash
     let start = Instant::now();
     let boot_lines = flash_device(args, &script_bin_path, combined_soc.as_deref(), format, &cancel)?;
     phase_durations.insert(Phase::Flash.as_str().to_string(), start.elapsed().as_millis() as u64);
 
-    // 8. 阶段：log_capture
+    // 7. 阶段：log_capture
     let start = Instant::now();
     let (extra_lines, smart_diag) = capture_log(args, &boot_lines, timeout, format, &cancel)?;
     let mut all_lines = boot_lines;
     all_lines.extend(extra_lines);
     phase_durations.insert(Phase::LogCapture.as_str().to_string(), start.elapsed().as_millis() as u64);
 
-    // 9. 阶段：finalize
+    // 8. 阶段：finalize
     let start = Instant::now();
     let keyword_hits = evaluate_keywords(&all_lines, &keywords);
     let fail_keyword_hits = evaluate_keywords(&all_lines, &fail_keywords);
@@ -422,7 +394,6 @@ pub fn cmd_trun_run(args: &TrunRunArgs, format: &OutputFormat) -> Result<Verdict
         artifacts: ArtifactSummary {
             script_bin: Some(script_bin_path.display().to_string()),
             combined_soc: combined_soc.as_ref().map(|p| p.display().to_string()),
-            ctx_json: ctx_path.display().to_string(),
             keep_dir: args.keep_soc.clone(),
         },
         phase_durations_ms: phase_durations,
@@ -470,37 +441,6 @@ fn install_ctrlc(format: &OutputFormat, cancel: Arc<AtomicBool>) {
         let _ = event::emit_message(&f, "testcase.run", MessageLevel::Warn, "Cancelling testcase run...");
         c.store(true, Ordering::Relaxed);
     });
-}
-
-fn run_preprocess(args: &TrunRunArgs, resolved: &ResolvedTestcase, ctx_path: &Path) -> Result<serde_json::Value> {
-    let pp = resolved.preprocess_py.as_ref().expect("called only when preprocess exists");
-    let python = args.python.as_ref().map(PathBuf::from).with_context(|| "preprocess.py 存在但未指定 --python")?;
-    let artifacts = vec![resolved.path.join("scripts").join(".last_preprocess_ts")];
-    let ctx = HookContext {
-        python,
-        script: pp.clone(),
-        testcase_dir: resolved.path.clone(),
-        ctx_path: ctx_path.to_path_buf(),
-        artifacts,
-        script_bin: None,
-        soc: None,
-        timeout_secs: 30,
-        force: args.force_preprocess,
-    };
-    let r = run_python_hook(&ctx).context("preprocess.py 钩子失败")?;
-    event::emit_message(
-        &OutputFormat::Text, // 占位
-        "testcase.run",
-        MessageLevel::Info,
-        format!("preprocess executed={} skip={:?} duration={}ms", r.executed, r.skip_reason, r.duration_ms),
-    )?;
-    // 读取 ctx（preprocess 可能已修改）
-    if ctx_path.exists() {
-        let s = std::fs::read_to_string(ctx_path)?;
-        Ok(serde_json::from_str(&s).context("ctx.json parse failed")?)
-    } else {
-        Ok(serde_json::json!({}))
-    }
 }
 
 fn build_script_image(args: &TrunRunArgs, resolved: &ResolvedTestcase, chip: &str, ctx: &serde_json::Value) -> Result<Vec<u8>> {

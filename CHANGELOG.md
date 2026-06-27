@@ -33,7 +33,6 @@ All notable changes to this project will be documented in this file.
   - `--full-soc` 冷路径：合新 soc 后刷整个固件（默认仅刷 script.bin）
   - `--keep-soc DIR` 保留合成的 script.bin / soc
   - `--ctx FILE` / `--full-ctx FILE` 三档 ctx.json 合并（base → local_ctx.json → --ctx；--full-ctx 短路）
-  - `--python PATH` / `--force-preprocess` Python 钩子（preprocess.py / midprocess.py）
   - `--smart` 启用 SmartAnalyzer 智能诊断（默认开）
 - 退出码：`Pass → 0` / `Fail → 1` / `Indeterminate → 2` / `Error → 3`（Indeterminate 保留以兼容旧脚本；当前 trun 因不监听设备回调，不会产出 Indeterminate）
 - JSON 输出新增字段 `verdict` / `test_id` / `keywords` / `fail_keywords` / `matched_fail_keywords` / `fast_failed` / `phase_durations_ms`
@@ -54,8 +53,18 @@ All notable changes to this project will be documented in this file.
 
 - `build_script_image` 接受 `ctx: &serde_json::Value` 参数，内部调用 `write_ctx_to_temp` 写到临时目录后作为 `ctx_tmp_dir` 传给 `build_script_bin`
 - 设备端 SDK 启动后可 `io.open("/ctx.json")` 拿到 `test_id` / `runner_id` / `runner_mode` / `local_ctx.json` 字段（mqtt.* / wifi_ssid 等）
-- 阶段顺序调整：`preprocess → ctx → build → flash → log_capture → finalize`，保证 ctx 在 build 之前就准备好
+- 阶段顺序调整：`ctx → build → flash → log_capture → finalize`，保证 ctx 在 build 之前就准备好
 - `prepare_ctx` 返回值由 `String`（仅 test_id）改为 `CtxBuildResult`，上层既拿到 test_id 也拿到最终 value 用于烧入
+
+##### trun 移除 process/ 子目录钩子（preprocess.py / midprocess.py）
+
+- 删除 `crates/luatos-testcase/src/hooks.rs`（含 6 个测试）
+- `ResolvedTestcase` 移除 `process_dir` / `preprocess_py` / `midprocess_py` 字段；discovery.rs 不再检测 `process/` 子目录
+- `trun validate` 移除 `preprocess` / `midprocess` 输出行与 `has_preprocess` / `has_midprocess` JSON 字段
+- 移除参数 `--python` / `--force-preprocess`
+- 移除 `trun run` 的 preprocess 阶段、Phase::Preprocess、ArtifactSummary.ctx_json 字段、`run_preprocess` 函数
+- 新增单元测试 `trun_run_removed_process_args_rejected` 确认 `--python` / `--force-preprocess` 已被 clap 拒绝
+- 新增 `discovery::tests::ignores_process_directory` 确认 process/ 子目录被忽略（不阻断 testcase 解析）
 
 #### C ABI 导出 luatos-log（luatos-log-ffi）
 

@@ -50,12 +50,6 @@ pub struct ResolvedTestcase {
     pub scripts_dir: PathBuf,
     /// main.lua 路径
     pub main_lua: PathBuf,
-    /// process 目录（可选）
-    pub process_dir: Option<PathBuf>,
-    /// process/preprocess.py 路径（可选）
-    pub preprocess_py: Option<PathBuf>,
-    /// process/midprocess.py 路径（可选）
-    pub midprocess_py: Option<PathBuf>,
     /// 解析来源
     pub discovery_source: DiscoverySource,
 }
@@ -173,17 +167,6 @@ fn build_resolved(path: &Path, testcase_root: Option<&Path>, source: DiscoverySo
 
     let metas = MetasFile::load(path).with_context(|| format!("failed to load metas in {}", path.display()))?;
 
-    let process_dir = {
-        let p = path.join("process");
-        if p.is_dir() {
-            Some(p)
-        } else {
-            None
-        }
-    };
-    let preprocess_py = process_dir.as_ref().map(|d| d.join("preprocess.py")).filter(|p| p.is_file());
-    let midprocess_py = process_dir.as_ref().map(|d| d.join("midprocess.py")).filter(|p| p.is_file());
-
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
     // category：父目录名。父目录 == testcase_root 时为空字符串。
     let category = match (path.parent(), testcase_root) {
@@ -199,9 +182,6 @@ fn build_resolved(path: &Path, testcase_root: Option<&Path>, source: DiscoverySo
         metas,
         scripts_dir,
         main_lua,
-        process_dir,
-        preprocess_py,
-        midprocess_py,
         discovery_source: source,
     })
 }
@@ -372,7 +352,8 @@ mod tests {
     }
 
     #[test]
-    fn detects_process_hooks() {
+    fn ignores_process_directory() {
+        // process/ 子目录（含 preprocess.py / midprocess.py）不再被识别
         let tmp = TempDir::new().unwrap();
         let tc = make_testcase(tmp.path(), "with_hooks");
         let process = tc.join("process");
@@ -380,8 +361,8 @@ mod tests {
         fs::write(process.join("preprocess.py"), "# preprocess").unwrap();
         fs::write(process.join("midprocess.py"), "# midprocess").unwrap();
 
+        // 仍然能正常解析 testcase,process/ 目录被忽略
         let resolved = resolve_testcase(tc.to_str().unwrap(), tmp.path()).unwrap();
-        assert!(resolved.preprocess_py.is_some());
-        assert!(resolved.midprocess_py.is_some());
+        assert_eq!(resolved.name, "with_hooks");
     }
 }
