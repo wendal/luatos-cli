@@ -45,8 +45,6 @@ indicatif = "0.17"
 crc32fast = "1"
 md-5 = "0.10"
 tokio = { version = "1", features = ["io-util", "macros", "rt-multi-thread", "sync", "net", "time"] }
-axum = "0.7"
-hyper = "1"
 
 [profile.release]
 lto = "fat"

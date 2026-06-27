@@ -20,7 +20,7 @@ All notable changes to this project will be documented in this file.
 
 #### trun 单点调试子命令（取代 luatos-autotest-v2 开发期临时合成）
 
-- 新增 `luatos-cli trun` 子命令（test run），一站式完成「testcase 解析 → 合成 (script.bin + soc) → 刷机 → 抓日志 → 关键字校验 → ctx.json 监听」全流程
+- 新增 `luatos-cli trun` 子命令（test run），一站式完成「testcase 解析 → 合成 (script.bin + 自动烧入 ctx.json + soc) → 刷机 → 抓日志 → 关键字校验」全流程
 - 子命令：
   - `trun <name_or_path>` — 跑一个 testcase（默认行为，支持名称或路径）
   - `trun list [--luatos-root DIR] [--category CAT]` — 列出 LuatOS 仓库下所有 testcase
@@ -33,14 +33,38 @@ All notable changes to this project will be documented in this file.
   - `--full-soc` 冷路径：合新 soc 后刷整个固件（默认仅刷 script.bin）
   - `--keep-soc DIR` 保留合成的 script.bin / soc
   - `--ctx FILE` / `--full-ctx FILE` 三档 ctx.json 合并（base → local_ctx.json → --ctx；--full-ctx 短路）
-  - `--ctx-listen-port N` / `--ctx-timeout N` / `--no-listener` ctx.json 回传监听器
-  - `--python PATH` / `--force-preprocess` Python 钩子（preprocess.py / midprocess.py）
   - `--smart` 启用 SmartAnalyzer 智能诊断（默认开）
-- 退出码：`Pass → 0` / `Fail → 1` / `Indeterminate → 2` / `Error → 3`
-- JSON 输出新增字段 `verdict` / `test_id` / `keywords` / `fail_keywords` / `matched_fail_keywords` / `fast_failed` / `listener` / `phase_durations_ms`
+- 退出码：`Pass → 0` / `Fail → 1` / `Indeterminate → 2` / `Error → 3`（Indeterminate 保留以兼容旧脚本；当前 trun 因不监听设备回调，不会产出 Indeterminate）
+- JSON 输出新增字段 `verdict` / `test_id` / `keywords` / `fail_keywords` / `matched_fail_keywords` / `fast_failed` / `phase_durations_ms`
 - 与 luatos-autotest-v2 兼容性：ctx.json 字段名（`test_id` / `runner_id` / `runner_mode` / `report_url` / `status_url` / `mqtt.*` / `wifi_ssid`）完全兼容；`test_id` 格式 `test_<unix_secs_base36>_<random_hex>` 一致；CLI 的 `runner_id` 用 `cli-<hostname>-<pid>` 后缀避免和 autotest-v2 真实 runner_id 冲突
 - 新增 crate `luatos-testcase` (path crate, lib only) 承载 metas / ctx / discovery / lua_bin / hooks 独立可测逻辑
-- 43 个新增单元测试覆盖 metas 解析、testcase 发现（explicit / 顶层 / 嵌套）、ctx.json 深合并、script.bin 构建、Python 钩子调用；3 个 ctx server 集成测试覆盖 status/result POST 与 test_id 校验
+- 43 个新增单元测试覆盖 metas 解析、testcase 发现（explicit / 顶层 / 嵌套）、ctx.json 深合并、script.bin 构建、Python 钩子调用
+
+##### trun 移除 ctx.json 回传监听器
+
+- 删除 `crates/luatos-cli/src/cmd_trun_ctx_server.rs`（含 3 个集成测试）
+- 移除参数 `--ctx-listen-port` / `--ctx-timeout` / `--no-listener`：当前实现里 listener URL 不会到达设备（ctx.json 未烧入 script.bin），server 起在 127.0.0.1 上永远收不到请求，只是把流程撑到超时
+- 移除 `luatos-cli` 对 `tokio` / `axum` 的依赖（仅此一处使用）
+- 移除 JSON 输出的 `listener` 字段
+- 退出码映射收敛：`Indeterminate` 保留为枚举变体和退出码 2 但不再构造（`Pass=0` / `Fail=1`，`Indeterminate=2` / `Error=3` 为未来保留）
+- 新增单元测试 `trun_run_removed_listener_args_rejected`：确认 `--ctx-listen-port` / `--ctx-timeout` / `--no-listener` 已被 clap 拒绝
+
+##### trun 自动把 ctx.json 烧入 script.bin
+
+- `build_script_image` 接受 `ctx: &serde_json::Value` 参数，内部调用 `write_ctx_to_temp` 写到临时目录后作为 `ctx_tmp_dir` 传给 `build_script_bin`
+- 设备端 SDK 启动后可 `io.open("/ctx.json")` 拿到 `test_id` / `runner_id` / `runner_mode` / `local_ctx.json` 字段（mqtt.* / wifi_ssid 等）
+- 阶段顺序调整：`ctx → build → flash → log_capture → finalize`，保证 ctx 在 build 之前就准备好
+- `prepare_ctx` 返回值由 `String`（仅 test_id）改为 `CtxBuildResult`，上层既拿到 test_id 也拿到最终 value 用于烧入
+
+##### trun 移除 process/ 子目录钩子（preprocess.py / midprocess.py）
+
+- 删除 `crates/luatos-testcase/src/hooks.rs`（含 6 个测试）
+- `ResolvedTestcase` 移除 `process_dir` / `preprocess_py` / `midprocess_py` 字段；discovery.rs 不再检测 `process/` 子目录
+- `trun validate` 移除 `preprocess` / `midprocess` 输出行与 `has_preprocess` / `has_midprocess` JSON 字段
+- 移除参数 `--python` / `--force-preprocess`
+- 移除 `trun run` 的 preprocess 阶段、Phase::Preprocess、ArtifactSummary.ctx_json 字段、`run_preprocess` 函数
+- 新增单元测试 `trun_run_removed_process_args_rejected` 确认 `--python` / `--force-preprocess` 已被 clap 拒绝
+- 新增 `discovery::tests::ignores_process_directory` 确认 process/ 子目录被忽略（不阻断 testcase 解析）
 
 #### C ABI 导出 luatos-log（luatos-log-ffi）
 

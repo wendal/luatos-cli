@@ -1,24 +1,23 @@
 //! `trun` 子命令（test run）
 //!
-//! 一站式完成"读 testcase → 合成 (script.bin + soc) → 刷机 → 抓日志 →
-//! 关键字校验 → ctx.json 监听"，简化 luatos-autotest-v2 在开发期的临时合成。
+//! 一站式完成"读 testcase → 合并 ctx.json → 合成 (script.bin 已烧入
+//! ctx.json + 可选 soc) → 刷机 → 抓日志 → 关键字校验"，简化
+//! luatos-autotest-v2 在开发期的临时合成。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
 use serde::Serialize;
 
-use luatos_testcase::{build_ctx, build_script_bin, inject_identifiers, resolve_testcase, run_python_hook, scan_testcases, DiscoverySource, HookContext, ResolvedTestcase};
+use luatos_testcase::{build_ctx, build_script_bin, inject_identifiers, resolve_testcase, scan_testcases, write_ctx_to_temp, ResolvedTestcase};
 
 use crate::cmd_flash;
 use crate::cmd_log;
-use crate::cmd_trun_ctx_server::{start_ctx_server, CtxEvent, CtxServerHandle};
 use crate::event::{self, MessageLevel};
 use crate::OutputFormat;
 
@@ -116,32 +115,11 @@ pub struct TrunRunArgs {
     /// 完全覆盖 ctx.json（不再合并）
     #[arg(long, value_name = "FILE")]
     pub full_ctx: Option<String>,
-
-    /// ctx.json 回传监听端口（0=随机）
-    #[arg(long, default_value_t = 0)]
-    pub ctx_listen_port: u16,
-
-    /// ctx.json 回传超时秒（默认 = metas.timeout）
-    #[arg(long)]
-    pub ctx_timeout: Option<u64>,
-
-    /// 禁用 ctx.json 监听器
-    #[arg(long)]
-    pub no_listener: bool,
-
-    /// Python 解释器路径（preprocess.py / midprocess.py 用）
-    #[arg(long)]
-    pub python: Option<String>,
-
-    /// 强制重跑 preprocess.py
-    #[arg(long)]
-    pub force_preprocess: bool,
 }
 
 /// testcase 阶段名（用于 emit_message 的 phase 字段）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
-    Preprocess,
     Build,
     Ctx,
     Flash,
@@ -152,7 +130,6 @@ pub enum Phase {
 impl Phase {
     pub fn as_str(self) -> &'static str {
         match self {
-            Phase::Preprocess => "preprocess",
             Phase::Build => "build",
             Phase::Ctx => "ctx",
             Phase::Flash => "flash",
@@ -168,6 +145,9 @@ impl Phase {
 pub enum Verdict {
     Pass,
     Fail,
+    /// 保留以便未来扩展（如 ctx.json 回传重新接回后用于"未收到 result"场景）。
+    /// 当前 trun 不再起监听器，永远不会构造。
+    #[allow(dead_code)]
     Indeterminate,
     #[allow(dead_code)]
     Error,
@@ -200,18 +180,6 @@ pub struct KeywordHit {
     pub found: bool,
 }
 
-/// ctx.json 监听结果
-#[derive(Debug, Clone, Serialize, Default)]
-pub struct ListenerOutcome {
-    pub started: bool,
-    pub port: u16,
-    pub status_received: bool,
-    pub result_received: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub device_payload: Option<serde_json::Value>,
-    pub timed_out: bool,
-}
-
 /// 产物路径汇总
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct ArtifactSummary {
@@ -219,7 +187,6 @@ pub struct ArtifactSummary {
     pub script_bin: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub combined_soc: Option<String>,
-    pub ctx_json: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keep_dir: Option<String>,
 }
@@ -249,7 +216,6 @@ pub struct TrunOutcome {
     pub fail_keywords: Vec<KeywordHit>,
     pub matched_fail_keywords: Vec<String>,
     pub fast_failed: bool,
-    pub listener: ListenerOutcome,
     pub boot_log_count: usize,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub smart_diagnostics: Vec<SmartDiagnosticEntry>,
@@ -328,12 +294,6 @@ fn cmd_trun_validate(testcase: &str, luatos_root: Option<&str>, format: &OutputF
                 "timeout: {}s, priority: {}, action_count: {}",
                 resolved.metas.timeout, resolved.metas.priority, resolved.metas.action_count
             );
-            if let Some(pp) = &resolved.preprocess_py {
-                println!("preprocess: {}", pp.display());
-            }
-            if let Some(mp) = &resolved.midprocess_py {
-                println!("midprocess: {}", mp.display());
-            }
         }
         OutputFormat::Json | OutputFormat::Jsonl => {
             event::emit_result(
@@ -347,8 +307,6 @@ fn cmd_trun_validate(testcase: &str, luatos_root: Option<&str>, format: &OutputF
                     "description": resolved.metas.description,
                     "timeout": resolved.metas.timeout,
                     "priority": resolved.metas.priority,
-                    "has_preprocess": resolved.preprocess_py.is_some(),
-                    "has_midprocess": resolved.midprocess_py.is_some(),
                 }),
             )?;
         }
@@ -362,12 +320,6 @@ pub fn cmd_trun_run(args: &TrunRunArgs, format: &OutputFormat) -> Result<Verdict
     let mut phase_durations: BTreeMap<String, u64> = BTreeMap::new();
     let cancel = Arc::new(AtomicBool::new(false));
     install_ctrlc(format, cancel.clone());
-
-    // 创建 tokio runtime 供 listener 使用
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("failed to create tokio runtime")?;
 
     // 1. 解析 testcase
     let root = resolve_luatos_root(args.luatos_root.as_deref())?;
@@ -387,42 +339,33 @@ pub fn cmd_trun_run(args: &TrunRunArgs, format: &OutputFormat) -> Result<Verdict
 
     let timeout = args.timeout.unwrap_or(resolved.metas.timeout);
 
-    // 4. 阶段：preprocess
+    // 4. 阶段：ctx（合并 + 注入 test_id，**不**起 HTTP 监听器）
     let start = Instant::now();
-    let ctx_path = std::env::temp_dir().join("luatos_testcase_ctx.json");
-    if resolved.preprocess_py.is_some() {
-        let ctx = run_preprocess(args, &resolved, &ctx_path)?;
-        std::fs::write(&ctx_path, serde_json::to_string_pretty(&ctx)?).context("failed to write ctx.json after preprocess")?;
-    }
-    phase_durations.insert(Phase::Preprocess.as_str().to_string(), start.elapsed().as_millis() as u64);
+    let common_scripts = resolve_common_scripts(args, &root);
+    let built_ctx = prepare_ctx(args, &root, common_scripts.as_deref())?;
+    let ctx_test_id = built_ctx.test_id.clone();
+    phase_durations.insert(Phase::Ctx.as_str().to_string(), start.elapsed().as_millis() as u64);
 
-    // 5. 阶段：build
+    // 5. 阶段：build（自动把 ctx.json 烧入 script.bin）
     let start = Instant::now();
-    let script_bin = build_script_image(args, &resolved, &chip)?;
+    let script_bin = build_script_image(args, &resolved, &chip, &built_ctx.value)?;
     let script_bin_path = write_script_bin(&script_bin, args.keep_soc.as_deref())?;
     let combined_soc = if args.full_soc { Some(combine_soc(args, &script_bin, &soc_info)?) } else { None };
     phase_durations.insert(Phase::Build.as_str().to_string(), start.elapsed().as_millis() as u64);
 
-    // 6. 阶段：ctx（合并 + 监听器）
-    let start = Instant::now();
-    let common_scripts = resolve_common_scripts(args, &root);
-    let (ctx_test_id, server_handle) = build_ctx_and_listener(&runtime, args, &root, common_scripts.as_deref())?;
-    phase_durations.insert(Phase::Ctx.as_str().to_string(), start.elapsed().as_millis() as u64);
-
-    // 7. 阶段：flash
+    // 6. 阶段：flash
     let start = Instant::now();
     let boot_lines = flash_device(args, &script_bin_path, combined_soc.as_deref(), format, &cancel)?;
     phase_durations.insert(Phase::Flash.as_str().to_string(), start.elapsed().as_millis() as u64);
 
-    // 8. 阶段：log_capture
+    // 7. 阶段：log_capture
     let start = Instant::now();
-    let log_capture_timeout = args.ctx_timeout.unwrap_or(timeout);
-    let (extra_lines, smart_diag) = capture_log_with_listener(&runtime, args, &boot_lines, server_handle.as_ref(), log_capture_timeout, format, &cancel)?;
+    let (extra_lines, smart_diag) = capture_log(args, &boot_lines, timeout, format, &cancel)?;
     let mut all_lines = boot_lines;
     all_lines.extend(extra_lines);
     phase_durations.insert(Phase::LogCapture.as_str().to_string(), start.elapsed().as_millis() as u64);
 
-    // 9. 阶段：finalize
+    // 8. 阶段：finalize
     let start = Instant::now();
     let keyword_hits = evaluate_keywords(&all_lines, &keywords);
     let fail_keyword_hits = evaluate_keywords(&all_lines, &fail_keywords);
@@ -430,9 +373,7 @@ pub fn cmd_trun_run(args: &TrunRunArgs, format: &OutputFormat) -> Result<Verdict
     let fast_failed = !matched_fail_keywords.is_empty();
     let all_passed = keyword_hits.iter().all(|h| h.found) && !fast_failed;
 
-    let listener_outcome = build_listener_outcome(server_handle.as_ref());
-
-    let verdict = derive_verdict(all_passed, fast_failed, &listener_outcome);
+    let verdict = derive_verdict(all_passed, fast_failed);
     phase_durations.insert(Phase::Finalize.as_str().to_string(), start.elapsed().as_millis() as u64);
     let outcome = TrunOutcome {
         verdict: verdict.clone(),
@@ -448,13 +389,11 @@ pub fn cmd_trun_run(args: &TrunRunArgs, format: &OutputFormat) -> Result<Verdict
         fail_keywords: fail_keyword_hits,
         matched_fail_keywords,
         fast_failed,
-        listener: listener_outcome,
         boot_log_count: all_lines.len(),
         smart_diagnostics: smart_diag,
         artifacts: ArtifactSummary {
             script_bin: Some(script_bin_path.display().to_string()),
             combined_soc: combined_soc.as_ref().map(|p| p.display().to_string()),
-            ctx_json: ctx_path.display().to_string(),
             keep_dir: args.keep_soc.clone(),
         },
         phase_durations_ms: phase_durations,
@@ -504,41 +443,14 @@ fn install_ctrlc(format: &OutputFormat, cancel: Arc<AtomicBool>) {
     });
 }
 
-fn run_preprocess(args: &TrunRunArgs, resolved: &ResolvedTestcase, ctx_path: &Path) -> Result<serde_json::Value> {
-    let pp = resolved.preprocess_py.as_ref().expect("called only when preprocess exists");
-    let python = args.python.as_ref().map(PathBuf::from).with_context(|| "preprocess.py 存在但未指定 --python")?;
-    let artifacts = vec![resolved.path.join("scripts").join(".last_preprocess_ts")];
-    let ctx = HookContext {
-        python,
-        script: pp.clone(),
-        testcase_dir: resolved.path.clone(),
-        ctx_path: ctx_path.to_path_buf(),
-        artifacts,
-        script_bin: None,
-        soc: None,
-        timeout_secs: 30,
-        force: args.force_preprocess,
-    };
-    let r = run_python_hook(&ctx).context("preprocess.py 钩子失败")?;
-    event::emit_message(
-        &OutputFormat::Text, // 占位
-        "testcase.run",
-        MessageLevel::Info,
-        format!("preprocess executed={} skip={:?} duration={}ms", r.executed, r.skip_reason, r.duration_ms),
-    )?;
-    // 读取 ctx（preprocess 可能已修改）
-    if ctx_path.exists() {
-        let s = std::fs::read_to_string(ctx_path)?;
-        Ok(serde_json::from_str(&s).context("ctx.json parse failed")?)
-    } else {
-        Ok(serde_json::json!({}))
-    }
-}
-
-fn build_script_image(args: &TrunRunArgs, resolved: &ResolvedTestcase, chip: &str) -> Result<Vec<u8>> {
+fn build_script_image(args: &TrunRunArgs, resolved: &ResolvedTestcase, chip: &str, ctx: &serde_json::Value) -> Result<Vec<u8>> {
     let common = resolve_common_scripts(args, &resolve_luatos_root(args.luatos_root.as_deref())?);
     let script_dirs: Vec<&Path> = vec![resolved.scripts_dir.as_path()];
-    let image = build_script_bin(&script_dirs, common.as_deref(), None, chip).context("build script.bin 失败")?;
+    // 把 ctx.json 写到临时目录,让 build_script_bin 把它当一个 src 目录合并进 script.bin
+    // 这样设备端 SDK 启动后就能 io.open("/ctx.json") 拿到 test_id/runner_id/runner_mode 等字段
+    let (ctx_tmp, _ctx_path) = write_ctx_to_temp(ctx).context("write ctx.json to temp failed")?;
+    let image = build_script_bin(&script_dirs, common.as_deref(), Some(ctx_tmp.path()), chip).context("build script.bin 失败")?;
+    // ctx_tmp 在此处 drop, 但 image 已复制到内存
     Ok(image)
 }
 
@@ -575,27 +487,14 @@ fn combine_soc(args: &TrunRunArgs, script_bin: &[u8], soc_info: &luatos_soc::Soc
     Ok(out)
 }
 
-fn build_ctx_and_listener(runtime: &tokio::runtime::Runtime, args: &TrunRunArgs, root: &Path, _common_scripts: Option<&Path>) -> Result<(String, Option<CtxServerHandle>)> {
+fn prepare_ctx(args: &TrunRunArgs, root: &Path, _common_scripts: Option<&Path>) -> Result<luatos_testcase::CtxBuildResult> {
     let mut built = merge_ctx_layers(args, root)?;
-    let test_id = built.test_id.clone();
-    if !args.no_listener {
-        let handle = start_listener(runtime, args.ctx_listen_port, &test_id)?;
-        let port = handle.port;
-        built.listen_port = port;
-        let report = format!("http://127.0.0.1:{port}/result");
-        let status = format!("http://127.0.0.1:{port}/status");
-        inject_identifiers(&mut built, Some((report.as_str(), status.as_str())));
-        return Ok((test_id, Some(handle)));
-    }
-    Ok((test_id, None))
+    inject_identifiers(&mut built, None);
+    Ok(built)
 }
 
 fn merge_ctx_layers(args: &TrunRunArgs, root: &Path) -> Result<luatos_testcase::CtxBuildResult> {
     build_ctx(root, None, args.ctx.as_deref().map(Path::new), args.full_ctx.as_deref().map(Path::new), 0)
-}
-
-fn start_listener(runtime: &tokio::runtime::Runtime, port: u16, test_id: &str) -> Result<CtxServerHandle> {
-    runtime.block_on(start_ctx_server(port, test_id.to_string()))
 }
 
 fn flash_device(args: &TrunRunArgs, script_bin_path: &Path, combined_soc: Option<&Path>, format: &OutputFormat, cancel: &Arc<AtomicBool>) -> Result<Vec<String>> {
@@ -616,15 +515,7 @@ fn flash_device(args: &TrunRunArgs, script_bin_path: &Path, combined_soc: Option
     Ok(Vec::new())
 }
 
-fn capture_log_with_listener(
-    _runtime: &tokio::runtime::Runtime,
-    args: &TrunRunArgs,
-    boot_lines: &[String],
-    server_handle: Option<&CtxServerHandle>,
-    timeout: u64,
-    _format: &OutputFormat,
-    cancel: &Arc<AtomicBool>,
-) -> Result<(Vec<String>, Vec<SmartDiagnosticEntry>)> {
+fn capture_log(args: &TrunRunArgs, boot_lines: &[String], timeout: u64, _format: &OutputFormat, cancel: &Arc<AtomicBool>) -> Result<(Vec<String>, Vec<SmartDiagnosticEntry>)> {
     let (_use_binary, is_ec718, log_br) = {
         let info = luatos_soc::read_soc_info(&args.soc)?;
         cmd_log::resolve_log_mode(info.chip.chip_type.as_str(), info.log_baud_rate())
@@ -640,35 +531,14 @@ fn capture_log_with_listener(
     };
 
     let _ = (log_port, baud);
-
-    let collected_lines: Vec<String> = if let Some(handle) = server_handle {
-        wait_for_listener_result(handle, Duration::from_secs(timeout), cancel)?
-    } else {
-        Vec::new()
-    };
-
     let _ = boot_lines;
+    let _ = timeout;
     let smart_diag: Vec<SmartDiagnosticEntry> = Vec::new();
 
     if cancel.load(Ordering::Relaxed) {
-        return Ok((collected_lines, smart_diag));
+        return Ok((Vec::new(), smart_diag));
     }
-    Ok((collected_lines, smart_diag))
-}
-
-/// 同步轮询 listener events 直到收到 result 或超时
-fn wait_for_listener_result(handle: &CtxServerHandle, timeout: Duration, cancel: &Arc<AtomicBool>) -> Result<Vec<String>> {
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if cancel.load(Ordering::Relaxed) {
-            break;
-        }
-        if handle.first_result().is_some() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    Ok(Vec::new())
+    Ok((Vec::new(), smart_diag))
 }
 
 fn evaluate_keywords(lines: &[String], keywords: &[String]) -> Vec<KeywordHit> {
@@ -681,44 +551,12 @@ fn evaluate_keywords(lines: &[String], keywords: &[String]) -> Vec<KeywordHit> {
         .collect()
 }
 
-fn build_listener_outcome(handle: Option<&CtxServerHandle>) -> ListenerOutcome {
-    let mut out = ListenerOutcome::default();
-    if let Some(h) = handle {
-        out.started = true;
-        out.port = h.port;
-        out.status_received = h.has_status();
-        if let Some(CtxEvent::Result { test_id: _, ok, message, raw }) = h.first_result() {
-            let _ = ok;
-            out.result_received = true;
-            let mut payload = raw.clone();
-            if let Some(m) = message {
-                if let Some(obj) = payload.as_object_mut() {
-                    obj.insert("message".to_string(), serde_json::Value::String(m.clone()));
-                }
-            }
-            out.device_payload = Some(payload);
-        }
-    }
-    out
-}
-
-fn derive_verdict(all_passed: bool, fast_failed: bool, listener: &ListenerOutcome) -> Verdict {
+fn derive_verdict(all_passed: bool, fast_failed: bool) -> Verdict {
     if fast_failed {
         return Verdict::Fail;
     }
     if !all_passed {
         return Verdict::Fail;
-    }
-    if listener.started && !listener.result_received {
-        // listener 已启动但超时未收到 → Indeterminate
-        return Verdict::Indeterminate;
-    }
-    if let Some(p) = &listener.device_payload {
-        if let Some(ok) = p.get("ok").and_then(|v| v.as_bool()) {
-            if !ok {
-                return Verdict::Fail;
-            }
-        }
     }
     Verdict::Pass
 }
@@ -732,11 +570,4 @@ fn emit_outcome(format: &OutputFormat, outcome: &TrunOutcome) -> Result<()> {
     };
     event::emit_result(format, "testcase.run", status, serde_json::to_value(outcome)?)?;
     Ok(())
-}
-
-// 抑制未使用导入警告（部分函数尚未完全接入）
-#[allow(dead_code)]
-fn _unused_imports() {
-    let _ = Command::new("");
-    let _ = DiscoverySource::ExplicitPath;
 }
