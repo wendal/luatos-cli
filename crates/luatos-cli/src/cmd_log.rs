@@ -1,8 +1,12 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
 use crate::{
     event::{self, MessageLevel},
     reset_args::ResetArgs,
     OutputFormat,
 };
+use anyhow::Context;
 
 pub fn resolve_log_mode(chip: &str, requested_baud: u32) -> (bool, bool, u32) {
     let is_ec718 = matches!(chip, "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg");
@@ -453,8 +457,168 @@ fn emit_smart_diagnostics(analyzer: &Option<std::sync::Arc<std::sync::Mutex<luat
     }
 }
 
+// ─── capture_log_lines ────────────────────────────────────────────────────────
+
+/// `trun` 抓取日志的产出: 收集到的原始行 + 智能诊断条目
+#[derive(Debug, Default, Clone)]
+#[allow(dead_code)]
+pub struct CaptureOutcome {
+    /// 抓取到的所有原始日志行 (未经解析, 用于关键字匹配)
+    pub lines: Vec<String>,
+    /// 抓取过程中触发的智能诊断
+    pub diagnostics: Vec<luatos_log::smart::Diagnostic>,
+}
+
+/// 流式抓取串口日志, 把行收集起来, 命中任一关键字立即停止
+///
+/// - `soc`: 用于读取 chip / log_baud
+/// - `port`: 默认抓取串口; ec718 会先用 `wait_for_log_port` 切到 AP 日志口
+/// - `early_exit_keywords`: 命中任意一个就 `stop.store(true)`, 早退
+/// - `cancel`: 外部 ctrlc / 上层 cancel 信号
+/// - 每行同时通过 `LogDispatcher::default_parsers()` 解析, 走 `event::emit_log_entry` 输出
+/// - 每条解析后的 LogEntry 喂给 SmartAnalyzer, 触发的 Diagnostic 一并收集
+#[allow(dead_code)]
+pub fn capture_log_lines(
+    soc: &str,
+    port: &str,
+    baud_override: Option<u32>,
+    timeout_secs: u64,
+    early_exit_keywords: &[String],
+    format: &OutputFormat,
+    cancel: &Arc<AtomicBool>,
+) -> anyhow::Result<CaptureOutcome> {
+    use std::time::{Duration, Instant};
+
+    let info = luatos_soc::read_soc_info(soc).with_context(|| format!("无法读取 soc: {soc}"))?;
+    let chip = info.chip.chip_type.as_str();
+    let (use_binary, is_ec718, log_baud) = resolve_log_mode(chip, info.log_baud_rate());
+    let baud = baud_override.unwrap_or(log_baud);
+
+    let log_port: String = if is_ec718 {
+        match luatos_flash::ec718::wait_for_log_port(15) {
+            Some(p) => p,
+            None => port.to_string(),
+        }
+    } else {
+        port.to_string()
+    };
+
+    let outcome = Arc::new(Mutex::new(CaptureOutcome::default()));
+    let keywords: Vec<String> = early_exit_keywords.to_vec();
+    let stop = Arc::new(AtomicBool::new(false));
+
+    // 1. 超时定时器
+    let stop_timer = stop.clone();
+    let cancel_timer = cancel.clone();
+    let _timer = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+        loop {
+            if stop_timer.load(Ordering::Relaxed) || cancel_timer.load(Ordering::Relaxed) {
+                return;
+            }
+            if Instant::now() >= deadline {
+                stop_timer.store(true, Ordering::Relaxed);
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+
+    // 2. 启动流
+    if use_binary {
+        let decoder = Arc::new(Mutex::new(if is_ec718 { None } else { Some(luatos_log::SocLogDecoder::new()) }));
+        let ec718_decoder = Arc::new(Mutex::new(if is_ec718 { Some(luatos_log::Ec718LogDecoder::new()) } else { None }));
+        let analyzer = Arc::new(Mutex::new(luatos_log::smart::SmartAnalyzer::new()));
+        let outcome = outcome.clone();
+        let stop_for_cb = stop.clone();
+        let fmt = *format;
+        luatos_serial::stream_binary(
+            &log_port,
+            baud,
+            stop.clone(),
+            Box::new(move |data| {
+                if let Ok(mut dec) = decoder.lock() {
+                    if let Some(ref mut d) = *dec {
+                        for entry in d.feed(data) {
+                            push_entry(&outcome, &analyzer, &entry, &stop_for_cb, &keywords, &fmt);
+                        }
+                    }
+                }
+                if let Ok(mut dec) = ec718_decoder.lock() {
+                    if let Some(ref mut d) = *dec {
+                        for entry in d.feed(data) {
+                            push_entry(&outcome, &analyzer, &entry, &stop_for_cb, &keywords, &fmt);
+                        }
+                    }
+                }
+            }),
+            Some(luatos_flash::ec718::build_log_probe()).as_deref(),
+            is_ec718,
+        )?;
+    } else {
+        let dispatcher = luatos_log::LogDispatcher::default_parsers();
+        let analyzer = Arc::new(Mutex::new(luatos_log::smart::SmartAnalyzer::new()));
+        let outcome = outcome.clone();
+        let stop_for_cb = stop.clone();
+        let fmt = *format;
+        luatos_serial::stream_log_lines(
+            &log_port,
+            baud,
+            stop.clone(),
+            Box::new(move |line| {
+                let entry = dispatcher.parse(line);
+                push_entry(&outcome, &analyzer, &entry, &stop_for_cb, &keywords, &fmt);
+            }),
+        )?;
+    }
+
+    let outcome = Arc::try_unwrap(outcome)
+        .map_err(|_| anyhow::anyhow!("capture_log_lines: outcome arc still shared"))?
+        .into_inner()
+        .map_err(|_| anyhow::anyhow!("capture_log_lines: outcome mutex poisoned"))?;
+    Ok(outcome)
+}
+
+/// 内部辅助: 把单条 LogEntry 推入 outcome, 同步 emit + 关键字检测 + 智能诊断
+#[allow(dead_code)]
+fn push_entry(
+    outcome: &Arc<Mutex<CaptureOutcome>>,
+    analyzer: &Arc<Mutex<luatos_log::smart::SmartAnalyzer>>,
+    entry: &luatos_log::LogEntry,
+    stop: &Arc<AtomicBool>,
+    keywords: &[String],
+    fmt: &OutputFormat,
+) {
+    let raw = entry.raw.clone();
+    // 关键字早退检测 (在持锁外做, 避免和 capture 线程互相等待)
+    if !keywords.is_empty() && keywords.iter().any(|k| raw.contains(k)) {
+        stop.store(true, Ordering::Relaxed);
+    }
+    // 智能诊断
+    let mut diags: Vec<luatos_log::smart::Diagnostic> = Vec::new();
+    if let Ok(mut a) = analyzer.lock() {
+        diags = a.analyze(entry);
+    }
+    // 收集 outcome
+    if let Ok(mut out) = outcome.lock() {
+        out.lines.push(raw);
+        out.diagnostics.extend(diags);
+    }
+    if let Err(e) = event::emit_log_entry(fmt, "trun.capture", entry) {
+        log::warn!("emit_log_entry failed: {e}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn capture_log_lines_invalid_port_returns_err() {
+        // 故意给一个不存在的串口, 应该 anyhow! 失败而不是 panic
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let res = super::capture_log_lines("D:/nonexistent/fake.soc", "COM999", None, 1, &[], &super::OutputFormat::Text, &stop);
+        assert!(res.is_err(), "fake port should return Err, got {res:?}");
+    }
+
     #[test]
     fn resolve_log_mode_ec718_forces_921600() {
         let (binary, ec718, baud) = super::resolve_log_mode("ec7xx", 2_000_000);
