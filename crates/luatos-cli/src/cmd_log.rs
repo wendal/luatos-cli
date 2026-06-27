@@ -487,7 +487,7 @@ pub fn capture_log_lines(
     format: &OutputFormat,
     cancel: &Arc<AtomicBool>,
 ) -> anyhow::Result<CaptureOutcome> {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     let info = luatos_soc::read_soc_info(soc).with_context(|| format!("无法读取 soc: {soc}"))?;
     let chip = info.chip.chip_type.as_str();
@@ -508,21 +508,7 @@ pub fn capture_log_lines(
     let stop = Arc::new(AtomicBool::new(false));
 
     // 1. 超时定时器
-    let stop_timer = stop.clone();
-    let cancel_timer = cancel.clone();
-    let _timer = std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-        loop {
-            if stop_timer.load(Ordering::Relaxed) || cancel_timer.load(Ordering::Relaxed) {
-                return;
-            }
-            if Instant::now() >= deadline {
-                stop_timer.store(true, Ordering::Relaxed);
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    });
+    let _timer = spawn_cancel_timer(stop.clone(), cancel.clone(), Duration::from_secs(timeout_secs));
 
     // 2. 启动流
     if use_binary {
@@ -532,7 +518,7 @@ pub fn capture_log_lines(
         let outcome = outcome.clone();
         let stop_for_cb = stop.clone();
         let fmt = *format;
-        luatos_serial::stream_binary(
+        let res = luatos_serial::stream_binary(
             &log_port,
             baud,
             stop.clone(),
@@ -554,14 +540,18 @@ pub fn capture_log_lines(
             }),
             Some(luatos_flash::ec718::build_log_probe()).as_deref(),
             is_ec718,
-        )?;
+        );
+        if res.is_err() {
+            stop.store(true, Ordering::Relaxed);
+        }
+        res?;
     } else {
         let dispatcher = luatos_log::LogDispatcher::default_parsers();
         let analyzer = Arc::new(Mutex::new(luatos_log::smart::SmartAnalyzer::new()));
         let outcome = outcome.clone();
         let stop_for_cb = stop.clone();
         let fmt = *format;
-        luatos_serial::stream_log_lines(
+        let res = luatos_serial::stream_log_lines(
             &log_port,
             baud,
             stop.clone(),
@@ -569,7 +559,11 @@ pub fn capture_log_lines(
                 let entry = dispatcher.parse(line);
                 push_entry(&outcome, &analyzer, &entry, &stop_for_cb, &keywords, &fmt);
             }),
-        )?;
+        );
+        if res.is_err() {
+            stop.store(true, Ordering::Relaxed);
+        }
+        res?;
     }
 
     let outcome = Arc::try_unwrap(outcome)
@@ -577,6 +571,32 @@ pub fn capture_log_lines(
         .into_inner()
         .map_err(|_| anyhow::anyhow!("capture_log_lines: outcome mutex poisoned"))?;
     Ok(outcome)
+}
+
+/// 启动一个后台定时线程: `timeout` 到期 / `stop=true` / `cancel=true` 时退出.
+///
+/// 关键不变量: `cancel` 一旦置位, 必须立刻把 `stop` 也置位, 以便
+/// `luatos_serial::stream_*` 的内部 `read()` 能立刻返回, 不再阻塞.
+/// (ctrlc 处理只会写 `cancel`, 不会直接写 `stop`, 因此这一步是必需的.)
+fn spawn_cancel_timer(stop: Arc<AtomicBool>, cancel: Arc<AtomicBool>, timeout: std::time::Duration) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                // cancel 立即传导到 stop, 让 stream_* 的 read() 也能立即返回
+                stop.store(true, Ordering::Relaxed);
+                return;
+            }
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                stop.store(true, Ordering::Relaxed);
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    })
 }
 
 /// 内部辅助: 把单条 LogEntry 推入 outcome, 同步 emit + 关键字检测 + 智能诊断
@@ -641,5 +661,33 @@ mod tests {
         assert!(!binary);
         assert!(!ec718);
         assert_eq!(baud, 921_600);
+    }
+
+    /// spawn_cancel_timer 必须把 cancel 立即传导到 stop,
+    /// 否则 ctrlc 之后 stream_* 的 read() 会阻塞, 抓日志不能立即停止.
+    #[test]
+    fn cancel_timer_propagates_to_stop() {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let handle = super::spawn_cancel_timer(stop.clone(), cancel.clone(), std::time::Duration::from_secs(60));
+        // 给定时线程一点时间进入循环
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        // 定时线程最多 100ms 轮询一次, 给 300ms 足够它把 stop 置位
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(stop.load(std::sync::atomic::Ordering::Relaxed), "cancel must propagate to stop within 300ms");
+        let _ = handle.join();
+    }
+
+    /// stop 单独置位时, 定时线程也应该立即退出 (不等待 cancel).
+    #[test]
+    fn stop_alone_terminates_timer() {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let handle = super::spawn_cancel_timer(stop.clone(), cancel.clone(), std::time::Duration::from_secs(60));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let _ = handle.join(); // 不应 panic / hang
     }
 }
