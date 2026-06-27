@@ -434,6 +434,13 @@ fn resolve_common_scripts(args: &TrunRunArgs, root: &Path) -> Option<PathBuf> {
     }
 }
 
+/// 注册 ctrl-c handler, 失败时静默忽略。
+///
+/// 同一进程内第二次注册 ctrlc handler 会得到 `Error::MultipleHandlers`,
+/// 在 `trun` 流里 `cmd_flash_run` 也会注册, 这边先到先得。
+/// 外部 `cancel` 仍然能被 `cmd_flash_run` 自己的 stop atomic 间接触发
+/// (因为两者都响应 ctrl-c); 而 trun 自己的 cancel 在 flash 完成后
+/// 不再用, 所以这是安全降级。
 fn install_ctrlc(format: &OutputFormat, cancel: Arc<AtomicBool>) {
     let f = *format;
     let c = cancel.clone();
@@ -570,4 +577,26 @@ fn emit_outcome(format: &OutputFormat, outcome: &TrunOutcome) -> Result<()> {
     };
     event::emit_result(format, "testcase.run", status, serde_json::to_value(outcome)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_ctrlc_is_idempotent() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        let cancel = Arc::new(AtomicBool::new(false));
+        // 第一次: 模拟 trun 的 install_ctrlc
+        install_ctrlc(&crate::OutputFormat::Text, cancel.clone());
+        // 第二次: 模拟 flash 的 ctrlc::set_handler(...)?  (不带 ?)
+        let res = std::panic::catch_unwind(|| {
+            let c = cancel.clone();
+            let _ = ctrlc::set_handler(move || {
+                c.store(true, std::sync::atomic::Ordering::Relaxed);
+            });
+        });
+        assert!(res.is_ok(), "second set_handler must not panic");
+    }
 }
