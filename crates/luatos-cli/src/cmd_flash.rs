@@ -304,25 +304,25 @@ pub fn cmd_flash_partition(
         "air6208" | "air101" | "air103" | "air601" => {
             reset.execute(port)?;
             match op {
-            "script" => {
-                let folders = script_folders.expect("script folder required");
-                let files = collect_script_files(folders)?;
-                luatos_flash::xt804::flash_script_only(soc, port, &files, on_progress, cancel)?;
+                "script" => {
+                    let folders = script_folders.expect("script folder required");
+                    let files = collect_script_files(folders)?;
+                    luatos_flash::xt804::flash_script_only(soc, port, &files, on_progress, cancel)?;
+                }
+                "clear-fs" => {
+                    luatos_flash::xt804::clear_filesystem(soc, port, on_progress, cancel)?;
+                }
+                "flash-fs" => {
+                    let folders = script_folders.expect("fs folder required");
+                    let dir_strings: Vec<String> = folders.to_vec();
+                    luatos_flash::xt804::flash_filesystem(soc, port, &dir_strings, on_progress, cancel)?;
+                }
+                "clear-kv" => {
+                    luatos_flash::xt804::clear_kv(soc, port, on_progress, cancel)?;
+                }
+                _ => unreachable!(),
             }
-            "clear-fs" => {
-                luatos_flash::xt804::clear_filesystem(soc, port, on_progress, cancel)?;
-            }
-            "flash-fs" => {
-                let folders = script_folders.expect("fs folder required");
-                let dir_strings: Vec<String> = folders.to_vec();
-                luatos_flash::xt804::flash_filesystem(soc, port, &dir_strings, on_progress, cancel)?;
-            }
-            "clear-kv" => {
-                luatos_flash::xt804::clear_kv(soc, port, on_progress, cancel)?;
-            }
-            _ => unreachable!(),
         }
-        },
         "air1601" | "air1602" | "ccm4211" => match op {
             "script" => {
                 let folders = script_folders.expect("script folder required");
@@ -855,16 +855,10 @@ pub fn cmd_flash_test(
 
 /// 刷写预编译的 script.bin（跳过 Lua 编译）
 /// 适用于用 Luatools 等外部工具编译的脚本镜像
-pub fn cmd_flash_script_bin(
-    soc: &str,
-    port: &str,
-    bin_path: &str,
-    on_progress: &luatos_flash::ProgressCallback,
-) -> anyhow::Result<()> {
+pub fn cmd_flash_script_bin(soc: &str, port: &str, bin_path: &str, on_progress: &luatos_flash::ProgressCallback) -> anyhow::Result<()> {
     use std::sync::{atomic::AtomicBool, Arc};
 
-    let script_data = std::fs::read(bin_path)
-        .with_context(|| format!("无法读取脚本镜像: {bin_path}"))?;
+    let script_data = std::fs::read(bin_path).with_context(|| format!("无法读取脚本镜像: {bin_path}"))?;
 
     let cancel = Arc::new(AtomicBool::new(false));
     let info = luatos_soc::read_soc_info(soc)?;

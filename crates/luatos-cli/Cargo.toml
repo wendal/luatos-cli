@@ -25,6 +25,7 @@ luatos-serial = { path = "../luatos-serial" }
 luatos-project = { path = "../luatos-project" }
 luatos-log = { path = "../luatos-log" }
 luatos-resource = { path = "../luatos-resource" }
+luatos-testcase = { path = "../luatos-testcase" }
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -42,3 +43,5 @@ ureq = { workspace = true }
 walkdir.workspace = true
 dialoguer = { workspace = true }
 indicatif = { workspace = true }
+tokio.workspace = true
+axum.workspace = true

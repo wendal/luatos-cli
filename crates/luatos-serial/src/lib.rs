@@ -212,13 +212,11 @@ pub fn rts_reset_pulse(port_name: &str, reset_ms: u64) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("打开串口 {port_name} 失败（RTS 复位）: {e}"))?;
 
     // 拉高 RTS 触发复位（CH340X RTS# 为倒相输出：软件 HIGH → 引脚 LOW → RESET 有效）
-    port.write_request_to_send(true)
-        .map_err(|e| anyhow::anyhow!("设置 RTS 失败: {e}"))?;
+    port.write_request_to_send(true).map_err(|e| anyhow::anyhow!("设置 RTS 失败: {e}"))?;
     std::thread::sleep(Duration::from_millis(reset_ms));
 
     // 释放 RTS，模组开始启动
-    port.write_request_to_send(false)
-        .map_err(|e| anyhow::anyhow!("释放 RTS 失败: {e}"))?;
+    port.write_request_to_send(false).map_err(|e| anyhow::anyhow!("释放 RTS 失败: {e}"))?;
 
     // port drop → 串口释放
     Ok(())

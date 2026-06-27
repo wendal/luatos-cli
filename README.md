@@ -10,6 +10,7 @@ LuatOS 命令行工具集（纯 Rust）——刷机、日志、项目管理、�
 - **FOTA 打包**：支持 EC7xx 差分/脚本、CCM4211 全量/脚本、Air8101(BK72XX) 新格式全量/脚本；EC7xx 差分时若底层固件相同自动回落到脚本更新包（`--force-par` 可强制走差分）
 - **二级帮助入口**：`--help` 提示型号入口，`guide models` / `guide model --model <型号>` 直接给推荐命令
 - **刷机后继续监听**：`flash run --tail-log-secs <N>` 刷机后自动按型号波特率续接日志，减少开机日志丢失
+- **trun 单点调试**：`trun <name> --soc base.soc --port COM6` 一站式完成 testcase 合成 → 刷机 → 抓日志 → 关键字校验 → ctx.json 监听，取代 luatos-autotest-v2 在开发期的临时合成
 - **日志系统**：文本 / 二进制日志查看、录制、解析，支持智能诊断
 - **项目与构建**：项目向导、配置管理、Lua 依赖分析、luac/LuaDB 构建
 - **AI 友好输出**：全局 `--format text|json|jsonl`
@@ -64,6 +65,11 @@ luatos-cli fota build --new air8101.soc --script-only -o air8101_script_fota.bin
 # Air780EPM / Air780EHM / Air8000 仅脚本 FOTA
 luatos-cli fota build --new firmware.soc --script-only
 
+# trun 单点调试（自动找 testcase，合成 script.bin + 刷机 + 抓日志 + 关键字）
+luatos-cli trun list --luatos-root D:/github/LuatOS
+luatos-cli trun validate exftp --luatos-root D:/github/LuatOS
+luatos-cli trun exftp --luatos-root D:/github/LuatOS --soc base.soc --port COM6 --keyword "LuatOS@" --fail-keyword panic
+
 # EC7xx 差分 FOTA：底层固件相同时自动回落到脚本更新包
 luatos-cli fota build --new v2.soc --old v1.soc          # 自动回落
 luatos-cli fota build --new v2.soc --old v1.soc --force-par  # 强制走 FotaToolkit 差分
@@ -76,6 +82,73 @@ luatos-cli fota build --new v2.soc --old v1.soc --force-par  # 强制走 FotaToo
 - [Air8101 / BK72xx](docs/models/air8101-bk72xx.md)
 - [Air6208 / XT804 / Air101/Air103](docs/models/air6208-xt804.md)
 - [SF32LB58](docs/models/sf32lb58.md)
+
+## trun 单点调试
+
+`trun` 子命令（test run）把 luatos-autotest-v2 在开发期的"合成 → 刷机 → 抓日志 → 关键字 → 设备回报" 五步流程合成一条命令。无需启动 Flask/MQTT/Runner 多进程，开发期单点验证从分钟级降到秒级。
+
+### 三档 ctx.json 合并规则
+
+```text
+1. base = {} (空对象)
+2. <LuatOS>/testcase/local_ctx.json    (默认覆盖)
+3. --ctx <FILE>                          (CLI 本地覆盖)
+4. --full-ctx <FILE> 若指定 → 跳过 1-3，仅用此文件 + 注入 test_id
+```
+
+数组不 concat，直接覆盖（避免 `mqtt.status_topic` 等被意外追加）。
+
+### 典型用法
+
+```bash
+# 列出 LuatOS 仓库下所有 testcase
+luatos-cli trun list --luatos-root D:/github/LuatOS
+
+# 按子目录过滤
+luatos-cli trun list --luatos-root D:/github/LuatOS --category function_testcase_network
+
+# 校验结构（不刷机）
+luatos-cli trun validate exftp --luatos-root D:/github/LuatOS
+
+# 快路径：仅刷 script.bin（默认）
+luatos-cli trun exftp \
+  --luatos-root D:/github/LuatOS \
+  --soc base.soc \
+  --port COM6 \
+  --keyword "LuatOS@" \
+  --fail-keyword panic
+
+# 冷路径：合新 soc 后刷整个固件
+luatos-cli trun exftp \
+  --luatos-root D:/github/LuatOS \
+  --soc base.soc \
+  --port COM6 \
+  --full-soc --keep-soc ./artifacts
+
+# 包含 preprocess.py 钩子 + ctx.json 监听
+luatos-cli trun exftp \
+  --luatos-root D:/github/LuatOS \
+  --soc base.soc --port COM6 \
+  --python python \
+  --ctx ./my_local_ctx.json \
+  --ctx-listen-port 8080
+```
+
+### 退出码
+
+| Verdict | 退出码 | 含义 |
+|---|---|---|
+| `Pass` | 0 | 关键字全命中 + 设备回报 ok |
+| `Fail` | 1 | 关键字缺失 / 命中 fail_keyword / 设备回报 ok=false |
+| `Indeterminate` | 2 | listener 启动但超时未收到设备 result |
+| `Error` | 3 | 端口被占 / python 找不到 / 解析失败 |
+
+### 与 luatos-autotest-v2 的边界
+
+- **不替代**：Runner 多进程池、Orchestrator 派发、relay 时序、SQLite 历史、MQTT 双向桥、飞书/钉钉 webhook、FOTA 多机差异化烧写
+- **ctx.json 字段名完全兼容**：`test_id` / `runner_id` / `runner_mode` / `report_url` / `status_url` / `mqtt.*` / `wifi_ssid` 等 autotest-v2 设备端 SDK 不感知来源
+- **test_id 格式一致**：`test_<unix_secs_base36>_<random_hex>`，CLI 的 `runner_id` 用 `cli-<hostname>-<pid>` 后缀避免和 autotest-v2 真实 runner_id 冲突
+- **未来桥接**：autotest-v2 想用 Rust CLI 替代 Python 烧写，只需在 Orchestrator 调 `luatos-cli trun <name> --ctx <ctx.json> --full-soc --keep-soc ./artifacts --python python --jsonl`
 
 ## 常用命令分组
 
@@ -101,14 +174,14 @@ luatos-cli doctor --help
 
 ## 支持的模组（摘要）
 
-| 模组 | 芯片 | 刷机 | 脚本区 | 文件系统 | FSKV | FOTA | 日志 | 闭环测试 |
-|------|------|:----:|:------:|:--------:|:----:|:----:|:----:|:--------:|
-| Air8101 | BK7258 (bk72xx) | ✅ | ✅ | ✅ | ✅ | ✅（新格式全量/脚本） | 文本 | ✅ |
-| Air6208 | XT804 (air6208) | ✅ | ✅ | ✅ | ✅ | ✅（全量） | 二进制 | ✅ |
-| Air101/103 | XT804 | ✅ | ✅ | — | — | ✅（全量） | 二进制 | ✅ |
-| Air1601 / Air1602 | CCM4211 | ✅ | ✅ | ✅ | ✅ | ✅（全量/脚本） | 二进制 (`--probe`) | ✅ |
-| Air8000 / Air780E | EC718 (ec7xx) | ✅ | ✅ | — | — | ✅（差分/脚本） | 二进制 (`--probe`) | ✅ |
-| Air8101(SF32) | SF32LB58 | ✅ | ✅ | — | ✅ | — | 文本 | — |
+| 模组 | 芯片 | 刷机 | 脚本区 | 文件系统 | FSKV | FOTA | 日志 | 闭环测试 | trun |
+|------|------|:----:|:------:|:--------:|:----:|:----:|:----:|:--------:|:--------:|
+| Air8101 | BK7258 (bk72xx) | ✅ | ✅ | ✅ | ✅ | ✅（新格式全量/脚本） | 文本 | ✅ | ✅ |
+| Air6208 | XT804 (air6208) | ✅ | ✅ | ✅ | ✅ | ✅（全量） | 二进制 | ✅ | ✅ |
+| Air101/103 | XT804 | ✅ | ✅ | — | — | ✅（全量） | 二进制 | ✅ | ✅ |
+| Air1601 / Air1602 | CCM4211 | ✅ | ✅ | ✅ | ✅ | ✅（全量/脚本） | 二进制 (`--probe`) | ✅ | ✅ |
+| Air8000 / Air780E | EC718 (ec7xx) | ✅ | ✅ | — | — | ✅（差分/脚本） | 二进制 (`--probe`) | ✅ | ✅ |
+| Air8101(SF32) | SF32LB58 | ✅ | ✅ | — | ✅ | — | 文本 | — | — |
 
 ## 结构化输出
 

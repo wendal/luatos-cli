@@ -25,16 +25,9 @@ impl ResetArgs {
         if !self.rts_reset {
             return Ok(());
         }
-        log::info!(
-            "RTS reset {} ({}ms pulse)...",
-            port,
-            self.rts_reset_ms
-        );
+        log::info!("RTS reset {} ({}ms pulse)...", port, self.rts_reset_ms);
         luatos_serial::rts_reset_pulse(port, self.rts_reset_ms)?;
-        log::info!(
-            "Reset done, waiting {}ms for device to boot...",
-            self.boot_wait_ms
-        );
+        log::info!("Reset done, waiting {}ms for device to boot...", self.boot_wait_ms);
         std::thread::sleep(std::time::Duration::from_millis(self.boot_wait_ms));
         Ok(())
     }
@@ -63,17 +56,7 @@ mod tests {
 
     #[test]
     fn test_rts_reset_full() {
-        let cmd = TestCmd::try_parse_from([
-            "test",
-            "--port",
-            "COM6",
-            "--rts-reset",
-            "--rts-reset-ms",
-            "250",
-            "--boot-wait-ms",
-            "800",
-        ])
-        .unwrap();
+        let cmd = TestCmd::try_parse_from(["test", "--port", "COM6", "--rts-reset", "--rts-reset-ms", "250", "--boot-wait-ms", "800"]).unwrap();
         assert!(cmd.reset.rts_reset);
         assert_eq!(cmd.reset.rts_reset_ms, 250);
         assert_eq!(cmd.reset.boot_wait_ms, 800);
@@ -81,8 +64,7 @@ mod tests {
 
     #[test]
     fn test_rts_reset_missing_ms_uses_default() {
-        let cmd =
-            TestCmd::try_parse_from(["test", "--port", "COM6", "--rts-reset"]).unwrap();
+        let cmd = TestCmd::try_parse_from(["test", "--port", "COM6", "--rts-reset"]).unwrap();
         assert!(cmd.reset.rts_reset);
         assert_eq!(cmd.reset.rts_reset_ms, 100); // default
     }
