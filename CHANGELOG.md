@@ -20,7 +20,7 @@ All notable changes to this project will be documented in this file.
 
 #### trun 单点调试子命令（取代 luatos-autotest-v2 开发期临时合成）
 
-- 新增 `luatos-cli trun` 子命令（test run），一站式完成「testcase 解析 → 合成 (script.bin + soc) → 刷机 → 抓日志 → 关键字校验」全流程
+- 新增 `luatos-cli trun` 子命令（test run），一站式完成「testcase 解析 → 合成 (script.bin + 自动烧入 ctx.json + soc) → 刷机 → 抓日志 → 关键字校验」全流程
 - 子命令：
   - `trun <name_or_path>` — 跑一个 testcase（默认行为，支持名称或路径）
   - `trun list [--luatos-root DIR] [--category CAT]` — 列出 LuatOS 仓库下所有 testcase
@@ -49,6 +49,13 @@ All notable changes to this project will be documented in this file.
 - 移除 JSON 输出的 `listener` 字段
 - 退出码映射收敛：`Indeterminate` 保留为枚举变体和退出码 2 但不再构造（`Pass=0` / `Fail=1`，`Indeterminate=2` / `Error=3` 为未来保留）
 - 新增单元测试 `trun_run_removed_listener_args_rejected`：确认 `--ctx-listen-port` / `--ctx-timeout` / `--no-listener` 已被 clap 拒绝
+
+##### trun 自动把 ctx.json 烧入 script.bin
+
+- `build_script_image` 接受 `ctx: &serde_json::Value` 参数，内部调用 `write_ctx_to_temp` 写到临时目录后作为 `ctx_tmp_dir` 传给 `build_script_bin`
+- 设备端 SDK 启动后可 `io.open("/ctx.json")` 拿到 `test_id` / `runner_id` / `runner_mode` / `local_ctx.json` 字段（mqtt.* / wifi_ssid 等）
+- 阶段顺序调整：`preprocess → ctx → build → flash → log_capture → finalize`，保证 ctx 在 build 之前就准备好
+- `prepare_ctx` 返回值由 `String`（仅 test_id）改为 `CtxBuildResult`，上层既拿到 test_id 也拿到最终 value 用于烧入
 
 #### C ABI 导出 luatos-log（luatos-log-ffi）
 

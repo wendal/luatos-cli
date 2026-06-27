@@ -1,7 +1,8 @@
 //! `trun` 子命令（test run）
 //!
-//! 一站式完成"读 testcase → 合成 (script.bin + soc) → 刷机 → 抓日志 →
-//! 关键字校验"，简化 luatos-autotest-v2 在开发期的临时合成。
+//! 一站式完成"读 testcase → 合成 (script.bin + 自动烧入 ctx.json + soc)
+//! → 刷机 → 抓日志 → 关键字校验"，简化 luatos-autotest-v2 在开发期的
+//! 临时合成。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -13,7 +14,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
 use serde::Serialize;
 
-use luatos_testcase::{build_ctx, build_script_bin, inject_identifiers, resolve_testcase, run_python_hook, scan_testcases, HookContext, ResolvedTestcase};
+use luatos_testcase::{build_ctx, build_script_bin, inject_identifiers, resolve_testcase, run_python_hook, scan_testcases, write_ctx_to_temp, HookContext, ResolvedTestcase};
 
 use crate::cmd_flash;
 use crate::cmd_log;
@@ -366,18 +367,19 @@ pub fn cmd_trun_run(args: &TrunRunArgs, format: &OutputFormat) -> Result<Verdict
     }
     phase_durations.insert(Phase::Preprocess.as_str().to_string(), start.elapsed().as_millis() as u64);
 
-    // 5. 阶段：build
+    // 5. 阶段：ctx（合并 + 注入 test_id，**不**起 HTTP 监听器）
     let start = Instant::now();
-    let script_bin = build_script_image(args, &resolved, &chip)?;
+    let common_scripts = resolve_common_scripts(args, &root);
+    let built_ctx = prepare_ctx(args, &root, common_scripts.as_deref())?;
+    let ctx_test_id = built_ctx.test_id.clone();
+    phase_durations.insert(Phase::Ctx.as_str().to_string(), start.elapsed().as_millis() as u64);
+
+    // 6. 阶段：build（自动把 ctx.json 烧入 script.bin）
+    let start = Instant::now();
+    let script_bin = build_script_image(args, &resolved, &chip, &built_ctx.value)?;
     let script_bin_path = write_script_bin(&script_bin, args.keep_soc.as_deref())?;
     let combined_soc = if args.full_soc { Some(combine_soc(args, &script_bin, &soc_info)?) } else { None };
     phase_durations.insert(Phase::Build.as_str().to_string(), start.elapsed().as_millis() as u64);
-
-    // 6. 阶段：ctx（合并 + 注入 test_id，**不**起 HTTP 监听器）
-    let start = Instant::now();
-    let common_scripts = resolve_common_scripts(args, &root);
-    let ctx_test_id = prepare_ctx(args, &root, common_scripts.as_deref())?;
-    phase_durations.insert(Phase::Ctx.as_str().to_string(), start.elapsed().as_millis() as u64);
 
     // 7. 阶段：flash
     let start = Instant::now();
@@ -501,10 +503,14 @@ fn run_preprocess(args: &TrunRunArgs, resolved: &ResolvedTestcase, ctx_path: &Pa
     }
 }
 
-fn build_script_image(args: &TrunRunArgs, resolved: &ResolvedTestcase, chip: &str) -> Result<Vec<u8>> {
+fn build_script_image(args: &TrunRunArgs, resolved: &ResolvedTestcase, chip: &str, ctx: &serde_json::Value) -> Result<Vec<u8>> {
     let common = resolve_common_scripts(args, &resolve_luatos_root(args.luatos_root.as_deref())?);
     let script_dirs: Vec<&Path> = vec![resolved.scripts_dir.as_path()];
-    let image = build_script_bin(&script_dirs, common.as_deref(), None, chip).context("build script.bin 失败")?;
+    // 把 ctx.json 写到临时目录,让 build_script_bin 把它当一个 src 目录合并进 script.bin
+    // 这样设备端 SDK 启动后就能 io.open("/ctx.json") 拿到 test_id/runner_id/runner_mode 等字段
+    let (ctx_tmp, _ctx_path) = write_ctx_to_temp(ctx).context("write ctx.json to temp failed")?;
+    let image = build_script_bin(&script_dirs, common.as_deref(), Some(ctx_tmp.path()), chip).context("build script.bin 失败")?;
+    // ctx_tmp 在此处 drop, 但 image 已复制到内存
     Ok(image)
 }
 
@@ -541,11 +547,10 @@ fn combine_soc(args: &TrunRunArgs, script_bin: &[u8], soc_info: &luatos_soc::Soc
     Ok(out)
 }
 
-fn prepare_ctx(args: &TrunRunArgs, root: &Path, _common_scripts: Option<&Path>) -> Result<String> {
+fn prepare_ctx(args: &TrunRunArgs, root: &Path, _common_scripts: Option<&Path>) -> Result<luatos_testcase::CtxBuildResult> {
     let mut built = merge_ctx_layers(args, root)?;
-    let test_id = built.test_id.clone();
     inject_identifiers(&mut built, None);
-    Ok(test_id)
+    Ok(built)
 }
 
 fn merge_ctx_layers(args: &TrunRunArgs, root: &Path) -> Result<luatos_testcase::CtxBuildResult> {
