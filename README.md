@@ -125,22 +125,21 @@ luatos-cli trun exftp \
   --port COM6 \
   --full-soc --keep-soc ./artifacts
 
-# 包含 preprocess.py 钩子 + ctx.json 监听
+# 包含 preprocess.py 钩子 + 额外 ctx.json 字段
 luatos-cli trun exftp \
   --luatos-root D:/github/LuatOS \
   --soc base.soc --port COM6 \
   --python python \
-  --ctx ./my_local_ctx.json \
-  --ctx-listen-port 8080
+  --ctx ./my_local_ctx.json
 ```
 
 ### 退出码
 
 | Verdict | 退出码 | 含义 |
 |---|---|---|
-| `Pass` | 0 | 关键字全命中 + 设备回报 ok |
-| `Fail` | 1 | 关键字缺失 / 命中 fail_keyword / 设备回报 ok=false |
-| `Indeterminate` | 2 | listener 启动但超时未收到设备 result |
+| `Pass` | 0 | 所有关键字命中且未触发 fail_keyword |
+| `Fail` | 1 | 关键字缺失 / 命中 fail_keyword |
+| `Indeterminate` | 2 | 当前 trun 不会构造（保留以便未来重新接 ctx.json 回传监听器时使用） |
 | `Error` | 3 | 端口被占 / python 找不到 / 解析失败 |
 
 ### 与 luatos-autotest-v2 的边界

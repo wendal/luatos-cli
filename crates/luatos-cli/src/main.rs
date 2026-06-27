@@ -23,7 +23,6 @@ mod cmd_resource;
 mod cmd_serial;
 mod cmd_soc;
 mod cmd_trun;
-mod cmd_trun_ctx_server;
 mod event;
 mod reset_args;
 
@@ -1122,7 +1121,6 @@ mod tests {
         assert_eq!(args.fail_keywords, vec!["panic".to_string()]);
         assert_eq!(args.python.as_deref(), Some("python"));
         assert!(!args.full_soc);
-        assert!(!args.no_listener);
     }
 
     #[test]
@@ -1165,5 +1163,16 @@ mod tests {
     fn trun_run_missing_port_fails() {
         let result = Cli::try_parse_from(["luatos-cli", "trun", "run", "exftp", "--soc", "x"]);
         assert!(result.is_err(), "缺少 --port 时应解析失败");
+    }
+
+    #[test]
+    fn trun_run_removed_listener_args_rejected() {
+        // --ctx-listen-port / --ctx-timeout / --no-listener 已随 listener 移除
+        for extra in [&["--ctx-listen-port", "0"][..], &["--ctx-timeout", "60"][..], &["--no-listener"][..]] {
+            let mut argv: Vec<&str> = vec!["luatos-cli", "trun", "run", "exftp", "--soc", "x", "--port", "COM6"];
+            argv.extend_from_slice(extra);
+            let result = Cli::try_parse_from(argv);
+            assert!(result.is_err(), "应拒绝已移除参数: {:?}", extra);
+        }
     }
 }

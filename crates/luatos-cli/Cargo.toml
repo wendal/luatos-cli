@@ -43,5 +43,3 @@ ureq = { workspace = true }
 walkdir.workspace = true
 dialoguer = { workspace = true }
 indicatif = { workspace = true }
-tokio.workspace = true
-axum.workspace = true
