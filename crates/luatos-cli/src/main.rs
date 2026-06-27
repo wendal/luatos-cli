@@ -22,6 +22,8 @@ mod cmd_project_wizard;
 mod cmd_resource;
 mod cmd_serial;
 mod cmd_soc;
+mod cmd_trun;
+mod cmd_trun_ctx_server;
 mod event;
 mod reset_args;
 
@@ -135,6 +137,12 @@ enum Commands {
     Guide {
         #[command(subcommand)]
         action: GuideCommands,
+    },
+    /// Run a LuatOS testcase (synth + flash + log + analyze)
+    /// 跑一个 testcase（合成 → 刷机 → 抓日志 → 分析）
+    Trun {
+        #[command(subcommand)]
+        action: cmd_trun::TrunCommands,
     },
 }
 
@@ -785,8 +793,7 @@ fn main() {
             } => {
                 if let Some(bin_path) = bin {
                     let on_progress = cmd_flash::make_progress_callback(&cli.format, "flash.script".to_string(), progress_step);
-                    cmd_flash::cmd_flash_script_bin(&soc, &port, &bin_path, &on_progress)
-                        .and_then(|_| cmd_flash::print_script_result(&cli.format))
+                    cmd_flash::cmd_flash_script_bin(&soc, &port, &bin_path, &on_progress).and_then(|_| cmd_flash::print_script_result(&cli.format))
                 } else {
                     let reset_config = if auto_reset {
                         Some(luatos_flash::sf32lb5x::Sf32ResetConfig {
@@ -804,7 +811,9 @@ fn main() {
                 }
             }
             FlashCommands::ClearFs { soc, port, reset } => cmd_flash::cmd_flash_partition("clear-fs", &soc, &port, None, progress_step, &cli.format, &reset, None, None),
-            FlashCommands::FlashFs { soc, port, script, reset } => cmd_flash::cmd_flash_partition("flash-fs", &soc, &port, Some(&script), progress_step, &cli.format, &reset, None, None),
+            FlashCommands::FlashFs { soc, port, script, reset } => {
+                cmd_flash::cmd_flash_partition("flash-fs", &soc, &port, Some(&script), progress_step, &cli.format, &reset, None, None)
+            }
             FlashCommands::ClearKv {
                 soc,
                 port,
@@ -854,7 +863,14 @@ fn main() {
         },
         Commands::Log { action } => match action {
             LogCommands::View { port, baud, smart, reset } => cmd_log::cmd_log_view(&port, baud, smart, &reset, &cli.format),
-            LogCommands::ViewBinary { port, baud, probe, save, smart, reset } => cmd_log::cmd_log_view_binary(&port, baud, probe, save.as_deref(), smart, &reset, &cli.format),
+            LogCommands::ViewBinary {
+                port,
+                baud,
+                probe,
+                save,
+                smart,
+                reset,
+            } => cmd_log::cmd_log_view_binary(&port, baud, probe, save.as_deref(), smart, &reset, &cli.format),
             LogCommands::Record { port, baud, output, json } => cmd_log::cmd_log_record(&port, baud, &output, json, &cli.format),
             LogCommands::Parse { path } => cmd_log::cmd_log_parse(&path, &cli.format),
         },
@@ -867,16 +883,7 @@ fn main() {
                 smart,
                 save,
                 reset,
-            } => cmd_pipeline::cmd_pipeline_flash_log(
-                &soc,
-                &port,
-                baud,
-                probe,
-                smart,
-                save.as_deref(),
-                &reset,
-                &cli.format,
-            ),
+            } => cmd_pipeline::cmd_pipeline_flash_log(&soc, &port, baud, probe, smart, save.as_deref(), &reset, &cli.format),
         },
         Commands::Project { action } => match action {
             ProjectCommands::Wizard {
@@ -978,6 +985,15 @@ fn main() {
             GuideCommands::Models => cmd_guide::cmd_guide_models(&cli.format),
             GuideCommands::Model { model } => cmd_guide::cmd_guide_model(&model, &cli.format),
         },
+        Commands::Trun { action } => match cmd_trun::cmd_trun(&action, &cli.format) {
+            Ok(code) => {
+                if code != 0 {
+                    std::process::exit(code);
+                }
+                Ok(())
+            }
+            Err(e) => Err(e),
+        },
         Commands::Doctor { dir } => cmd_doctor::cmd_doctor(&dir, &cli.format),
         Commands::Version => {
             let version = env!("CARGO_PKG_VERSION");
@@ -1056,5 +1072,98 @@ mod tests {
             panic!("未解析到 flash test 命令");
         };
         assert_eq!(fail_keyword, Some(vec!["PANIC".to_string(), "ASSERT".to_string()]));
+    }
+
+    fn parse_trun_run(args: &[&str]) -> cmd_trun::TrunCommands {
+        let mut cli_args = vec!["luatos-cli", "trun", "run"];
+        cli_args.extend_from_slice(args);
+        let cli = Cli::try_parse_from(cli_args).expect("trun run 参数解析失败");
+        let Commands::Trun { action } = cli.command else {
+            panic!("未解析到 trun 子命令");
+        };
+        action
+    }
+
+    fn parse_trun_top(args: &[&str]) -> cmd_trun::TrunCommands {
+        let mut cli_args = vec!["luatos-cli", "trun"];
+        cli_args.extend_from_slice(args);
+        let cli = Cli::try_parse_from(cli_args).expect("trun 顶层参数解析失败");
+        let Commands::Trun { action } = cli.command else {
+            panic!("未解析到 trun 子命令");
+        };
+        action
+    }
+
+    #[test]
+    fn trun_run_args_parse() {
+        let action = parse_trun_run(&[
+            "exftp",
+            "--luatos-root",
+            "D:/LuatOS",
+            "--soc",
+            "base.soc",
+            "--port",
+            "COM6",
+            "--keyword",
+            "LuatOS@",
+            "--fail-keyword",
+            "panic",
+            "--python",
+            "python",
+        ]);
+        let cmd_trun::TrunCommands::Run(args) = action else {
+            panic!("期望 Run 分支");
+        };
+        assert_eq!(args.testcase, "exftp");
+        assert_eq!(args.luatos_root.as_deref(), Some("D:/LuatOS"));
+        assert_eq!(args.soc, "base.soc");
+        assert_eq!(args.port, "COM6");
+        assert_eq!(args.keywords, vec!["LuatOS@".to_string()]);
+        assert_eq!(args.fail_keywords, vec!["panic".to_string()]);
+        assert_eq!(args.python.as_deref(), Some("python"));
+        assert!(!args.full_soc);
+        assert!(!args.no_listener);
+    }
+
+    #[test]
+    fn trun_run_comma_separated_keywords() {
+        let action = parse_trun_run(&["name", "--soc", "x", "--port", "COM6", "--keyword", "a,b,c", "--fail-keyword", "x,y"]);
+        let cmd_trun::TrunCommands::Run(args) = action else {
+            panic!("期望 Run 分支");
+        };
+        assert_eq!(args.keywords, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        assert_eq!(args.fail_keywords, vec!["x".to_string(), "y".to_string()]);
+    }
+
+    #[test]
+    fn trun_list_subcommand() {
+        let action = parse_trun_top(&["list", "--luatos-root", "D:/LuatOS", "--category", "function_testcase_network"]);
+        let cmd_trun::TrunCommands::List { luatos_root, category } = action else {
+            panic!("期望 List 分支");
+        };
+        assert_eq!(luatos_root.as_deref(), Some("D:/LuatOS"));
+        assert_eq!(category.as_deref(), Some("function_testcase_network"));
+    }
+
+    #[test]
+    fn trun_validate_subcommand() {
+        let action = parse_trun_top(&["validate", "exftp", "--luatos-root", "D:/LuatOS"]);
+        let cmd_trun::TrunCommands::Validate { testcase, luatos_root } = action else {
+            panic!("期望 Validate 分支");
+        };
+        assert_eq!(testcase, "exftp");
+        assert_eq!(luatos_root.as_deref(), Some("D:/LuatOS"));
+    }
+
+    #[test]
+    fn trun_run_missing_soc_fails() {
+        let result = Cli::try_parse_from(["luatos-cli", "trun", "run", "exftp", "--port", "COM6"]);
+        assert!(result.is_err(), "缺少 --soc 时应解析失败");
+    }
+
+    #[test]
+    fn trun_run_missing_port_fails() {
+        let result = Cli::try_parse_from(["luatos-cli", "trun", "run", "exftp", "--soc", "x"]);
+        assert!(result.is_err(), "缺少 --port 时应解析失败");
     }
 }

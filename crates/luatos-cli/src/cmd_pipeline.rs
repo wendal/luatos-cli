@@ -5,16 +5,8 @@ use crate::OutputFormat;
 
 /// Pipeline: flash firmware, reset device, then view logs.
 /// This combines the common debug workflow into a single command.
-pub fn cmd_pipeline_flash_log(
-    soc: &str,
-    port: &str,
-    baud: u32,
-    probe: bool,
-    smart: bool,
-    save: Option<&str>,
-    reset: &ResetArgs,
-    format: &OutputFormat,
-) -> anyhow::Result<()> {
+#[allow(clippy::too_many_arguments)]
+pub fn cmd_pipeline_flash_log(soc: &str, port: &str, baud: u32, probe: bool, smart: bool, save: Option<&str>, reset: &ResetArgs, format: &OutputFormat) -> anyhow::Result<()> {
     // Step 1: Flash
     eprintln!("[pipeline] [1/3] Flashing {} -> {}...", soc, port);
 
@@ -31,10 +23,7 @@ pub fn cmd_pipeline_flash_log(
             luatos_flash::xt804::flash_xt804(soc, port, progress, cancel)?;
         }
         other => {
-            anyhow::bail!(
-                "Pipeline flash-log not yet supported for chip: {}. Use individual flash/log commands instead.",
-                other
-            );
+            anyhow::bail!("Pipeline flash-log not yet supported for chip: {}. Use individual flash/log commands instead.", other);
         }
     }
 
@@ -96,9 +85,7 @@ mod tests {
 
     #[test]
     fn test_pipeline_flash_log_defaults() {
-        let cmd =
-            TestPipelineCmd::try_parse_from(["test", "--soc", "firmware.soc", "--port", "COM6"])
-                .unwrap();
+        let cmd = TestPipelineCmd::try_parse_from(["test", "--soc", "firmware.soc", "--port", "COM6"]).unwrap();
         assert_eq!(cmd.soc, "firmware.soc");
         assert_eq!(cmd.port, "COM6");
         assert_eq!(cmd.baud, 2000000);
@@ -130,32 +117,14 @@ mod tests {
 
     #[test]
     fn test_pipeline_flash_log_with_probe_and_save() {
-        let cmd = TestPipelineCmd::try_parse_from([
-            "test",
-            "--soc",
-            "firmware.soc",
-            "--port",
-            "COM6",
-            "--probe",
-            "--save",
-            "/tmp/logs",
-        ])
-        .unwrap();
+        let cmd = TestPipelineCmd::try_parse_from(["test", "--soc", "firmware.soc", "--port", "COM6", "--probe", "--save", "/tmp/logs"]).unwrap();
         assert!(cmd.probe);
         assert_eq!(cmd.save, Some("/tmp/logs".to_string()));
     }
 
     #[test]
     fn test_pipeline_flash_log_with_smart() {
-        let cmd = TestPipelineCmd::try_parse_from([
-            "test",
-            "--soc",
-            "firmware.soc",
-            "--port",
-            "COM6",
-            "--smart",
-        ])
-        .unwrap();
+        let cmd = TestPipelineCmd::try_parse_from(["test", "--soc", "firmware.soc", "--port", "COM6", "--smart"]).unwrap();
         assert!(cmd.smart);
     }
 }

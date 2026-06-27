@@ -1,0 +1,15 @@
+[package]
+name = "luatos-testcase"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LuatOS testcase discovery, metas.json parsing, ctx.json merging, and script.bin building"
+
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+walkdir.workspace = true
+tempfile.workspace = true
+luatos-luadb = { path = "../luatos-luadb" }

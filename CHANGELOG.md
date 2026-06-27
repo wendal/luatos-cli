@@ -18,6 +18,30 @@ All notable changes to this project will be documented in this file.
 
 ### 变更
 
+#### trun 单点调试子命令（取代 luatos-autotest-v2 开发期临时合成）
+
+- 新增 `luatos-cli trun` 子命令（test run），一站式完成「testcase 解析 → 合成 (script.bin + soc) → 刷机 → 抓日志 → 关键字校验 → ctx.json 监听」全流程
+- 子命令：
+  - `trun <name_or_path>` — 跑一个 testcase（默认行为，支持名称或路径）
+  - `trun list [--luatos-root DIR] [--category CAT]` — 列出 LuatOS 仓库下所有 testcase
+  - `trun validate <name_or_path>` — 校验 testcase 目录结构（不刷机）
+- 关键参数：
+  - `--soc FILE` 源 .soc（必填）
+  - `--port PORT` 串口（必填）
+  - `--luatos-root DIR` LuatOS 仓库根（默认从 CWD 向上找 `testcase/` 标记）
+  - `--keyword KW` / `--fail-keyword KW`（可重复，逗号分隔）
+  - `--full-soc` 冷路径：合新 soc 后刷整个固件（默认仅刷 script.bin）
+  - `--keep-soc DIR` 保留合成的 script.bin / soc
+  - `--ctx FILE` / `--full-ctx FILE` 三档 ctx.json 合并（base → local_ctx.json → --ctx；--full-ctx 短路）
+  - `--ctx-listen-port N` / `--ctx-timeout N` / `--no-listener` ctx.json 回传监听器
+  - `--python PATH` / `--force-preprocess` Python 钩子（preprocess.py / midprocess.py）
+  - `--smart` 启用 SmartAnalyzer 智能诊断（默认开）
+- 退出码：`Pass → 0` / `Fail → 1` / `Indeterminate → 2` / `Error → 3`
+- JSON 输出新增字段 `verdict` / `test_id` / `keywords` / `fail_keywords` / `matched_fail_keywords` / `fast_failed` / `listener` / `phase_durations_ms`
+- 与 luatos-autotest-v2 兼容性：ctx.json 字段名（`test_id` / `runner_id` / `runner_mode` / `report_url` / `status_url` / `mqtt.*` / `wifi_ssid`）完全兼容；`test_id` 格式 `test_<unix_secs_base36>_<random_hex>` 一致；CLI 的 `runner_id` 用 `cli-<hostname>-<pid>` 后缀避免和 autotest-v2 真实 runner_id 冲突
+- 新增 crate `luatos-testcase` (path crate, lib only) 承载 metas / ctx / discovery / lua_bin / hooks 独立可测逻辑
+- 43 个新增单元测试覆盖 metas 解析、testcase 发现（explicit / 顶层 / 嵌套）、ctx.json 深合并、script.bin 构建、Python 钩子调用；3 个 ctx server 集成测试覆盖 status/result POST 与 test_id 校验
+
 #### C ABI 导出 luatos-log（luatos-log-ffi）
 
 - 新增 `luatos-log-ffi` cdylib crate，导出 `luatos_soclog_analyze()` 与 `pySoclogAnalyze()` 别名（与第三方 `pySoclogAnalyze` DLL 签名完全一致）

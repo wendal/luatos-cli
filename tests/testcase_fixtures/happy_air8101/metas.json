@@ -1,0 +1,7 @@
+{
+  "timeout": 30,
+  "model": {"air8101": ["1"]},
+  "action_count": 1,
+  "priority": 1,
+  "description": "happy air8101 fixture"
+}

@@ -11,6 +11,7 @@ members = [
     "crates/luatos-log",
     "crates/luatos-log-ffi",
     "crates/luatos-resource",
+    "crates/luatos-testcase",
     "crates/sftool-lib",
     "crates/luatos-mfgui",
     # "crates/luatos-gui/src-tauri",  # GUI 暂时禁用
@@ -43,6 +44,9 @@ sha2 = "0.10"
 indicatif = "0.17"
 crc32fast = "1"
 md-5 = "0.10"
+tokio = { version = "1", features = ["io-util", "macros", "rt-multi-thread", "sync", "net", "time"] }
+axum = "0.7"
+hyper = "1"
 
 [profile.release]
 lto = "fat"
