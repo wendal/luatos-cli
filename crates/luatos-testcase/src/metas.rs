@@ -17,8 +17,12 @@ use serde::{Deserialize, Serialize};
 pub struct MetasFile {
     /// testcase 超时时间（秒）
     pub timeout: u64,
-    /// 支持的型号 -> SIM 卡 ID 列表
-    pub model: BTreeMap<String, Vec<String>>,
+    /// 支持的型号 -> SIM 卡 ID 列表。
+    ///
+    /// 元素接受任意 JSON 值（字符串或整数），与 luatos-autotest-v2
+    /// 产线约定一致：常见写法 `"air8101": [1, 101]`，历史 fixture
+    /// 也有 `"air8101": ["1"]` 字符串写法。
+    pub model: BTreeMap<String, Vec<serde_json::Value>>,
     /// 动作次数（设备端 SDK 用）
     pub action_count: u32,
     /// 调度优先级（数字越小优先级越高）
@@ -94,6 +98,36 @@ mod tests {
         assert_eq!(metas.fail_keywords.as_deref(), Some(&["panic".to_string()][..]));
         assert!(metas.flush_core.is_none());
         assert_eq!(metas.extra, serde_json::Value::Null);
+        // 字符串 ID
+        assert_eq!(
+            metas.model.get("air8101").unwrap(),
+            &vec![serde_json::Value::String("sim-001".into())]
+        );
+    }
+
+    #[test]
+    fn parse_model_int_ids_ok() {
+        // 产线 testcase 常用整数数组, 例如 "air8101": [1, 101]
+        let tmp = TempDir::new().unwrap();
+        write_metas(
+            tmp.path(),
+            r#"{
+                "timeout": 60,
+                "model": {"air8101": [1, 101], "air8000": [1, 101]},
+                "action_count": 1,
+                "priority": 5,
+                "description": "gmssl"
+            }"#,
+        );
+        let metas = MetasFile::load(tmp.path()).unwrap();
+        assert_eq!(
+            metas.model.get("air8101").unwrap(),
+            &vec![serde_json::json!(1), serde_json::json!(101)]
+        );
+        assert_eq!(
+            metas.model.get("air8000").unwrap(),
+            &vec![serde_json::json!(1), serde_json::json!(101)]
+        );
     }
 
     #[test]
