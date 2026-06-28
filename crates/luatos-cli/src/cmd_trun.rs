@@ -574,8 +574,12 @@ pub enum MatchField {
     /// 仅 raw 字段 (含 SOH+len+type 帧头, 旧行为, 降级路径)
     Raw,
     /// message / module / level 任一字段包含 keyword 即命中
+    /// 注意: 任一单字符关键字 ("I"/"W"/"E"/"D"/"T"/"?"/"-") 都会匹配 level 字段
+    /// (例如 `--match-field any --keyword "I"` 会命中每条 Info 日志, 通常不是想要的)
     Any,
     /// message / module / level 全部字段都包含 keyword 才命中
+    /// 注意: 任一单字符关键字 ("I"/"W"/"E"/"D"/"T"/"?"/"-") 都会匹配 level 字段
+    /// (例如 `--match-field all --keyword "I"` 会命中每条 Info 日志, 通常不是想要的)
     All,
 }
 
