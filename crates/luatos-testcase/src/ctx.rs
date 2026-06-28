@@ -187,10 +187,24 @@ pub fn build_ctx(luatos_root: &Path, local_ctx_path: Option<&Path>, ctx_path: Op
 }
 
 /// 把 build_ctx 的结果注入 test_id/runner_id/runner_mode 字段
+///
+/// test_id 注入策略：若 ctx.json 已带非空字符串 test_id，则保留并同步 `result.test_id` 字段；
+/// 缺失 / null / 空串视为占位，注入自动生成值。
 pub fn inject_identifiers(result: &mut CtxBuildResult, listen_url: Option<(&str, &str)>) {
     use serde_json::json;
     if let serde_json::Value::Object(map) = &mut result.value {
-        map.insert("test_id".to_string(), json!(result.test_id));
+        // test_id: 保留外部非空字符串, 否则注入自动生成值
+        let external_test_id = map.get("test_id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+        match external_test_id {
+            Some(s) => {
+                // 保留外部值, 同时让 result.test_id 字段与之保持一致
+                result.test_id = s;
+            }
+            None => {
+                map.insert("test_id".to_string(), json!(result.test_id));
+            }
+        }
+
         map.insert("runner_id".to_string(), json!(result.runner_id));
         map.insert("runner_mode".to_string(), json!(result.runner_mode));
         if let Some((report, status)) = listen_url {
@@ -401,6 +415,58 @@ mod tests {
         assert_eq!(r.value["runner_mode"], json!("cli-debug"));
         assert_eq!(r.value["report_url"], json!("http://127.0.0.1:1234/result"));
         assert_eq!(r.value["status_url"], json!("http://127.0.0.1:1234/status"));
+    }
+
+    #[test]
+    fn inject_preserves_existing_test_id() {
+        // ctx.json 已带非空字符串 test_id, 不能被自动生成值覆盖
+        let mut r = CtxBuildResult {
+            value: json!({"test_id": "user-supplied-001"}),
+            test_id: "test_auto_aaaa".into(),
+            runner_id: "cli-h-1".into(),
+            runner_mode: "cli-debug".into(),
+            listen_port: 0,
+            warnings: Vec::new(),
+        };
+        inject_identifiers(&mut r, None);
+        assert_eq!(r.value["test_id"], json!("user-supplied-001"));
+        // 同步: result.test_id 字段也要等于保留值, 让 CLI 报告与设备 ctx.json 一致
+        assert_eq!(r.test_id, "user-supplied-001");
+        // runner_id / runner_mode 仍按原行为注入
+        assert_eq!(r.value["runner_id"], json!("cli-h-1"));
+        assert_eq!(r.value["runner_mode"], json!("cli-debug"));
+    }
+
+    #[test]
+    fn inject_overrides_null_test_id() {
+        // ctx.json 里 test_id 显式置 null, 视为占位, 注入自动生成值
+        let mut r = CtxBuildResult {
+            value: json!({"test_id": null}),
+            test_id: "test_auto_bbbb".into(),
+            runner_id: "cli-h-1".into(),
+            runner_mode: "cli-debug".into(),
+            listen_port: 0,
+            warnings: Vec::new(),
+        };
+        inject_identifiers(&mut r, None);
+        assert_eq!(r.value["test_id"], json!("test_auto_bbbb"));
+        assert_eq!(r.test_id, "test_auto_bbbb");
+    }
+
+    #[test]
+    fn inject_overrides_empty_string_test_id() {
+        // ctx.json 里 test_id 是空串, 视为占位, 注入自动生成值
+        let mut r = CtxBuildResult {
+            value: json!({"test_id": ""}),
+            test_id: "test_auto_cccc".into(),
+            runner_id: "cli-h-1".into(),
+            runner_mode: "cli-debug".into(),
+            listen_port: 0,
+            warnings: Vec::new(),
+        };
+        inject_identifiers(&mut r, None);
+        assert_eq!(r.value["test_id"], json!("test_auto_cccc"));
+        assert_eq!(r.test_id, "test_auto_cccc");
     }
 
     #[test]

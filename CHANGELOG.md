@@ -18,6 +18,14 @@ All notable changes to this project will be documented in this file.
 
 ### 变更
 
+#### trun 保留 ctx.json 提供的 test_id
+
+- `luatos_testcase::inject_identifiers` 改为：ctx.json 已带非空字符串 `test_id` 时保留外部值，不再用自动生成值覆盖；缺失 / `null` / 空串仍按占位处理，注入自动生成值
+- 保留外部 `test_id` 时同步更新 `CtxBuildResult.test_id` 字段，确保 `TrunOutcome.test_id` 与设备端 `ctx.json` 一致
+- 新增 3 个单元测试 `inject_preserves_existing_test_id` / `inject_overrides_null_test_id` / `inject_overrides_empty_string_test_id`
+
+### 变更
+
 #### trun 单点调试子命令（取代 luatos-autotest-v2 开发期临时合成）
 
 - 新增 `luatos-cli trun` 子命令（test run），一站式完成「testcase 解析 → 合成 (script.bin + 自动烧入 ctx.json + soc) → 刷机 → 抓日志 → 关键字校验」全流程
