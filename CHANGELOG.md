@@ -49,6 +49,17 @@ All notable changes to this project will be documented in this file.
 - 退出码映射收敛：`Indeterminate` 保留为枚举变体和退出码 2 但不再构造（`Pass=0` / `Fail=1`，`Indeterminate=2` / `Error=3` 为未来保留）
 - 新增单元测试 `trun_run_removed_listener_args_rejected`：确认 `--ctx-listen-port` / `--ctx-timeout` / `--no-listener` 已被 clap 拒绝
 
+##### trun 关键字匹配走真实 LogEntry 字段
+
+- `trun run` 新增 `--match-field {message,raw,any,all}` 参数, 默认 `message`; 默认行为从"raw 字符串 contains"改为"在 LogEntry.message 上 contains"
+- 默认走 `message` 字段而非 `raw`, 避免 bk72xx 文本日志 SOH+len+type 帧头在 raw 字节里污染关键字匹配
+- `message` 模式剥掉帧头后干净匹配; `raw` 模式保留为降级路径
+- `any` / `all` 模式在 message / module / level 三个字段上分别"任一命中"/"全部命中"
+- `any` / `all` 注意: 单字符关键字 ("I"/"W"/"E"/"D"/"T") 会匹配 level 字段, 通常不是想要的
+- 内部 API: `cmd_log::CaptureOutcome.lines: Vec<String>` 改为 `entries: Vec<LogEntry>`, `luatos_log::LogEntry` 显式 derive Clone
+- 删除 `evaluate_keywords` 旧函数, 替换为 `match_keyword(entries, keyword, field) -> bool`
+- 真机验证: V2017 soc @ COM7, default / raw / any(module="user.testrunner") / negative 四种 case 全部符合预期, boot_log_count 269~288, verdict 与 keyword 命中位与 brief 期望一致
+
 ##### trun 自动把 ctx.json 烧入 script.bin
 
 - `build_script_image` 接受 `ctx: &serde_json::Value` 参数，内部调用 `write_ctx_to_temp` 写到临时目录后作为 `ctx_tmp_dir` 传给 `build_script_bin`

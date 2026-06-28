@@ -459,12 +459,12 @@ fn emit_smart_diagnostics(analyzer: &Option<std::sync::Arc<std::sync::Mutex<luat
 
 // ─── capture_log_lines ────────────────────────────────────────────────────────
 
-/// `trun` 抓取日志的产出: 收集到的原始行 + 智能诊断条目
+/// `trun` 抓取日志的产出: 收集到的 LogEntry + 智能诊断条目
 #[derive(Debug, Default, Clone)]
 #[allow(dead_code)]
 pub struct CaptureOutcome {
-    /// 抓取到的所有原始日志行 (未经解析, 用于关键字匹配)
-    pub lines: Vec<String>,
+    /// 抓取到的所有 LogEntry (含解析出的 module/level/message, 用于关键字匹配)
+    pub entries: Vec<luatos_log::LogEntry>,
     /// 抓取过程中触发的智能诊断
     pub diagnostics: Vec<luatos_log::smart::Diagnostic>,
 }
@@ -609,9 +609,8 @@ fn push_entry(
     keywords: &[String],
     fmt: &OutputFormat,
 ) {
-    let raw = entry.raw.clone();
     // 关键字早退检测 (在持锁外做, 避免和 capture 线程互相等待)
-    if !keywords.is_empty() && keywords.iter().any(|k| raw.contains(k)) {
+    if !keywords.is_empty() && keywords.iter().any(|k| entry.raw.contains(k)) {
         stop.store(true, Ordering::Relaxed);
     }
     // 智能诊断
@@ -621,7 +620,7 @@ fn push_entry(
     }
     // 收集 outcome
     if let Ok(mut out) = outcome.lock() {
-        out.lines.push(raw);
+        out.entries.push(entry.clone());
         out.diagnostics.extend(diags);
     }
     if let Err(e) = event::emit_log_entry(fmt, "trun.capture", entry) {
@@ -689,5 +688,13 @@ mod tests {
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         std::thread::sleep(std::time::Duration::from_millis(300));
         let _ = handle.join(); // 不应 panic / hang
+    }
+
+    #[test]
+    fn capture_outcome_uses_entries_field() {
+        // 编译期断言: CaptureOutcome 必须有 entries: Vec<LogEntry> 字段
+        // 这个测试如果编译过, 就证明字段名正确
+        use luatos_log::LogEntry;
+        let _entries: Vec<LogEntry> = crate::cmd_log::CaptureOutcome::default().entries;
     }
 }

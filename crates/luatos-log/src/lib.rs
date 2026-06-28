@@ -1667,4 +1667,20 @@ mod tests {
         let data = [0xA5, 0x00, 0x01, 0x02];
         assert!(SocLogDecoder::decode_one(&data).is_none());
     }
+
+    #[test]
+    fn log_entry_is_clone() {
+        let entry = LogEntry {
+            timestamp: "2026-06-27T22:00:00.000Z".into(),
+            device_time: None,
+            level: LogLevel::Info,
+            module: Some("user.main".into()),
+            message: "hello".into(),
+            raw: "`R\x00\x00I/user.main hello".into(),
+        };
+        let cloned = entry.clone();
+        assert_eq!(cloned.message, "hello");
+        assert_eq!(cloned.module.as_deref(), Some("user.main"));
+        assert_eq!(cloned.level.as_str(), "I");
+    }
 }
