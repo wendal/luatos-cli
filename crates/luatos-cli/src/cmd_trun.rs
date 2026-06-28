@@ -20,6 +20,7 @@ use crate::cmd_flash;
 use crate::cmd_log;
 use crate::event::{self, MessageLevel};
 use crate::OutputFormat;
+use luatos_log::LogEntry;
 
 /// `trun` 子命令
 #[derive(Subcommand, Debug)]
@@ -95,6 +96,10 @@ pub struct TrunRunArgs {
     /// 命中即 FAIL 的关键字（可重复，逗号分隔）
     #[arg(long = "fail-keyword", value_delimiter = ',')]
     pub fail_keywords: Vec<String>,
+
+    /// 关键字匹配字段 (默认 message, 真实解析结果)
+    #[arg(long, value_enum, default_value_t = MatchField::Message)]
+    pub match_field: MatchField,
 
     /// 启用智能诊断（默认开启）
     #[arg(long, default_value_t = true)]
@@ -355,20 +360,32 @@ pub fn cmd_trun_run(args: &TrunRunArgs, format: &OutputFormat) -> Result<Verdict
 
     // 6. 阶段：flash
     let start = Instant::now();
-    let boot_lines = flash_device(args, &script_bin_path, combined_soc.as_deref(), format, &cancel)?;
+    let boot_entries = flash_device(args, &script_bin_path, combined_soc.as_deref(), format, &cancel)?;
     phase_durations.insert(Phase::Flash.as_str().to_string(), start.elapsed().as_millis() as u64);
 
     // 7. 阶段：log_capture
     let start = Instant::now();
-    let (extra_lines, smart_diag) = capture_log(args, &boot_lines, timeout, format, &cancel)?;
-    let mut all_lines = boot_lines;
-    all_lines.extend(extra_lines);
+    let (extra_entries, smart_diag) = capture_log(args, &boot_entries, timeout, format, &cancel)?;
+    let mut all_entries = boot_entries;
+    all_entries.extend(extra_entries);
     phase_durations.insert(Phase::LogCapture.as_str().to_string(), start.elapsed().as_millis() as u64);
 
     // 8. 阶段：finalize
     let start = Instant::now();
-    let keyword_hits = evaluate_keywords(&all_lines, &keywords);
-    let fail_keyword_hits = evaluate_keywords(&all_lines, &fail_keywords);
+    let keyword_hits: Vec<KeywordHit> = keywords
+        .iter()
+        .map(|k| KeywordHit {
+            keyword: k.clone(),
+            found: match_keyword(&all_entries, k, args.match_field),
+        })
+        .collect();
+    let fail_keyword_hits: Vec<KeywordHit> = fail_keywords
+        .iter()
+        .map(|k| KeywordHit {
+            keyword: k.clone(),
+            found: match_keyword(&all_entries, k, args.match_field),
+        })
+        .collect();
     let matched_fail_keywords: Vec<String> = fail_keyword_hits.iter().filter(|h| h.found).map(|h| h.keyword.clone()).collect();
     let fast_failed = !matched_fail_keywords.is_empty();
     let all_passed = keyword_hits.iter().all(|h| h.found) && !fast_failed;
@@ -389,7 +406,7 @@ pub fn cmd_trun_run(args: &TrunRunArgs, format: &OutputFormat) -> Result<Verdict
         fail_keywords: fail_keyword_hits,
         matched_fail_keywords,
         fast_failed,
-        boot_log_count: all_lines.len(),
+        boot_log_count: all_entries.len(),
         smart_diagnostics: smart_diag,
         artifacts: ArtifactSummary {
             script_bin: Some(script_bin_path.display().to_string()),
@@ -504,7 +521,7 @@ fn merge_ctx_layers(args: &TrunRunArgs, root: &Path) -> Result<luatos_testcase::
     build_ctx(root, None, args.ctx.as_deref().map(Path::new), args.full_ctx.as_deref().map(Path::new), 0)
 }
 
-fn flash_device(args: &TrunRunArgs, script_bin_path: &Path, combined_soc: Option<&Path>, format: &OutputFormat, cancel: &Arc<AtomicBool>) -> Result<Vec<String>> {
+fn flash_device(args: &TrunRunArgs, script_bin_path: &Path, combined_soc: Option<&Path>, format: &OutputFormat, cancel: &Arc<AtomicBool>) -> Result<Vec<LogEntry>> {
     if cancel.load(Ordering::Relaxed) {
         bail!("cancelled before flash");
     }
@@ -518,11 +535,17 @@ fn flash_device(args: &TrunRunArgs, script_bin_path: &Path, combined_soc: Option
         let bin_str = script_bin_path.to_str().context("script_bin_path is not valid utf-8")?;
         cmd_flash::cmd_flash_script_bin(soc_for_flash, &args.port, bin_str, &on_progress).context("flash script.bin failed")?;
     }
-    // 简化：boot_lines 暂时为空，由后续 log_capture 阶段抓取
+    // 简化：boot_entries 暂时为空，由后续 log_capture 阶段抓取
     Ok(Vec::new())
 }
 
-fn capture_log(args: &TrunRunArgs, _boot_lines: &[String], timeout_secs: u64, format: &OutputFormat, cancel: &Arc<AtomicBool>) -> Result<(Vec<String>, Vec<SmartDiagnosticEntry>)> {
+fn capture_log(
+    args: &TrunRunArgs,
+    _boot_entries: &[LogEntry],
+    timeout_secs: u64,
+    format: &OutputFormat,
+    cancel: &Arc<AtomicBool>,
+) -> Result<(Vec<LogEntry>, Vec<SmartDiagnosticEntry>)> {
     let early_kw: Vec<String> = if args.early_exit { args.keywords.clone() } else { Vec::new() };
 
     let outcome = cmd_log::capture_log_lines(&args.soc, &args.port, args.baud, timeout_secs, &early_kw, format, cancel).context("capture_log_lines failed")?;
@@ -538,17 +561,32 @@ fn capture_log(args: &TrunRunArgs, _boot_lines: &[String], timeout_secs: u64, fo
         })
         .collect();
 
-    Ok((outcome.lines, smart_entries))
+    Ok((outcome.entries, smart_entries))
 }
 
-fn evaluate_keywords(lines: &[String], keywords: &[String]) -> Vec<KeywordHit> {
-    keywords
-        .iter()
-        .map(|k| KeywordHit {
-            keyword: k.clone(),
-            found: lines.iter().any(|l| l.contains(k)),
-        })
-        .collect()
+/// 关键字匹配字段模式
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum MatchField {
+    /// 仅 message 字段 (LuatosParser 剥掉帧头后的内容, 默认)
+    #[default]
+    Message,
+    /// 仅 raw 字段 (含 SOH+len+type 帧头, 旧行为, 降级路径)
+    Raw,
+    /// message / module / level 任一字段包含 keyword 即命中
+    Any,
+    /// message / module / level 全部字段都包含 keyword 才命中
+    All,
+}
+
+/// 在 LogEntry 列表上按 field 模式匹配单个 keyword
+pub fn match_keyword(entries: &[LogEntry], keyword: &str, field: MatchField) -> bool {
+    entries.iter().any(|e| match field {
+        MatchField::Raw => e.raw.contains(keyword),
+        MatchField::Message => e.message.contains(keyword),
+        MatchField::Any => e.message.contains(keyword) || e.module.as_deref().unwrap_or("").contains(keyword) || e.level.as_str().contains(keyword),
+        MatchField::All => e.message.contains(keyword) && e.module.as_deref().unwrap_or("").contains(keyword) && e.level.as_str().contains(keyword),
+    })
 }
 
 fn derive_verdict(all_passed: bool, fast_failed: bool) -> Verdict {
@@ -575,6 +613,62 @@ fn emit_outcome(format: &OutputFormat, outcome: &TrunOutcome) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use luatos_log::{LogEntry, LogLevel};
+
+    fn entry(msg: &str, module: Option<&str>, level: LogLevel) -> LogEntry {
+        let level_str = level.as_str();
+        LogEntry {
+            timestamp: "2026-06-27T22:00:00.000Z".into(),
+            device_time: None,
+            level: level.clone(),
+            module: module.map(String::from),
+            message: msg.into(),
+            raw: format!("`R\x00\x00{}{}{}", level_str, module.unwrap_or(""), msg),
+        }
+    }
+
+    #[test]
+    fn match_keyword_message_only() {
+        let entries = vec![entry("hello world", Some("user.main"), LogLevel::Info)];
+        assert!(match_keyword(&entries, "hello", MatchField::Message));
+        assert!(!match_keyword(&entries, "user.main", MatchField::Message), "module 不应被 message 模式命中");
+        assert!(!match_keyword(&entries, "I", MatchField::Message), "level 不应被 message 模式命中");
+    }
+
+    #[test]
+    fn match_keyword_raw_only() {
+        let entries = vec![entry("hello", Some("user.main"), LogLevel::Info)];
+        // raw 包含帧头, 也包含 module 名称
+        assert!(match_keyword(&entries, "user.main", MatchField::Raw));
+        assert!(match_keyword(&entries, "hello", MatchField::Raw));
+    }
+
+    #[test]
+    fn match_keyword_any_field() {
+        let entries = vec![entry("hello", Some("user.testrunner"), LogLevel::Info)];
+        // message 命中
+        assert!(match_keyword(&entries, "hello", MatchField::Any));
+        // module 命中
+        assert!(match_keyword(&entries, "testrunner", MatchField::Any));
+        // level 命中 (单字符 "I")
+        assert!(match_keyword(&entries, "I", MatchField::Any));
+        // 不存在的关键字
+        assert!(!match_keyword(&entries, "nonexistent", MatchField::Any));
+    }
+
+    #[test]
+    fn match_keyword_all_fields() {
+        // 构造一个 module="user.main" level=Info message="hello" 的 entry
+        let entries = vec![entry("hello", Some("user.main"), LogLevel::Info)];
+        // 三个字段都包含 "main": message? no. level? no. module? yes.
+        assert!(!match_keyword(&entries, "main", MatchField::All), "仅 module 命中不应触发 All");
+        // 三个字段都包含 "user.main" 是不可能的 (只有 module 有 user.main)
+        assert!(!match_keyword(&entries, "user.main", MatchField::All), "All 必须三字段都包含, 仅 module 不够");
+        // 构造一个三字段都包含同一字符串的: 用 "I" 不行 (message 不含 I 除非巧合)
+        // 改用 entry("I-info", Some("user.I"), LogLevel::Info) 三个都含 "I"
+        let triple = vec![entry("I-info", Some("user.I"), LogLevel::Info)];
+        assert!(match_keyword(&triple, "I", MatchField::All), "三字段都含 I, All 应命中");
+    }
 
     #[test]
     fn install_ctrlc_is_idempotent() {
@@ -610,6 +704,7 @@ mod tests {
             keep_soc: None,
             keywords: vec![],
             fail_keywords: vec![],
+            match_field: MatchField::Message,
             smart: true,
             timeout: Some(1),
             early_exit: true,
@@ -617,7 +712,7 @@ mod tests {
             full_ctx: None,
         };
         let cancel = Arc::new(AtomicBool::new(false));
-        let res = capture_log(&args, &[], 1, &crate::OutputFormat::Text, &cancel);
+        let res = capture_log(&args, &[] as &[LogEntry], 1, &crate::OutputFormat::Text, &cancel);
         assert!(res.is_err(), "fake soc should return Err, got {res:?}");
     }
 }
