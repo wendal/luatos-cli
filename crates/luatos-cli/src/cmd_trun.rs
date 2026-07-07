@@ -81,9 +81,13 @@ pub struct TrunRunArgs {
     #[command(flatten)]
     pub reset: crate::reset_args::ResetArgs,
 
-    /// 冷路径：合新 soc 后刷整个固件（默认仅刷 script.bin）
+    /// 全量刷机：刷入底层固件 + 脚本分区（默认仅刷脚本分区）
     #[arg(long)]
-    pub full_soc: bool,
+    pub full: bool,
+
+    /// 刷机前清除文件系统分区
+    #[arg(long)]
+    pub clear_fs: bool,
 
     /// 保留合成的 script.bin / soc 到指定目录
     #[arg(long, value_name = "DIR")]
@@ -349,18 +353,25 @@ pub fn cmd_trun_run(args: &TrunRunArgs, format: &OutputFormat) -> Result<Verdict
     let common_scripts = resolve_common_scripts(args, &root);
     let built_ctx = prepare_ctx(args, &root, common_scripts.as_deref())?;
     let ctx_test_id = built_ctx.test_id.clone();
+    // 把 ctx.json 写入临时目录，保持到 flash 阶段结束
+    let (ctx_tmp, _ctx_path) = write_ctx_to_temp(&built_ctx.value).context("write ctx.json to temp failed")?;
     phase_durations.insert(Phase::Ctx.as_str().to_string(), start.elapsed().as_millis() as u64);
 
     // 5. 阶段：build（自动把 ctx.json 烧入 script.bin）
     let start = Instant::now();
-    let script_bin = build_script_image(args, &resolved, &chip, &built_ctx.value)?;
+    let script_bin = build_script_image_with_ctx(args, &resolved, &chip, &ctx_tmp)?;
     let script_bin_path = write_script_bin(&script_bin, args.keep_soc.as_deref())?;
-    let combined_soc = if args.full_soc { Some(combine_soc(args, &script_bin, &soc_info)?) } else { None };
+    // 仅非 bk72xx 在全量模式时才需要合成 combined.soc
+    let combined_soc = if args.full && !matches!(chip.as_str(), "bk72xx" | "air8101") {
+        Some(combine_soc(args, &script_bin, &soc_info)?)
+    } else {
+        None
+    };
     phase_durations.insert(Phase::Build.as_str().to_string(), start.elapsed().as_millis() as u64);
 
     // 6. 阶段：flash
     let start = Instant::now();
-    let boot_entries = flash_device(args, &script_bin_path, combined_soc.as_deref(), format, &cancel)?;
+    let boot_entries = flash_device(args, &resolved, common_scripts.as_deref(), &ctx_tmp, &script_bin_path, combined_soc.as_deref(), format, &cancel)?;
     phase_durations.insert(Phase::Flash.as_str().to_string(), start.elapsed().as_millis() as u64);
 
     // 7. 阶段：log_capture
@@ -401,7 +412,7 @@ pub fn cmd_trun_run(args: &TrunRunArgs, format: &OutputFormat) -> Result<Verdict
         test_id: ctx_test_id,
         runner_id: String::new(),
         runner_mode: "cli-debug".into(),
-        build_path: if args.full_soc { "flash_soc".into() } else { "flash_script".into() },
+        build_path: if args.full { "flash_full".into() } else { "flash_script".into() },
         keywords: keyword_hits,
         fail_keywords: fail_keyword_hits,
         matched_fail_keywords,
@@ -467,15 +478,15 @@ fn install_ctrlc(format: &OutputFormat, cancel: Arc<AtomicBool>) {
     });
 }
 
-fn build_script_image(args: &TrunRunArgs, resolved: &ResolvedTestcase, chip: &str, ctx: &serde_json::Value) -> Result<Vec<u8>> {
+fn build_script_image_with_ctx(args: &TrunRunArgs, resolved: &ResolvedTestcase, chip: &str, ctx_tmp: &tempfile::TempDir) -> Result<Vec<u8>> {
     let common = resolve_common_scripts(args, &resolve_luatos_root(args.luatos_root.as_deref())?);
     let script_dirs: Vec<&Path> = vec![resolved.scripts_dir.as_path()];
-    // 把 ctx.json 写到临时目录,让 build_script_bin 把它当一个 src 目录合并进 script.bin
-    // 这样设备端 SDK 启动后就能 io.open("/ctx.json") 拿到 test_id/runner_id/runner_mode 等字段
-    let (ctx_tmp, _ctx_path) = write_ctx_to_temp(ctx).context("write ctx.json to temp failed")?;
-    let image = build_script_bin(&script_dirs, common.as_deref(), Some(ctx_tmp.path()), chip).context("build script.bin 失败")?;
-    // ctx_tmp 在此处 drop, 但 image 已复制到内存
-    Ok(image)
+    build_script_bin(
+        &script_dirs,
+        common.as_deref(),
+        Some(ctx_tmp.path()),
+        chip,
+    ).context("build script.bin 失败")
 }
 
 fn write_script_bin(image: &[u8], keep_dir: Option<&str>) -> Result<PathBuf> {
@@ -521,20 +532,94 @@ fn merge_ctx_layers(args: &TrunRunArgs, root: &Path) -> Result<luatos_testcase::
     build_ctx(root, None, args.ctx.as_deref().map(Path::new), args.full_ctx.as_deref().map(Path::new), 0)
 }
 
-fn flash_device(args: &TrunRunArgs, script_bin_path: &Path, combined_soc: Option<&Path>, format: &OutputFormat, cancel: &Arc<AtomicBool>) -> Result<Vec<LogEntry>> {
+fn flash_device(
+    args: &TrunRunArgs,
+    resolved: &ResolvedTestcase,
+    common_scripts: Option<&Path>,
+    ctx_tmp: &tempfile::TempDir,
+    script_bin_path: &Path,
+    combined_soc: Option<&Path>,
+    format: &OutputFormat,
+    cancel: &Arc<AtomicBool>,
+) -> Result<Vec<LogEntry>> {
     if cancel.load(Ordering::Relaxed) {
         bail!("cancelled before flash");
     }
+
     let soc_for_flash = combined_soc.and_then(|p| p.to_str()).unwrap_or(args.soc.as_str());
-    if combined_soc.is_some() {
-        // 冷路径：刷整个 soc
-        cmd_flash::cmd_flash_run(soc_for_flash, &args.port, args.baud, None, args.progress_step, format, &args.reset, None, 0).context("flash run failed")?;
-    } else {
-        // 快路径：刷 script.bin
-        let on_progress = cmd_flash::make_progress_callback(format, "testcase.run", args.progress_step);
-        let bin_str = script_bin_path.to_str().context("script_bin_path is not valid utf-8")?;
-        cmd_flash::cmd_flash_script_bin(soc_for_flash, &args.port, bin_str, &on_progress).context("flash script.bin failed")?;
+    let on_progress = cmd_flash::make_progress_callback(format, "testcase.run", args.progress_step);
+
+    // 收集脚本源目录：testcase scripts → common scripts → ctx 临时目录（最后，最高优先级）
+    let mut script_folders: Vec<String> = vec![resolved.scripts_dir.display().to_string()];
+    if let Some(common) = common_scripts {
+        script_folders.push(common.display().to_string());
     }
+    script_folders.push(ctx_tmp.path().display().to_string());
+
+    let info = luatos_soc::read_soc_info(soc_for_flash)?;
+    let chip = info.chip.chip_type.as_str();
+
+    match chip {
+        "bk72xx" | "air8101" => {
+            if args.clear_fs {
+                luatos_flash::bk7258::clear_filesystem(soc_for_flash, &args.port, cancel.clone(), on_progress)
+                    .context("clear filesystem failed")?;
+            }
+
+            if args.full {
+                // 全量：底层固件 + 脚本分区
+                cmd_flash::cmd_flash_run(
+                    soc_for_flash,
+                    &args.port,
+                    args.baud,
+                    Some(&script_folders),
+                    args.progress_step,
+                    format,
+                    &args.reset,
+                    None,
+                    0,
+                )
+                .context("flash run failed")?;
+            } else {
+                // 仅刷脚本分区
+                cmd_flash::cmd_flash_partition(
+                    "script",
+                    soc_for_flash,
+                    &args.port,
+                    Some(&script_folders),
+                    args.progress_step,
+                    format,
+                    &args.reset,
+                    None,
+                    args.baud,
+                )
+                .context("flash script partition failed")?;
+            }
+        }
+        _ => {
+            if combined_soc.is_some() {
+                // 冷路径：刷整个 soc
+                cmd_flash::cmd_flash_run(
+                    soc_for_flash,
+                    &args.port,
+                    args.baud,
+                    None,
+                    args.progress_step,
+                    format,
+                    &args.reset,
+                    None,
+                    0,
+                )
+                .context("flash run failed")?;
+            } else {
+                // 快路径：刷 script.bin
+                let bin_str = script_bin_path.to_str().context("script_bin_path is not valid utf-8")?;
+                cmd_flash::cmd_flash_script_bin(soc_for_flash, &args.port, bin_str, &on_progress)
+                    .context("flash script.bin failed")?;
+            }
+        }
+    }
+
     // 简化：boot_entries 暂时为空，由后续 log_capture 阶段抓取
     Ok(Vec::new())
 }
@@ -704,7 +789,8 @@ mod tests {
             common_scripts: None,
             progress_step: 10,
             reset: crate::reset_args::ResetArgs::default(),
-            full_soc: false,
+            full: false,
+            clear_fs: false,
             keep_soc: None,
             keywords: vec![],
             fail_keywords: vec![],

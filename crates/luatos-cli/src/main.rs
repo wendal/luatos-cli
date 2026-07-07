@@ -1117,7 +1117,8 @@ mod tests {
         assert_eq!(args.port, "COM6");
         assert_eq!(args.keywords, vec!["LuatOS@".to_string()]);
         assert_eq!(args.fail_keywords, vec!["panic".to_string()]);
-        assert!(!args.full_soc);
+        assert!(!args.full);
+        assert!(!args.clear_fs);
     }
 
     #[test]
