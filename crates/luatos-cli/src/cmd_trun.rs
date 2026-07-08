@@ -85,6 +85,10 @@ pub struct TrunRunArgs {
     #[arg(long)]
     pub full: bool,
 
+    /// 仅刷机：合成 + 刷机 + 注入 ctx.json 后返回，不抓取日志也不做关键字判定
+    #[arg(long)]
+    pub flash_only: bool,
+
     /// 刷机前清除文件系统分区
     #[arg(long)]
     pub clear_fs: bool,
@@ -374,34 +378,50 @@ pub fn cmd_trun_run(args: &TrunRunArgs, format: &OutputFormat) -> Result<Verdict
     let boot_entries = flash_device(args, &resolved, common_scripts.as_deref(), &ctx_tmp, &script_bin_path, combined_soc.as_deref(), format, &cancel)?;
     phase_durations.insert(Phase::Flash.as_str().to_string(), start.elapsed().as_millis() as u64);
 
-    // 7. 阶段：log_capture
-    let start = Instant::now();
-    let (extra_entries, smart_diag) = capture_log(args, &boot_entries, timeout, format, &cancel)?;
-    let mut all_entries = boot_entries;
-    all_entries.extend(extra_entries);
-    phase_durations.insert(Phase::LogCapture.as_str().to_string(), start.elapsed().as_millis() as u64);
+    // 7. 阶段：log_capture（--flash-only 时跳过）
+    let (all_entries, smart_diag) = if args.flash_only {
+        event::emit_message(format, "testcase.run", MessageLevel::Info, "flash-only mode: skip log capture and verdict")?;
+        (boot_entries, Vec::new())
+    } else {
+        let start = Instant::now();
+        let (extra_entries, smart_diag) = capture_log(args, &boot_entries, timeout, format, &cancel)?;
+        let mut all_entries = boot_entries;
+        all_entries.extend(extra_entries);
+        phase_durations.insert(Phase::LogCapture.as_str().to_string(), start.elapsed().as_millis() as u64);
+        (all_entries, smart_diag)
+    };
 
-    // 8. 阶段：finalize
+    // 8. 阶段：finalize（--flash-only 时跳过关键字判定）
     let start = Instant::now();
-    let keyword_hits: Vec<KeywordHit> = keywords
-        .iter()
-        .map(|k| KeywordHit {
-            keyword: k.clone(),
-            found: match_keyword(&all_entries, k, args.match_field),
-        })
-        .collect();
-    let fail_keyword_hits: Vec<KeywordHit> = fail_keywords
-        .iter()
-        .map(|k| KeywordHit {
-            keyword: k.clone(),
-            found: match_keyword(&all_entries, k, args.match_field),
-        })
-        .collect();
-    let matched_fail_keywords: Vec<String> = fail_keyword_hits.iter().filter(|h| h.found).map(|h| h.keyword.clone()).collect();
-    let fast_failed = !matched_fail_keywords.is_empty();
-    let all_passed = keyword_hits.iter().all(|h| h.found) && !fast_failed;
-
-    let verdict = derive_verdict(all_passed, fast_failed);
+    let (verdict, keyword_hits, fail_keyword_hits, matched_fail_keywords, fast_failed) = if args.flash_only {
+        (
+            Verdict::Pass,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            false,
+        )
+    } else {
+        let keyword_hits: Vec<KeywordHit> = keywords
+            .iter()
+            .map(|k| KeywordHit {
+                keyword: k.clone(),
+                found: match_keyword(&all_entries, k, args.match_field),
+            })
+            .collect();
+        let fail_keyword_hits: Vec<KeywordHit> = fail_keywords
+            .iter()
+            .map(|k| KeywordHit {
+                keyword: k.clone(),
+                found: match_keyword(&all_entries, k, args.match_field),
+            })
+            .collect();
+        let matched_fail_keywords: Vec<String> = fail_keyword_hits.iter().filter(|h| h.found).map(|h| h.keyword.clone()).collect();
+        let fast_failed = !matched_fail_keywords.is_empty();
+        let all_passed = keyword_hits.iter().all(|h| h.found) && !fast_failed;
+        let verdict = derive_verdict(all_passed, fast_failed);
+        (verdict, keyword_hits, fail_keyword_hits, matched_fail_keywords, fast_failed)
+    };
     phase_durations.insert(Phase::Finalize.as_str().to_string(), start.elapsed().as_millis() as u64);
     let outcome = TrunOutcome {
         verdict: verdict.clone(),
@@ -562,24 +582,43 @@ fn flash_device(
     match chip {
         "bk72xx" | "air8101" => {
             if args.clear_fs {
-                luatos_flash::bk7258::clear_filesystem(soc_for_flash, &args.port, cancel.clone(), on_progress)
+                let cb = cmd_flash::make_progress_callback(format, "testcase.run", args.progress_step);
+                luatos_flash::bk7258::clear_filesystem(soc_for_flash, &args.port, cancel.clone(), cb)
                     .context("clear filesystem failed")?;
             }
 
             if args.full {
-                // 全量：底层固件 + 脚本分区
-                cmd_flash::cmd_flash_run(
-                    soc_for_flash,
-                    &args.port,
-                    args.baud,
-                    Some(&script_folders),
-                    args.progress_step,
-                    format,
-                    &args.reset,
-                    None,
-                    0,
-                )
-                .context("flash run failed")?;
+                if args.flash_only {
+                    // flash_only 模式：只负责合成+刷机，不抓 boot log，避免串口占用。
+                    let folders_refs: Option<Vec<&str>> = Some(script_folders.iter().map(|s| s.as_str()).collect());
+                    luatos_flash::bk7258::flash_bk7258(
+                        soc_for_flash,
+                        folders_refs.as_deref(),
+                        &args.port,
+                        args.baud,
+                        cancel.clone(),
+                        on_progress,
+                        false,
+                    )
+                    .context("flash run failed")?;
+                    // air602_flash.exe 刷完 firmware 后会自行重启；随后 native ISP 刷 script 分区
+                    // 仅关闭串口并不会让设备从 flash 启动，因此需要显式 RTS 复位确保新 script 跑起来。
+                    args.reset.execute(&args.port).context("post-flash reset failed")?;
+                } else {
+                    // 全量：底层固件 + 脚本分区
+                    cmd_flash::cmd_flash_run(
+                        soc_for_flash,
+                        &args.port,
+                        args.baud,
+                        Some(&script_folders),
+                        args.progress_step,
+                        format,
+                        &args.reset,
+                        None,
+                        0,
+                    )
+                    .context("flash run failed")?;
+                }
             } else {
                 // 仅刷脚本分区
                 cmd_flash::cmd_flash_partition(
@@ -790,6 +829,7 @@ mod tests {
             progress_step: 10,
             reset: crate::reset_args::ResetArgs::default(),
             full: false,
+            flash_only: false,
             clear_fs: false,
             keep_soc: None,
             keywords: vec![],

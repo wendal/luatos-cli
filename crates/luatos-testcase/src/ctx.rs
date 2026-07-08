@@ -138,6 +138,22 @@ pub fn build_ctx(luatos_root: &Path, local_ctx_path: Option<&Path>, ctx_path: Op
     if let Some(p) = full_ctx_path {
         let mut value = read_json_file(p)?;
         ensure_object(&mut value, p)?;
+        // 优先使用用户传入的 test_id/runner_id/runner_mode，未提供再回退到自动生成
+        let test_id = value
+            .get("test_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| gen_identifiers().0);
+        let runner_id = value
+            .get("runner_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| gen_identifiers().1);
+        let runner_mode = value
+            .get("runner_mode")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "cli-debug".to_string());
         return Ok(CtxBuildResult {
             value,
             test_id,

@@ -465,8 +465,8 @@ fn flash_data(
 const LOG_CAPTURE_SECS: u64 = 20;
 
 /// Flash via air602_flash.exe subprocess (BK7258 preferred path).
-/// Returns captured boot log lines.
-fn flash_via_subprocess(exe_path: &Path, rom_path: &Path, port: &str, log_br: u32, cancel: &AtomicBool, on_progress: &ProgressCallback) -> Result<Vec<String>> {
+/// Returns captured boot log lines when `capture_boot_log` is true.
+fn flash_via_subprocess(exe_path: &Path, rom_path: &Path, port: &str, log_br: u32, cancel: &AtomicBool, on_progress: &ProgressCallback, capture_boot_log: bool) -> Result<Vec<String>> {
     // Strip "COM" prefix — air602_flash.exe wants a bare number
     let port_num: String = port.chars().filter(|c| c.is_ascii_digit()).collect();
     if port_num.is_empty() {
@@ -524,6 +524,11 @@ fn flash_via_subprocess(exe_path: &Path, rom_path: &Path, port: &str, log_br: u3
         Box::new(|_: &FlashProgress| {})
     };
     let _ = on_progress_clone; // silence unused warning
+
+    if !capture_boot_log {
+        on_progress(&FlashProgress::done_ok("Flash complete! (boot log capture skipped)"));
+        return Ok(Vec::new());
+    }
 
     on_progress(&FlashProgress::info("Booting", 94.0, &format!("Firmware sent! Opening {port} @ {log_br} for boot log…")));
 
@@ -592,7 +597,7 @@ fn flash_via_subprocess(exe_path: &Path, rom_path: &Path, port: &str, log_br: u3
 /// If `air602_flash.exe` is found in the .soc archive, uses subprocess mode.
 /// Otherwise uses native Rust serial protocol.
 ///
-/// Returns captured boot log lines.
+/// Returns captured boot log lines when `capture_boot_log` is true.
 pub fn flash_bk7258(
     soc_path: &str,
     script_folders: Option<&[&str]>,
@@ -600,6 +605,7 @@ pub fn flash_bk7258(
     baud_rate: Option<u32>,
     cancel: Arc<AtomicBool>,
     on_progress: ProgressCallback,
+    capture_boot_log: bool,
 ) -> Result<Vec<String>> {
     cancel.store(false, Ordering::Relaxed);
 
@@ -625,15 +631,22 @@ pub fn flash_bk7258(
     // 3. Subprocess path (preferred): use bundled air602_flash.exe
     let exe_path = tempdir.path().join("air602_flash.exe");
     if exe_path.exists() {
-        if script_folders.is_some() {
-            on_progress(&FlashProgress::info(
-                "Preparing",
-                2.0,
-                "[WARN] Script flashing not supported in subprocess mode; firmware only.",
-            ));
-        }
         on_progress(&FlashProgress::info("Preparing", 3.0, &format!("Firmware: {} (subprocess mode)", info.rom.file)));
-        return flash_via_subprocess(&exe_path, &rom_path, port, log_br, &cancel, &on_progress);
+        let boot_log = flash_via_subprocess(&exe_path, &rom_path, port, log_br, &cancel, &on_progress, capture_boot_log)?;
+
+        // air602_flash.exe only writes firmware; flash the script partition separately
+        // via native ISP when the caller supplied script folders.
+        if let Some(folders) = script_folders {
+            if cancel.load(Ordering::Relaxed) {
+                bail!("Flash cancelled by user");
+            }
+            on_progress(&FlashProgress::info("Preparing", 1.0, "Firmware done; flashing script partition…"));
+            // Brief pause so the OS releases the serial port after the subprocess exits.
+            std::thread::sleep(Duration::from_millis(500));
+            flash_script_only(soc_path, folders, port, cancel.clone(), &on_progress)?;
+        }
+
+        return Ok(boot_log);
     }
 
     // 4. Native Rust path (fallback)
@@ -856,7 +869,7 @@ fn connect_bootloader(port: &str, flash_br: u32, cancel: &AtomicBool, on_progres
 ///
 /// This is the most common operation during development:
 ///   get_bus → set_baud → unprotect → build LuaDB → erase+write at script_addr
-pub fn flash_script_only(soc_path: &str, script_folders: &[&str], port: &str, cancel: Arc<AtomicBool>, on_progress: ProgressCallback) -> Result<()> {
+pub fn flash_script_only(soc_path: &str, script_folders: &[&str], port: &str, cancel: Arc<AtomicBool>, on_progress: &ProgressCallback) -> Result<()> {
     cancel.store(false, Ordering::Relaxed);
     on_progress(&FlashProgress::info("Preparing", 1.0, "Parsing SOC info…"));
 
@@ -885,14 +898,14 @@ pub fn flash_script_only(soc_path: &str, script_folders: &[&str], port: &str, ca
     }
 
     // Connect bootloader
-    let mut serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
+    let mut serial = connect_bootloader(port, flash_br, &cancel, on_progress)?;
 
     if cancel.load(Ordering::Relaxed) {
         bail!("Flash cancelled by user");
     }
 
     // Flash script
-    flash_data(&mut *serial, &script_data, script_addr, 30.0, 95.0, "Script", &cancel, &on_progress)?;
+    flash_data(&mut *serial, &script_data, script_addr, 30.0, 95.0, "Script", &cancel, on_progress)?;
 
     drop(serial);
     on_progress(&FlashProgress::done_ok("Script flash complete! Device is rebooting."));

@@ -72,7 +72,7 @@ fn do_flash(soc_path: &str, port: Option<&str>, tx: &Sender<WorkerMsg>, cancel: 
         "bk72xx" | "air8101" => {
             let port_str = port.ok_or_else(|| anyhow::anyhow!("bk72xx/air8101 需要指定串口"))?;
             let cb = make_cb(tx);
-            luatos_flash::bk7258::flash_bk7258(soc_path, None, port_str, None, Arc::clone(&cancel), cb)?;
+            luatos_flash::bk7258::flash_bk7258(soc_path, None, port_str, None, Arc::clone(&cancel), cb, true)?;
         }
         "air6208" | "air101" | "air103" | "air601" => {
             let port_str = port.ok_or_else(|| anyhow::anyhow!("XT804 系列需要指定串口"))?;

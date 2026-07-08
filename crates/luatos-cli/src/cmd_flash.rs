@@ -154,7 +154,7 @@ pub fn cmd_flash_run(
     match chip {
         "bk72xx" | "air8101" => {
             let folders_refs: Option<Vec<&str>> = script_folders.map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
-            let lines = luatos_flash::bk7258::flash_bk7258(soc, folders_refs.as_deref(), port, baud, cancel, on_progress)?;
+            let lines = luatos_flash::bk7258::flash_bk7258(soc, folders_refs.as_deref(), port, baud, cancel, on_progress, true)?;
             match format {
                 OutputFormat::Text => {
                     if !lines.is_empty() {
@@ -288,7 +288,7 @@ pub fn cmd_flash_partition(
             "script" => {
                 let folders = script_folders.expect("script folder required");
                 let refs: Vec<&str> = folders.iter().map(|s| s.as_str()).collect();
-                luatos_flash::bk7258::flash_script_only(soc, &refs, port, cancel, on_progress)?;
+                luatos_flash::bk7258::flash_script_only(soc, &refs, port, cancel, &on_progress)?;
             }
             "clear-fs" => {
                 luatos_flash::bk7258::clear_filesystem(soc, port, cancel, on_progress)?;
@@ -559,7 +559,7 @@ pub fn cmd_flash_test(
     let boot_lines_from_flash: Vec<String> = match chip.as_str() {
         "bk72xx" | "air8101" => {
             let folders_refs: Option<Vec<&str>> = script_folders.map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
-            luatos_flash::bk7258::flash_bk7258(soc, folders_refs.as_deref(), port, baud, cancel.clone(), on_progress)?
+            luatos_flash::bk7258::flash_bk7258(soc, folders_refs.as_deref(), port, baud, cancel.clone(), on_progress, true)?
         }
         "air6208" | "air101" | "air103" | "air601" => {
             let on_progress2 = make_progress_callback(format, "flash.test", step);
