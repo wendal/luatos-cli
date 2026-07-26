@@ -730,10 +730,6 @@ enum FotaCommands {
         /// Build a script-only FOTA package (EC7xx/Air8000, Air1601/Air1602/CCM4211, BK72XX)
         #[arg(long)]
         script_only: bool,
-        /// Force differential FOTA even when old/new binpkg underlying firmware matches
-        /// (skip the auto-fallback to --script-only for EC7xx/Air8000/Air780E)
-        #[arg(long, default_value_t = false)]
-        force_par: bool,
     },
 }
 
@@ -975,7 +971,6 @@ fn main() {
                 fota_toolkit,
                 soc_tools,
                 script_only,
-                force_par,
             } => cmd_fota::cmd_fota_build(
                 &new,
                 old.as_deref(),
@@ -983,7 +978,6 @@ fn main() {
                 fota_toolkit.as_deref(),
                 soc_tools.as_deref(),
                 script_only,
-                force_par,
                 &cli.format,
             ),
         },
@@ -1003,9 +997,14 @@ fn main() {
         Commands::Doctor { dir } => cmd_doctor::cmd_doctor(&dir, &cli.format),
         Commands::Version => {
             let version = env!("CARGO_PKG_VERSION");
+            let target_os = std::env::consts::OS;
+            let target_arch = std::env::consts::ARCH;
+            let exe_suffix = std::env::consts::EXE_SUFFIX;
             match cli.format {
                 OutputFormat::Text => {
                     println!("luatos-cli v{version}");
+                    println!("target: {target_os}/{target_arch}");
+                    println!("exe_suffix: {}", if exe_suffix.is_empty() { "<none>" } else { exe_suffix });
                 }
                 OutputFormat::Json | OutputFormat::Jsonl => {
                     if let Err(err) = event::emit_result(
@@ -1015,6 +1014,9 @@ fn main() {
                         serde_json::json!({
                             "version": version,
                             "name": "luatos-cli",
+                            "target_os": target_os,
+                            "target_arch": target_arch,
+                            "exe_suffix": exe_suffix,
                         }),
                     ) {
                         eprintln!("Error: {err:#}");
