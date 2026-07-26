@@ -86,9 +86,38 @@ fn bk_crc16(block: &[u8; 32]) -> u16 {
 pub mod build;
 pub mod embedded_helpers;
 
+/// luac 调试信息保留级别：无调试信息（source 字段也不写）
+pub const LUAC_DEBUG_NONE: u8 = 0;
+/// luac 调试信息保留级别：仅行号（lineinfo）
+pub const LUAC_DEBUG_LINE: u8 = 1;
+/// luac 调试信息保留级别：仅局部变量名 + upvalue 名
+pub const LUAC_DEBUG_VAR: u8 = 2;
+/// luac 调试信息保留级别：全部调试信息
+pub const LUAC_DEBUG_ALL: u8 = 99;
+
+/// 规范化 luac 调试级别：0/1/2/99 原样返回，其余一律回退 99。
+pub fn normalize_luac_debug(mode: u8) -> u8 {
+    match mode {
+        LUAC_DEBUG_NONE | LUAC_DEBUG_LINE | LUAC_DEBUG_VAR | LUAC_DEBUG_ALL => mode,
+        _ => LUAC_DEBUG_ALL,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalize_luac_debug_whitelist() {
+        assert_eq!(normalize_luac_debug(LUAC_DEBUG_NONE), 0);
+        assert_eq!(normalize_luac_debug(LUAC_DEBUG_LINE), 1);
+        assert_eq!(normalize_luac_debug(LUAC_DEBUG_VAR), 2);
+        assert_eq!(normalize_luac_debug(LUAC_DEBUG_ALL), 99);
+        // 非法值一律回退 99
+        assert_eq!(normalize_luac_debug(3), 99);
+        assert_eq!(normalize_luac_debug(5), 99);
+        assert_eq!(normalize_luac_debug(255), 99);
+    }
 
     #[test]
     fn pack_round_trip() {

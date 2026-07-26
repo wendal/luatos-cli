@@ -23,7 +23,7 @@ typedef struct {
   lua_State *L;
   lua_Writer writer;
   void *data;
-  int strip;
+  int mode;  /* luacore debug mode: 0=none, 1=lineinfo only, 2=var names only, 99=all */
   int status;
 } DumpState;
 
@@ -146,17 +146,20 @@ static void DumpUpvalues (const Proto *f, DumpState *D) {
 
 static void DumpDebug (const Proto *f, DumpState *D) {
   int i, n;
-  n = (D->strip) ? 0 : f->sizelineinfo;
+  /* luacore debug modes: 0=none, 1=lineinfo only, 2=var names only, 99=all */
+  int keep_line = (D->mode == 1 || D->mode == 99);
+  int keep_vars = (D->mode == 2 || D->mode == 99);
+  n = keep_line ? f->sizelineinfo : 0;
   DumpInt(n, D);
   DumpVector(f->lineinfo, n, D);
-  n = (D->strip) ? 0 : f->sizelocvars;
+  n = keep_vars ? f->sizelocvars : 0;
   DumpInt(n, D);
   for (i = 0; i < n; i++) {
     DumpString(f->locvars[i].varname, D);
     DumpInt(f->locvars[i].startpc, D);
     DumpInt(f->locvars[i].endpc, D);
   }
-  n = (D->strip) ? 0 : f->sizeupvalues;
+  n = keep_vars ? f->sizeupvalues : 0;
   DumpInt(n, D);
   for (i = 0; i < n; i++)
     DumpString(f->upvalues[i].name, D);
@@ -164,7 +167,7 @@ static void DumpDebug (const Proto *f, DumpState *D) {
 
 
 static void DumpFunction (const Proto *f, TString *psource, DumpState *D) {
-  if (D->strip || f->source == psource)
+  if (D->mode == 0 || f->source == psource)
     DumpString(NULL, D);  /* no debug info or same source as its parent */
   else
     DumpString(f->source, D);
@@ -197,19 +200,32 @@ static void DumpHeader (DumpState *D) {
 
 
 /*
-** dump Lua function as precompiled chunk
+** dump Lua function as precompiled chunk, with luacore debug mode:
+** 0 = no debug info, 1 = line numbers only, 2 = variable names only,
+** 99 = all debug info; invalid values fall back to 99
 */
-int luaU_dump(lua_State *L, const Proto *f, lua_Writer w, void *data,
-              int strip) {
+int luaU_dump_ex (lua_State *L, const Proto *f, lua_Writer w, void *data,
+                  int mode) {
   DumpState D;
+  if (mode != 0 && mode != 1 && mode != 2 && mode != 99)
+    mode = 99;
   D.L = L;
   D.writer = w;
   D.data = data;
-  D.strip = strip;
+  D.mode = mode;
   D.status = 0;
   DumpHeader(&D);
   DumpByte(f->sizeupvalues, &D);
   DumpFunction(f, NULL, &D);
   return D.status;
+}
+
+
+/*
+** dump Lua function as precompiled chunk
+*/
+int luaU_dump(lua_State *L, const Proto *f, lua_Writer w, void *data,
+              int strip) {
+  return luaU_dump_ex(L, f, w, data, strip ? 0 : 99);
 }
 

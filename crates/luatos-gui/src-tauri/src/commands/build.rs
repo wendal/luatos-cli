@@ -22,7 +22,7 @@ pub fn build_luac(src_dirs: Vec<String>, output_dir: String, bitw: u32) -> Resul
         if !src_path.is_dir() {
             return Err(format!("源目录不存在: {src}"));
         }
-        let files = luatos_luadb::build::compile_lua_dir(src_path, out, bitw, true).map_err(|e| format!("编译失败: {e}"))?;
+        let files = luatos_luadb::build::compile_lua_dir(src_path, out, bitw, luatos_luadb::LUAC_DEBUG_ALL).map_err(|e| format!("编译失败: {e}"))?;
         total_files.extend(files);
     }
 
@@ -45,7 +45,7 @@ pub fn build_filesystem(src_dirs: Vec<String>, output_path: String, use_luac: bo
         }
     }
 
-    let image = luatos_luadb::build::build_script_image(&path_refs, use_luac, bitw, bkcrc, true).map_err(|e| format!("构建失败: {e}"))?;
+    let image = luatos_luadb::build::build_script_image(&path_refs, use_luac, bitw, bkcrc, luatos_luadb::LUAC_DEBUG_ALL).map_err(|e| format!("构建失败: {e}"))?;
 
     let out = Path::new(&output_path);
     if let Some(parent) = out.parent() {

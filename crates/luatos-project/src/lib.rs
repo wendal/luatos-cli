@@ -108,6 +108,38 @@ fn default_soc_script_version() -> String {
     DEFAULT_SOC_SCRIPT_VERSION.to_string()
 }
 
+/// luac 调试信息保留级别默认值：99（全部调试信息），与 LuaTools py3 对齐。
+pub const DEFAULT_LUAC_DEBUG: u8 = 99;
+
+fn default_luac_debug() -> u8 {
+    DEFAULT_LUAC_DEBUG
+}
+
+/// 规范化 luac 调试级别：0/1/2/99 原样返回，其余一律回退 99。
+pub fn normalize_luac_debug(mode: u8) -> u8 {
+    match mode {
+        0 | 1 | 2 | 99 => mode,
+        _ => 99,
+    }
+}
+
+/// 反序列化 `luac_debug` 字段：兼容旧的 bool 值（true→99, false→0）和新的整数级别。
+fn deserialize_luac_debug<'de, D>(deserializer: D) -> std::result::Result<u8, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum BoolOrInt {
+        Bool(bool),
+        Int(u8),
+    }
+    match BoolOrInt::deserialize(deserializer)? {
+        BoolOrInt::Bool(b) => Ok(if b { 99 } else { 0 }),
+        BoolOrInt::Int(n) => Ok(normalize_luac_debug(n)),
+    }
+}
+
 /// Build configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BuildConfig {
@@ -125,10 +157,10 @@ pub struct BuildConfig {
     pub use_luac: bool,
     /// Lua integer bit-width (`32` or `64`), typically determined by chip.
     pub bitw: u32,
-    /// Whether to keep debug info in compiled Lua bytecode.
-    /// When `false` (default), debug info is stripped for smaller output.
-    #[serde(default)]
-    pub luac_debug: bool,
+    /// luac 调试信息保留级别：0=无、1=仅行号、2=仅变量名、99=全部（默认）。
+    /// 旧的 bool 配置自动迁移：true→99，false→0。
+    #[serde(default = "default_luac_debug", deserialize_with = "deserialize_luac_debug")]
+    pub luac_debug: u8,
     /// Whether to ignore dependency analysis and include all scripts.
     /// When `false` (default), only scripts reachable from `main.lua` are included.
     #[serde(default)]
@@ -179,7 +211,7 @@ impl Project {
                 output_dir: DEFAULT_OUTPUT_DIR.to_string(),
                 use_luac: true,
                 bitw: default_bitw(chip),
-                luac_debug: false,
+                luac_debug: DEFAULT_LUAC_DEBUG,
                 ignore_deps: false,
                 soc_script: DEFAULT_SOC_SCRIPT_VERSION.to_string(),
                 resource_dir: DEFAULT_RESOURCE_DIR.to_string(),
@@ -388,7 +420,7 @@ mod tests {
         assert_eq!(p.build.output_dir, "build/");
         assert!(p.build.use_luac);
         assert_eq!(p.build.bitw, 64);
-        assert!(!p.build.luac_debug);
+        assert_eq!(p.build.luac_debug, 99);
         assert!(!p.build.ignore_deps);
         assert_eq!(p.build.soc_script, "latest");
         assert_eq!(p.build.resource_dir, "resource/");
@@ -456,7 +488,7 @@ bitw = 32
 "#;
         let project: Project = toml::from_str(toml_str).unwrap();
         assert!(project.build.script_files.is_empty());
-        assert!(!project.build.luac_debug);
+        assert_eq!(project.build.luac_debug, 99);
         assert!(!project.build.ignore_deps);
         // 新增字段的默认值
         assert_eq!(project.build.soc_script, "latest");
@@ -486,8 +518,49 @@ soc_file = "firmware.soc"
 "#;
         let project: Project = toml::from_str(toml_str).unwrap();
         assert_eq!(project.build.script_files, vec!["extra/helper.lua", "lib/utils.lua"]);
-        assert!(project.build.luac_debug);
+        // 旧的 bool 值自动迁移：true→99
+        assert_eq!(project.build.luac_debug, 99);
         assert!(project.build.ignore_deps);
+    }
+
+    /// luac_debug 支持 bool/int 混合写法，序列化输出整数
+    #[test]
+    fn luac_debug_bool_or_int() {
+        let toml_with = |v: &str| {
+            format!(
+                r#"
+[project]
+name = "dbg"
+chip = "bk72xx"
+version = "0.1.0"
+
+[build]
+script_dirs = ["lua/"]
+output_dir = "build/"
+use_luac = true
+bitw = 32
+luac_debug = {v}
+
+[flash]
+"#
+            )
+        };
+        // bool 迁移：true→99, false→0
+        let p: Project = toml::from_str(&toml_with("true")).unwrap();
+        assert_eq!(p.build.luac_debug, 99);
+        let p: Project = toml::from_str(&toml_with("false")).unwrap();
+        assert_eq!(p.build.luac_debug, 0);
+        // 整数级别：0/1/2/99
+        for v in [0u8, 1, 2, 99] {
+            let p: Project = toml::from_str(&toml_with(&v.to_string())).unwrap();
+            assert_eq!(p.build.luac_debug, v);
+        }
+        // 非法值回退 99
+        let p: Project = toml::from_str(&toml_with("5")).unwrap();
+        assert_eq!(p.build.luac_debug, 99);
+        // 序列化输出整数
+        let out = toml::to_string(&p).unwrap();
+        assert!(out.contains("luac_debug = 99"), "序列化应输出整数: {out}");
     }
 
     /// soc_script = "disable" 时返回 None

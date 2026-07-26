@@ -29,4 +29,8 @@ LUAI_FUNC LClosure* luaU_undump (lua_State* L, ZIO* Z, const char* name);
 LUAI_FUNC int luaU_dump (lua_State* L, const Proto* f, lua_Writer w,
                          void* data, int strip);
 
+/* dump one chunk with luacore debug mode (0/1/2/99); from ldump.c */
+LUAI_FUNC int luaU_dump_ex (lua_State* L, const Proto* f, lua_Writer w,
+                            void* data, int mode);
+
 #endif

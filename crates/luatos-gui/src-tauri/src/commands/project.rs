@@ -33,7 +33,7 @@ impl From<&luatos_project::Project> for ProjectInfo {
             output_dir: p.build.output_dir.clone(),
             use_luac: p.build.use_luac,
             bitw: p.build.bitw,
-            luac_debug: p.build.luac_debug,
+            luac_debug: p.build.luac_debug != 0,
             ignore_deps: p.build.ignore_deps,
             soc_file: p.flash.soc_file.clone(),
             port: p.flash.port.clone(),
@@ -81,7 +81,8 @@ pub fn project_save(dir: String, info: ProjectInfo) -> Result<ProjectInfo, Strin
     project.build.output_dir = info.output_dir;
     project.build.use_luac = info.use_luac;
     project.build.bitw = info.bitw;
-    project.build.luac_debug = info.luac_debug;
+    // GUI 侧保持 bool 语义：true→99（全部调试信息），false→0（无）
+    project.build.luac_debug = if info.luac_debug { 99 } else { 0 };
     project.build.ignore_deps = info.ignore_deps;
     project.flash.soc_file = info.soc_file;
     project.flash.port = info.port;

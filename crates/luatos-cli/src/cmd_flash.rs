@@ -34,7 +34,7 @@ fn build_script_image_checked(folders: &[String], info: &luatos_soc::SocInfo) ->
         info.script_use_luac(),
         info.script_bitw(),
         info.use_bkcrc(),
-        true, // strip debug info
+        luatos_luadb::LUAC_DEBUG_ALL,
     )?;
     check_script_size(script_data.len(), info.script_size())?;
     Ok(script_data)

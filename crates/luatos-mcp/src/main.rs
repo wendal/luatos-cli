@@ -383,7 +383,7 @@ impl LuatosMcp {
         }));
 
         // Lua 编译器
-        let luac_ok = luatos_luadb::build::compile_lua_bytes(b"print('test')", "test", false, 32).is_ok();
+        let luac_ok = luatos_luadb::build::compile_lua_bytes(b"print('test')", "test", luatos_luadb::LUAC_DEBUG_ALL, 32).is_ok();
         checks.push(json!({
             "name": "Lua 编译器",
             "passed": luac_ok,

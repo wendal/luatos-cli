@@ -303,7 +303,7 @@ pub fn flash_sf32lb5x(
         sink_impl.emit("build", 3.0, "编译 Lua 脚本...");
         let dir_paths: Vec<std::path::PathBuf> = dirs.iter().map(std::path::PathBuf::from).collect();
         let path_refs: Vec<&std::path::Path> = dir_paths.iter().map(|p| p.as_path()).collect();
-        let script_data = luatos_luadb::build::build_script_image(&path_refs, info.script_use_luac(), info.script_bitw(), info.use_bkcrc(), info.script_strip_debug())?;
+        let script_data = luatos_luadb::build::build_script_image(&path_refs, info.script_use_luac(), info.script_bitw(), info.use_bkcrc(), info.script_debug_mode())?;
         std::fs::write(&script_path, &script_data).context("写入 script.bin 失败")?;
     }
 
@@ -390,7 +390,7 @@ pub fn flash_script_sf32lb5x(
     sink_impl.emit("build", 0.0, "编译 Lua 脚本...");
     let dir_paths: Vec<std::path::PathBuf> = script_dirs.iter().map(std::path::PathBuf::from).collect();
     let path_refs: Vec<&std::path::Path> = dir_paths.iter().map(|p| p.as_path()).collect();
-    let script_data = luatos_luadb::build::build_script_image(&path_refs, info.script_use_luac(), info.script_bitw(), info.use_bkcrc(), info.script_strip_debug())?;
+    let script_data = luatos_luadb::build::build_script_image(&path_refs, info.script_use_luac(), info.script_bitw(), info.use_bkcrc(), info.script_debug_mode())?;
 
     let tempdir = tempfile::tempdir().context("创建临时目录失败")?;
     let script_path = tempdir.path().join("script.bin");

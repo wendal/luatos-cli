@@ -184,7 +184,8 @@ pub fn import_luatools_ini_str(content: &str, ini_path: &Path) -> Result<(Projec
     }
 
     // Check luac_debug setting
-    let luac_debug = lt_project.info.get("luac_debug").map(|v| v.eq_ignore_ascii_case("true")).unwrap_or(false);
+    // LuaTools ini 中 luac_debug = True/False → 99/0（全部/无调试信息）
+    let luac_debug = if lt_project.info.get("luac_debug").map(|v| v.eq_ignore_ascii_case("true")).unwrap_or(false) { 99 } else { 0 };
 
     let project = Project {
         project: ProjectMeta {
@@ -272,7 +273,7 @@ sys.lua =
         assert_eq!(project.project.chip, "bk72xx");
         assert_eq!(project.build.script_dirs.len(), 2);
         assert_eq!(project.build.bitw, 32);
-        assert!(!project.build.luac_debug);
+        assert_eq!(project.build.luac_debug, 0);
         assert!(project.flash.soc_file.is_some());
     }
 
@@ -298,7 +299,7 @@ main.lua =
 "#;
         let ini_path = Path::new("debug_project.ini");
         let (project, _) = import_luatools_ini_str(ini_with_debug, ini_path).unwrap();
-        assert!(project.build.luac_debug);
+        assert_eq!(project.build.luac_debug, 99);
     }
 
     #[test]

@@ -202,7 +202,7 @@ fn check_soc_file(dir: &str) -> CheckResult {
 fn check_lua_compiler() -> CheckResult {
     // 尝试用内嵌 Lua 编译器编译一段简单代码
     let test_source = b"print('hello')";
-    match luatos_luadb::build::compile_lua_bytes(test_source, "test", false, 32) {
+    match luatos_luadb::build::compile_lua_bytes(test_source, "test", luatos_luadb::LUAC_DEBUG_ALL, 32) {
         Ok(bytecode) if !bytecode.is_empty() => CheckResult {
             name: "Lua 编译器".into(),
             passed: true,

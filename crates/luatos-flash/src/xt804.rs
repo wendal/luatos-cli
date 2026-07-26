@@ -573,7 +573,7 @@ pub fn flash_script_only(soc_path: &str, port: &str, script_files: &[String], on
     let flash_br = info.flash_baud_rate();
     let use_luac = info.script_use_luac();
     let bitw = info.script_bitw();
-    let strip = info.script_strip_debug();
+    let debug_mode = info.script_debug_mode();
 
     on_progress(&FlashProgress::info("Build", 0.0, &format!("Building LuaDB for {} files", script_files.len())));
 
@@ -586,9 +586,9 @@ pub fn flash_script_only(soc_path: &str, port: &str, script_files: &[String], on
 
         let (final_name, final_data) = if use_luac && filename.ends_with(".lua") && !filename.ends_with(".luac") {
             let chunk_name = format!("@{}", filename);
-            let bytecode = luatos_luadb::build::compile_lua_bytes(&data, &chunk_name, strip, bitw).with_context(|| format!("Failed to compile {path_str}"))?;
+            let bytecode = luatos_luadb::build::compile_lua_bytes(&data, &chunk_name, debug_mode, bitw).with_context(|| format!("Failed to compile {path_str}"))?;
             let luac_name = format!("{}c", filename);
-            log::info!("compiled {} (bitw={}, strip={})", filename, bitw, strip);
+            log::info!("compiled {} (bitw={}, debug_mode={})", filename, bitw, debug_mode);
             (luac_name, bytecode)
         } else {
             (filename, data)

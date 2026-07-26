@@ -1,5 +1,7 @@
 #include "lua.h"
 #include "lauxlib.h"
+#include "lobject.h"
+#include "lundump.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,12 +60,17 @@ int main(int argc, char **argv) {
 #endif
 
     if (argc != 3) {
-        fprintf(stderr, "usage: %s <chunk_name> <strip>\n", argv[0]);
+        fprintf(stderr, "usage: %s <chunk_name> <debug_mode>\n", argv[0]);
+        fprintf(stderr, "  debug_mode: 0=none, 1=line numbers only, 2=variable names only, 99=all (invalid values fall back to 99)\n");
         return 2;
     }
 
     const char *chunk_name = argv[1];
-    int strip = atoi(argv[2]) != 0;
+    int mode = atoi(argv[2]);
+    /* 调试信息级别白名单：0/1/2/99，非法值回退 99 */
+    if (mode != 0 && mode != 1 && mode != 2 && mode != 99) {
+        mode = 99;
+    }
 
     size_t source_len = 0;
     unsigned char *source = read_stdin(&source_len);
@@ -94,8 +101,9 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (lua_dump(L, write_stdout, stdout, strip) != 0) {
-        fprintf(stderr, "lua_dump failed\n");
+    const Proto *f = ((const LClosure *)lua_topointer(L, -1))->p;
+    if (luaU_dump_ex(L, f, write_stdout, stdout, mode) != 0) {
+        fprintf(stderr, "luaU_dump_ex failed\n");
         lua_close(L);
         return 1;
     }

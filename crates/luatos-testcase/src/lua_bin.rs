@@ -18,8 +18,8 @@ pub struct ScriptBinParams {
     pub use_luac: bool,
     /// 是否加 BK CRC16 framing
     pub use_bkcrc: bool,
-    /// 是否剥离调试信息
-    pub strip: bool,
+    /// luac 调试信息保留级别（0=无, 1=仅行号, 2=仅变量名, 99=全部）
+    pub debug_mode: u8,
 }
 
 /// 根据 chip 类型决定编译参数
@@ -37,7 +37,7 @@ pub fn script_bin_params_for_chip(chip: &str) -> ScriptBinParams {
         bitw,
         use_luac: true,
         use_bkcrc,
-        strip: true,
+        debug_mode: luatos_luadb::LUAC_DEBUG_ALL,
     }
 }
 
@@ -90,14 +90,14 @@ pub fn build_script_bin(script_dirs: &[&Path], common_scripts: Option<&Path>, ct
 
     let refs: Vec<&Path> = ordered.iter().map(|p| p.as_path()).collect();
     log::debug!(
-        "build_script_image: dirs={:?} bitw={} use_luac={} use_bkcrc={} strip={}",
+        "build_script_image: dirs={:?} bitw={} use_luac={} use_bkcrc={} debug_mode={}",
         ordered.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
         params.bitw,
         params.use_luac,
         params.use_bkcrc,
-        params.strip
+        params.debug_mode
     );
-    let image = luatos_luadb::build::build_script_image(&refs, params.use_luac, params.bitw, params.use_bkcrc, params.strip).context("build_script_image failed")?;
+    let image = luatos_luadb::build::build_script_image(&refs, params.use_luac, params.bitw, params.use_bkcrc, params.debug_mode).context("build_script_image failed")?;
     Ok(image)
 }
 
@@ -117,7 +117,7 @@ mod tests {
         assert_eq!(p.bitw, 64);
         assert!(p.use_bkcrc);
         assert!(p.use_luac);
-        assert!(p.strip);
+        assert_eq!(p.debug_mode, 99);
     }
 
     #[test]

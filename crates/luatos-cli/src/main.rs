@@ -627,6 +627,9 @@ enum BuildCommands {
         /// Lua integer bit-width (32 or 64)
         #[arg(long, default_value = "32")]
         bitw: u32,
+        /// luac 调试信息保留级别: 0=无, 1=仅行号, 2=仅变量名, 99=全部
+        #[arg(long, default_value = "99")]
+        luac_debug: u8,
     },
     /// Build LuaDB script filesystem image
     Filesystem {
@@ -648,6 +651,9 @@ enum BuildCommands {
         /// 分区最大容量（KB），超出则报错
         #[arg(long)]
         max_size_kb: Option<u32>,
+        /// luac 调试信息保留级别: 0=无, 1=仅行号, 2=仅变量名, 99=全部
+        #[arg(long, default_value = "99")]
+        luac_debug: u8,
     },
 }
 
@@ -942,7 +948,7 @@ fn main() {
             ProjectCommands::Build { dir } => cmd_project::cmd_project_build(&dir, &cli.format),
         },
         Commands::Build { action } => match action {
-            BuildCommands::Luac { src, output, bitw } => cmd_build::cmd_build_luac(&src, &output, bitw, &cli.format),
+            BuildCommands::Luac { src, output, bitw, luac_debug } => cmd_build::cmd_build_luac(&src, &output, bitw, luac_debug, &cli.format),
             BuildCommands::Filesystem {
                 src,
                 output,
@@ -950,7 +956,8 @@ fn main() {
                 bitw,
                 bkcrc,
                 max_size_kb,
-            } => cmd_build::cmd_build_filesystem(&src, &output, luac, bitw, bkcrc, max_size_kb, &cli.format),
+                luac_debug,
+            } => cmd_build::cmd_build_filesystem(&src, &output, luac, bitw, bkcrc, max_size_kb, luac_debug, &cli.format),
         },
         Commands::Resource { action } => match action {
             ResourceCommands::List { module } => cmd_resource::cmd_resource_list(module.as_deref(), &cli.format),

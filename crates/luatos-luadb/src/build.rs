@@ -17,13 +17,13 @@ const VCS_DIRS: &[&str] = &[".git", ".svn", ".hg"];
 /// Compile Lua source bytes to bytecode using the embedded Lua 5.3 compiler.
 ///
 /// `chunk_name` is the name shown in error messages (typically `@filename.lua`).
-/// When `strip` is true, debug info is removed for smaller output.
-pub fn compile_lua_bytes(source: &[u8], chunk_name: &str, strip: bool, bitw: u32) -> Result<Vec<u8>> {
+/// `debug_mode` 为调试信息保留级别：0=无、1=仅行号、2=仅变量名、99=全部（非法值回退 99）。
+pub fn compile_lua_bytes(source: &[u8], chunk_name: &str, debug_mode: u8, bitw: u32) -> Result<Vec<u8>> {
     let helper = ensure_embedded_helper(bitw).map_err(|e| anyhow::anyhow!("failed to prepare Lua {bitw}-bit compiler: {e}"))?;
 
     let mut child = Command::new(&helper)
         .arg(chunk_name)
-        .arg(if strip { "1" } else { "0" })
+        .arg(crate::normalize_luac_debug(debug_mode).to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -50,8 +50,8 @@ pub fn compile_lua_bytes(source: &[u8], chunk_name: &str, strip: bool, bitw: u32
 
 /// Compile a single `.lua` file to `.luac` using the embedded compiler.
 ///
-/// When `strip` is true, debug info is removed from the output.
-pub fn compile_lua(src: &Path, dst: &Path, bitw: u32, strip: bool) -> Result<()> {
+/// `debug_mode` 为调试信息保留级别：0=无、1=仅行号、2=仅变量名、99=全部。
+pub fn compile_lua(src: &Path, dst: &Path, bitw: u32, debug_mode: u8) -> Result<()> {
     let source = fs::read(src).with_context(|| format!("failed to read {}", src.display()))?;
     let chunk_name = format!(
         "@{}",
@@ -59,7 +59,7 @@ pub fn compile_lua(src: &Path, dst: &Path, bitw: u32, strip: bool) -> Result<()>
     );
     log::info!("compiling {} -> {}", src.display(), dst.display());
 
-    let bytecode = compile_lua_bytes(&source, &chunk_name, strip, bitw)?;
+    let bytecode = compile_lua_bytes(&source, &chunk_name, debug_mode, bitw)?;
 
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent)?;
@@ -77,10 +77,10 @@ fn is_vcs_dir(name: &std::ffi::OsStr) -> bool {
 /// Compile all `.lua` files in `src_dir` to `.luac` in `out_dir`.
 ///
 /// Non-`.lua` files are copied as-is. The relative directory structure is
-/// preserved. When `strip` is true, debug info is removed from compiled output.
+/// preserved. `debug_mode` 为调试信息保留级别：0=无、1=仅行号、2=仅变量名、99=全部。
 /// Returns a list of all output file paths.
 /// 自动跳过 .git/.svn/.hg 等版本控制目录。
-pub fn compile_lua_dir(src_dir: &Path, out_dir: &Path, bitw: u32, strip: bool) -> Result<Vec<PathBuf>> {
+pub fn compile_lua_dir(src_dir: &Path, out_dir: &Path, bitw: u32, debug_mode: u8) -> Result<Vec<PathBuf>> {
     fs::create_dir_all(out_dir).context("failed to create output directory")?;
 
     let mut outputs = Vec::new();
@@ -101,7 +101,7 @@ pub fn compile_lua_dir(src_dir: &Path, out_dir: &Path, bitw: u32, strip: bool) -
         if src_path.extension().and_then(|e| e.to_str()) == Some("lua") {
             let mut dst_path = out_dir.join(rel);
             dst_path.set_extension("luac");
-            compile_lua(src_path, &dst_path, bitw, strip)?;
+            compile_lua(src_path, &dst_path, bitw, debug_mode)?;
             outputs.push(dst_path);
         } else {
             let dst_path = out_dir.join(rel);
@@ -164,14 +164,14 @@ fn is_main(name: &str) -> bool {
 ///
 /// Accepts multiple script source directories. If `use_luac` is true, `.lua`
 /// files from all directories are compiled to `.luac` in a single temporary
-/// directory before packing. When `strip` is true, debug info is removed.
+/// directory before packing. `debug_mode` 为调试信息保留级别：0=无、1=仅行号、2=仅变量名、99=全部。
 /// Later directories override earlier ones when filenames collide.
 /// Returns the final binary image.
-pub fn build_script_image(script_dirs: &[&Path], use_luac: bool, bitw: u32, use_bkcrc: bool, strip: bool) -> Result<Vec<u8>> {
+pub fn build_script_image(script_dirs: &[&Path], use_luac: bool, bitw: u32, use_bkcrc: bool, debug_mode: u8) -> Result<Vec<u8>> {
     let (collect_dirs, _tmp_guard): (Vec<PathBuf>, Option<PathBuf>) = if use_luac {
         let tmp = tempfile::tempdir().context("failed to create temp directory")?;
         for dir in script_dirs {
-            compile_lua_dir(dir, tmp.path(), bitw, strip)?;
+            compile_lua_dir(dir, tmp.path(), bitw, debug_mode)?;
         }
         let kept: PathBuf = tmp.keep();
         (vec![kept.clone()], Some(kept))
@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn build_image_no_luac() {
         let dir = make_test_dir();
-        let image = build_script_image(&[dir.path()], false, 32, false, true).unwrap();
+        let image = build_script_image(&[dir.path()], false, 32, false, crate::LUAC_DEBUG_ALL).unwrap();
         // Should start with LuaDB magic
         assert_eq!(&image[0..6], &[0x01, 0x04, 0x5A, 0xA5, 0x5A, 0xA5]);
     }
@@ -267,7 +267,7 @@ mod tests {
     #[test]
     fn build_image_with_bkcrc() {
         let dir = make_test_dir();
-        let image = build_script_image(&[dir.path()], false, 32, true, true).unwrap();
+        let image = build_script_image(&[dir.path()], false, 32, true, crate::LUAC_DEBUG_ALL).unwrap();
         // BK CRC adds 2 bytes per 32-byte block
         assert_eq!(image.len() % 34, 0);
     }
@@ -306,14 +306,14 @@ mod tests {
         fs::write(dir1.path().join("main.lua"), b"print('hello')").unwrap();
         fs::write(dir2.path().join("util.lua"), b"return 42").unwrap();
 
-        let image = build_script_image(&[dir1.path(), dir2.path()], false, 32, false, true).unwrap();
+        let image = build_script_image(&[dir1.path(), dir2.path()], false, 32, false, crate::LUAC_DEBUG_ALL).unwrap();
         assert_eq!(&image[0..6], &[0x01, 0x04, 0x5A, 0xA5, 0x5A, 0xA5]);
     }
 
     #[test]
     fn compile_lua_bytes_32bit() {
         let source = b"print('hello')";
-        let bytecode = super::compile_lua_bytes(source, "@test.lua", false, 32).unwrap();
+        let bytecode = super::compile_lua_bytes(source, "@test.lua", crate::LUAC_DEBUG_ALL, 32).unwrap();
         // Lua 5.3 bytecode starts with 0x1B 0x4C 0x75 0x61 (ESC Lua)
         assert_eq!(&bytecode[0..4], b"\x1bLua");
         // Byte 15 = sizeof(lua_Integer), 32-bit = 4
@@ -323,32 +323,46 @@ mod tests {
     #[test]
     fn compile_lua_bytes_64bit() {
         let source = b"print('hello')";
-        let bytecode = super::compile_lua_bytes(source, "@test.lua", false, 64).unwrap();
+        let bytecode = super::compile_lua_bytes(source, "@test.lua", crate::LUAC_DEBUG_ALL, 64).unwrap();
         assert_eq!(&bytecode[0..4], b"\x1bLua");
         // Byte 15 = sizeof(lua_Integer), 64-bit = 8
         assert_eq!(bytecode[15], 8);
     }
 
     #[test]
-    fn compile_lua_bytes_strip() {
-        let source = b"local x = 1; print(x)";
-        let full = super::compile_lua_bytes(source, "@test.lua", false, 32).unwrap();
-        let stripped = super::compile_lua_bytes(source, "@test.lua", true, 32).unwrap();
-        // Stripped should be smaller (no debug info)
-        assert!(stripped.len() < full.len());
+    fn compile_lua_bytes_debug_modes() {
+        use crate::{LUAC_DEBUG_ALL, LUAC_DEBUG_LINE, LUAC_DEBUG_NONE, LUAC_DEBUG_VAR};
+        // 含局部变量与函数调用的脚本，保证 4 档产物大小有区分度
+        let source = b"local foo = 1\nlocal bar = 2\nlocal function add(a, b) return a + b end\nprint(add(foo, bar))\n";
+        let mode0 = super::compile_lua_bytes(source, "@test.lua", LUAC_DEBUG_NONE, 32).unwrap();
+        let mode1 = super::compile_lua_bytes(source, "@test.lua", LUAC_DEBUG_LINE, 32).unwrap();
+        let mode2 = super::compile_lua_bytes(source, "@test.lua", LUAC_DEBUG_VAR, 32).unwrap();
+        let mode99 = super::compile_lua_bytes(source, "@test.lua", LUAC_DEBUG_ALL, 32).unwrap();
+        // 4 档均产出合法 Lua 5.3 字节码
+        for bc in [&mode0, &mode1, &mode2, &mode99] {
+            assert_eq!(&bc[0..4], b"\x1bLua");
+        }
+        // 体积关系：0 最小，99 最大
+        assert!(mode0.len() <= mode1.len(), "mode0({}) <= mode1({})", mode0.len(), mode1.len());
+        assert!(mode0.len() <= mode2.len(), "mode0({}) <= mode2({})", mode0.len(), mode2.len());
+        assert!(mode1.len() < mode99.len(), "mode1({}) < mode99({})", mode1.len(), mode99.len());
+        assert!(mode2.len() < mode99.len(), "mode2({}) < mode99({})", mode2.len(), mode99.len());
+        // 非法值回退 99，输出与 99 完全一致
+        let mode5 = super::compile_lua_bytes(source, "@test.lua", 5, 32).unwrap();
+        assert_eq!(mode5, mode99);
     }
 
     #[test]
     fn compile_lua_bytes_syntax_error() {
         let source = b"if then end end";
-        let result = super::compile_lua_bytes(source, "@bad.lua", false, 32);
+        let result = super::compile_lua_bytes(source, "@bad.lua", crate::LUAC_DEBUG_ALL, 32);
         assert!(result.is_err());
     }
 
     #[test]
     fn build_image_with_luac() {
         let dir = make_test_dir();
-        let image = build_script_image(&[dir.path()], true, 32, false, true).unwrap();
+        let image = build_script_image(&[dir.path()], true, 32, false, crate::LUAC_DEBUG_ALL).unwrap();
         assert_eq!(&image[0..6], &[0x01, 0x04, 0x5A, 0xA5, 0x5A, 0xA5]);
     }
 

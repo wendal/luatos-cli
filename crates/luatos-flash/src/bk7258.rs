@@ -767,7 +767,7 @@ fn build_script_bin(folders: &[&Path], info: &SocInfo) -> Result<Vec<u8>> {
     let use_bkcrc = info.use_bkcrc();
     let use_luac = info.script_use_luac();
     let bitw = info.script_bitw();
-    let strip = info.script_strip_debug();
+    let debug_mode = info.script_debug_mode();
 
     let mut entries: Vec<luatos_luadb::LuadbEntry> = Vec::new();
 
@@ -784,9 +784,9 @@ fn build_script_bin(folders: &[&Path], info: &SocInfo) -> Result<Vec<u8>> {
             // Compile .lua files if use_luac is enabled
             let (final_name, final_data) = if use_luac && name.ends_with(".lua") && !name.ends_with(".luac") {
                 let chunk_name = format!("@{}", name);
-                let bytecode = luatos_luadb::build::compile_lua_bytes(&data, &chunk_name, strip, bitw).with_context(|| format!("Failed to compile {}", path.display()))?;
+                let bytecode = luatos_luadb::build::compile_lua_bytes(&data, &chunk_name, debug_mode, bitw).with_context(|| format!("Failed to compile {}", path.display()))?;
                 let luac_name = format!("{}c", name); // .lua → .luac
-                log::info!("compiled {} (bitw={}, strip={})", name, bitw, strip);
+                log::info!("compiled {} (bitw={}, debug_mode={})", name, bitw, debug_mode);
                 (luac_name, bytecode)
             } else {
                 (name, data)

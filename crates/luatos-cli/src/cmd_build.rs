@@ -1,13 +1,13 @@
 use crate::{event, OutputFormat};
 
-pub fn cmd_build_luac(src_dirs: &[String], output: &str, bitw: u32, format: &OutputFormat) -> anyhow::Result<()> {
+pub fn cmd_build_luac(src_dirs: &[String], output: &str, bitw: u32, luac_debug: u8, format: &OutputFormat) -> anyhow::Result<()> {
     let out_path = std::path::Path::new(output);
     let mut total_files = Vec::new();
 
     for src in src_dirs {
         let src_path = std::path::Path::new(src);
         anyhow::ensure!(src_path.is_dir(), "Source directory not found: {src}");
-        let files = luatos_luadb::build::compile_lua_dir(src_path, out_path, bitw, true)?;
+        let files = luatos_luadb::build::compile_lua_dir(src_path, out_path, bitw, luac_debug)?;
         total_files.extend(files);
     }
 
@@ -31,7 +31,7 @@ pub fn cmd_build_luac(src_dirs: &[String], output: &str, bitw: u32, format: &Out
     Ok(())
 }
 
-pub fn cmd_build_filesystem(src_dirs: &[String], output: &str, use_luac: bool, bitw: u32, bkcrc: bool, max_size_kb: Option<u32>, format: &OutputFormat) -> anyhow::Result<()> {
+pub fn cmd_build_filesystem(src_dirs: &[String], output: &str, use_luac: bool, bitw: u32, bkcrc: bool, max_size_kb: Option<u32>, luac_debug: u8, format: &OutputFormat) -> anyhow::Result<()> {
     let paths: Vec<std::path::PathBuf> = src_dirs.iter().map(std::path::PathBuf::from).collect();
     let path_refs: Vec<&std::path::Path> = paths.iter().map(|p| p.as_path()).collect();
 
@@ -39,7 +39,7 @@ pub fn cmd_build_filesystem(src_dirs: &[String], output: &str, use_luac: bool, b
         anyhow::ensure!(p.is_dir(), "Source directory not found: {}", p.display());
     }
 
-    let image = luatos_luadb::build::build_script_image(&path_refs, use_luac, bitw, bkcrc, true)?;
+    let image = luatos_luadb::build::build_script_image(&path_refs, use_luac, bitw, bkcrc, luac_debug)?;
 
     // 检查镜像大小是否超过分区容量
     if let Some(max_kb) = max_size_kb {

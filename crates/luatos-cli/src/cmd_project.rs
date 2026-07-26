@@ -128,7 +128,14 @@ fn set_config_value(project: &mut luatos_project::Project, key: &str, value: &st
         "build.output_dir" => project.build.output_dir = value.to_string(),
         "build.use_luac" => project.build.use_luac = value.parse()?,
         "build.bitw" => project.build.bitw = value.parse()?,
-        "build.luac_debug" => project.build.luac_debug = value.parse()?,
+        "build.luac_debug" => {
+            // 兼容 bool（true→99, false→0）和整数级别（0/1/2/99）
+            project.build.luac_debug = match value {
+                "true" => 99,
+                "false" => 0,
+                _ => luatos_project::normalize_luac_debug(value.parse()?),
+            };
+        }
         "build.ignore_deps" => project.build.ignore_deps = value.parse()?,
         "flash.soc_file" => project.flash.soc_file = Some(value.to_string()),
         "flash.port" => project.flash.port = Some(value.to_string()),
@@ -287,7 +294,7 @@ pub fn cmd_project_analyze(dir: &str, soc_override: Option<&str>, format: &Outpu
         syntax_error: Option<String>,
     }
 
-    let strip = !project.build.luac_debug;
+    let debug_mode = project.build.luac_debug;
     let bitw = project.build.bitw;
     let use_luac = project.build.use_luac;
 
@@ -310,7 +317,7 @@ pub fn cmd_project_analyze(dir: &str, soc_override: Option<&str>, format: &Outpu
         if pf.is_lua && name.ends_with(".lua") {
             let source = fs::read(&pf.path)?;
             let chunk = format!("@{name}");
-            match compile_lua_bytes(&source, &chunk, strip, bitw) {
+            match compile_lua_bytes(&source, &chunk, debug_mode, bitw) {
                 Ok(bytecode) => {
                     let built_size = if use_luac { bytecode.len() } else { pf.raw_size };
                     if is_included {
@@ -697,6 +704,7 @@ pub fn cmd_project_build(dir: &str, format: &crate::OutputFormat) -> anyhow::Res
         project.build.bitw,
         false, // bkcrc 由芯片类型决定，此处保守处理
         None,  // max_size_kb: 项目构建时无分区信息
+        project.build.luac_debug,
         format,
     )
 }
