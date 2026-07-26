@@ -11,3 +11,5 @@ resource/
 *.bak
 *.pyc
 .worktrees/
+logs/
+refs/origin_tools/dtools/ec7xx/tmp/

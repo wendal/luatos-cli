@@ -18,6 +18,12 @@ All notable changes to this project will be documented in this file.
 
 ### 变更
 
+- 无
+
+## [1.9.0] - 2026-07-08
+
+### 变更
+
 #### trun 单点调试子命令（取代 luatos-autotest-v2 开发期临时合成）
 
 - 新增 `luatos-cli trun` 子命令（test run），一站式完成「testcase 解析 → 合成 (script.bin + 自动烧入 ctx.json + soc) → 刷机 → 抓日志 → 关键字校验」全流程
@@ -77,6 +83,27 @@ All notable changes to this project will be documented in this file.
 - 新增单元测试 `trun_run_removed_process_args_rejected` 确认 `--python` / `--force-preprocess` 已被 clap 拒绝
 - 新增 `discovery::tests::ignores_process_directory` 确认 process/ 子目录被忽略（不阻断 testcase 解析）
 
+##### trun Air8101 刷机策略与参数调整
+
+- `--full-soc` 参数移除，改为 `--full`，语义更明确
+- 新增 `--clear-fs`，刷机前擦除文件系统分区
+- Air8101(BK72XX) 默认仅刷 script 分区，`--full` 才刷 base + script
+- 保持 ctx.json 临时目录在刷机阶段存活，确保设备启动后可读取 `/ctx.json`
+
+##### trun 分布式 Runner / 只刷机模式
+
+- 新增 `--flash-only`，仅合成 + 刷机后返回，跳过日志抓取与关键字判定
+- 适配分布式 Runner 场景：只负责烧录，PASS/FAIL 由其他节点判定
+- `--flash-only` 全量刷机后显式执行 RTS 复位，确保新脚本从 flash 启动
+- ctx.json 中 `test_id` / `runner_id` / `runner_mode` 优先使用用户传入值，便于 Orchestrator 统一分配
+
+##### trun 日志抓取流式化与取消响应
+
+- `trun run` 日志抓取接入 `cmd_log::capture_log_lines` 流式实现
+- 支持关键字命中早退，命中后立即进入 finalize
+- ctrlc 触发时通过 cancel / stop 传播立即终止日志抓取，避免等待超时
+- ctrlc handler 二次注册改为容错，解决 trun 内部组合调用冲突
+
 #### C ABI 导出 luatos-log（luatos-log-ffi）
 
 - 新增 `luatos-log-ffi` cdylib crate，导出 `luatos_soclog_analyze()` 与 `pySoclogAnalyze()` 别名（与第三方 `pySoclogAnalyze` DLL 签名完全一致）
@@ -124,12 +151,24 @@ All notable changes to this project will be documented in this file.
 - `flash test` 结果为 `FAIL` 时，文本输出新增 `Missing keywords` 汇总，便于快速定位未命中项
 - JSON/JSONL 结果新增 `missing_keywords` 字段，便于 MCP/自动化流程直接消费
 
+#### flash script 支持预编译 script.bin
+
+- `flash script --bin <path>` 新增直接烧录预编译脚本镜像能力，跳过 Lua 编译与 LuaDB 打包
+- 适用于 Luatools 等外部工具生成的 `.script.bin`，或 `trun --keep-soc` 保留的脚本镜像
+- 当前支持 chip：`ec7xx` / `air8000` / `air780epm` / `air780ehm` / `air780ehv` / `air780ehg` / `air1601` / `air1602` / `ccm4211`
+
 #### AI 工具调用友好性改进（文档拆分 + 型号帮助 + 刷机后日志续接）
 
 - **README 按型号拆分**：首页改为轻量索引，新增 `docs/models/*.md` 型号文档，按 Air1601/Air8000/Air8101/Air6208/SF32 分流
 - **`--help` 二级菜单入口**：顶层帮助新增型号导航提示，新增 `guide models` / `guide model --model <型号>` 输出推荐命令与文档位置
 - **刷机后继续监听日志**：`flash run` 新增 `--tail-log-secs`，按芯片自动选择日志模式与波特率，降低启动日志丢失概率
 - **命令逻辑抽象**：提取日志模式判定 `resolve_log_mode` 与脚本镜像构建共享逻辑，减少 `cmd_flash` / `cmd_log` 重复代码
+
+#### 日志采集新增 RTS 复位触发
+
+- `log view` / `log view-binary` 新增 `--rts-reset` 参数
+- 打开串口后通过 RTS 脚复位模组，再采集开机日志，便于捕获完整启动输出
+- `luatos-serial` 新增 RTS 复位 helper，供 CLI / GUI / MCP 复用
 
 #### Air1602 (CCM4211) 刷机/日志别名支持
 
@@ -163,6 +202,12 @@ All notable changes to this project will be documented in this file.
 - **CJK 字体支持** — 启动时自动加载 Windows 系统字体（微软雅黑 → 宋体 → 黑体），确保中文正确渲染
 
 ### Bug Fixes
+
+#### testcase metas.model 接受整数 ID 数组
+
+- 修复 `metas.model` 字段仅支持字符串数组，导致产线配置使用整数模组 ID 时解析失败
+- 现在 `model` 同时兼容 `string` 与 `integer` 元素，与产线约定一致
+- 新增单元测试覆盖整数 ID、混合类型等场景
 
 #### Air1601 (CCM4211) SOC 下载数据块参数修复，兼容 V1013 固件 6M 波特率
 
