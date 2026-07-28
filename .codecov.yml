@@ -1,0 +1,29 @@
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 2%
+    patch:
+      default:
+        target: auto
+        threshold: 5%
+
+ignore:
+  # GUI 前端 — 不适合 CI 自动化测试
+  - "crates/luatos-gui"
+  - "crates/luatos-mfgui"
+  # C ABI 导出层 — 依赖外部 FFI 调用环境
+  - "crates/luatos-log-ffi"
+  # 硬件串口操作 — 需要真实设备
+  - "crates/luatos-serial"
+  # 硬件刷机协议实现 — 需要真实设备
+  - "crates/luatos-flash/src/air6201.rs"
+  - "crates/luatos-flash/src/sf32lb5x.rs"
+  - "crates/luatos-flash/src/device.rs"
+  - "crates/luatos-flash/src/bk7258.rs"
+  - "crates/luatos-flash/src/ccm4211.rs"
+  - "crates/luatos-flash/src/ec718.rs"
+  - "crates/luatos-flash/src/xt804.rs"
+  # sftool-lib 芯片级实现 — 依赖真实硬件
+  - "crates/sftool-lib/src/sf32lb*"
