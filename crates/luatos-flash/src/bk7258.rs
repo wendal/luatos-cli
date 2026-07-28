@@ -273,7 +273,7 @@ fn check_crc(port: &mut dyn serialport::SerialPort, start_addr: u32, end_addr: u
     let mut buf = [0u8; 11];
     read_exact_timeout(port, &mut buf, Duration::from_secs(10))?;
     if buf[0] != 0x04 || buf[1] != 0x0E || buf[6] != 0x10 {
-        bail!("CheckCRC: bad response {:02x?}", &buf);
+        bail!("CheckCRC: bad response {:02x?}", buf);
     }
     Ok(u32::from_le_bytes([buf[7], buf[8], buf[9], buf[10]]))
 }
