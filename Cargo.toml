@@ -13,7 +13,6 @@ members = [
     "crates/luatos-resource",
     "crates/luatos-testcase",
     "crates/sftool-lib",
-    "crates/luatos-mfgui",
     # "crates/luatos-gui/src-tauri",  # GUI 暂时禁用
 ]
 

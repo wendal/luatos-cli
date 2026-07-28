@@ -10,9 +10,6 @@ coverage:
         threshold: 5%
 
 ignore:
-  # GUI 前端 — 不适合 CI 自动化测试
-  - "crates/luatos-gui"
-  - "crates/luatos-mfgui"
   # C ABI 导出层 — 依赖外部 FFI 调用环境
   - "crates/luatos-log-ffi"
   # 硬件串口操作 — 需要真实设备
