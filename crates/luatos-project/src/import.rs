@@ -185,7 +185,11 @@ pub fn import_luatools_ini_str(content: &str, ini_path: &Path) -> Result<(Projec
 
     // Check luac_debug setting
     // LuaTools ini 中 luac_debug = True/False → 99/0（全部/无调试信息）
-    let luac_debug = if lt_project.info.get("luac_debug").map(|v| v.eq_ignore_ascii_case("true")).unwrap_or(false) { 99 } else { 0 };
+    let luac_debug = if lt_project.info.get("luac_debug").map(|v| v.eq_ignore_ascii_case("true")).unwrap_or(false) {
+        99
+    } else {
+        0
+    };
 
     let project = Project {
         project: ProjectMeta {

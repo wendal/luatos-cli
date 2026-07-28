@@ -28,12 +28,7 @@ use crate::{event, OutputFormat};
 
 // ─── Tool discovery ──────────────────────────────────────────────────────────
 
-const DTOOLS_SEARCH_ROOTS: &[&str] = &[
-    "FotaToolkit_V3.6.4.0",
-    "dtools",
-    "../FotaToolkit_V3.6.4.0",
-    "../../FotaToolkit_V3.6.4.0"
-];
+const DTOOLS_SEARCH_ROOTS: &[&str] = &["FotaToolkit_V3.6.4.0", "dtools", "../FotaToolkit_V3.6.4.0", "../../FotaToolkit_V3.6.4.0"];
 
 fn exe_dir() -> PathBuf {
     std::env::current_exe()
@@ -150,9 +145,7 @@ fn select_rom_path(dir: &Path, info_rom_file: &str) -> PathBuf {
         .map(|e| e.path())
         .collect();
     if binpkgs.len() > 1 {
-        binpkgs.retain(|p| {
-            p.file_name().and_then(|n| n.to_str()).map(|n| n != "luatos.binpkg").unwrap_or(true)
-        });
+        binpkgs.retain(|p| p.file_name().and_then(|n| n.to_str()).map(|n| n != "luatos.binpkg").unwrap_or(true));
     }
     binpkgs.into_iter().next().unwrap_or_else(|| dir.join(info_rom_file))
 }
@@ -164,8 +157,10 @@ fn build_ec7xx_fota(new_soc: &str, old_soc: &str, chip: &str, toolkit_path: &Pat
     let new_up = unpack(new_soc, &work_dir.join("new"))?;
     let old_up = unpack(old_soc, &work_dir.join("old"))?;
 
-    let magic_str = new_up.info
-        .fota.as_ref()
+    let magic_str = new_up
+        .info
+        .fota
+        .as_ref()
         .and_then(|f| f.get("magic_num"))
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("info.json missing fota.magic_num"))?;
@@ -246,7 +241,10 @@ fn build_ec7xx_fota(new_soc: &str, old_soc: &str, chip: &str, toolkit_path: &Pat
         {
             use std::os::unix::process::ExitStatusExt;
             if let Some(sig) = output.status.signal() {
-                bail!("FotaToolkit killed by signal {} (SIGSEGV=11, SIGKILL=9). Check: 1) execute permission, 2) shared libraries (ldd FotaToolkit), 3) CPU arch compatibility", sig);
+                bail!(
+                    "FotaToolkit killed by signal {} (SIGSEGV=11, SIGKILL=9). Check: 1) execute permission, 2) shared libraries (ldd FotaToolkit), 3) CPU arch compatibility",
+                    sig
+                );
             }
         }
         bail!("FotaToolkit failed (exit {:?})", output.status.code());
@@ -272,8 +270,11 @@ fn build_ec7xx_fota(new_soc: &str, old_soc: &str, chip: &str, toolkit_path: &Pat
     // common_data = compressed script (full, if present), sdk_data = delta.par (firmware diff)
     let script_bin = new_up.dir.join(&new_up.info.script.file);
     let common = if script_bin.exists() {
-        let script_addr = new_up.info
-            .download.script_addr.as_deref()
+        let script_addr = new_up
+            .info
+            .download
+            .script_addr
+            .as_deref()
             .ok_or_else(|| anyhow::anyhow!("info.json missing download.script_addr"))?;
         let script_addr = parse_hex_addr(script_addr).ok_or_else(|| anyhow::anyhow!("invalid download.script_addr: {script_addr}"))? as u32;
         let s_zip = work_dir.join("script.zip");
@@ -772,14 +773,30 @@ mod tests {
             .to_string()
     }
 
+    /// Helper: unpack a SOC, inject a dummy script.bin, and repack it.
+    /// Returns the path to the repacked SOC file.
+    fn inject_dummy_script_bin(src_soc: &str, tmp_dir: &std::path::Path) -> std::path::PathBuf {
+        let unpack_dir = tmp_dir.join("unpacked");
+        let unpacked = luatos_soc::unpack_soc(src_soc, &unpack_dir).unwrap();
+        // Write a dummy script.bin (1 KB of zeros)
+        let script_path = unpacked.dir.join(&unpacked.info.script.file);
+        fs::write(&script_path, vec![0u8; 1024]).unwrap();
+        // Repack
+        let repacked = tmp_dir.join("repacked.soc");
+        luatos_soc::pack_soc(&unpacked.dir, &repacked.to_string_lossy()).unwrap();
+        repacked
+    }
+
     #[test]
     fn ec7xx_script_only_builds_without_old_soc() {
         let tmp = tempdir().unwrap();
+        // The real ec7xx SOC does not ship script.bin inside the archive,
+        // so inject a dummy one before running the build.
+        let repacked_soc = inject_dummy_script_bin(&ec7xx_soc_path(), tmp.path());
         let out = tmp.path().join("air780epm_script.sota");
-        let soc = ec7xx_soc_path();
 
         let result = cmd_fota_build(
-            &soc,
+            &repacked_soc.to_string_lossy(),
             None,
             Some(out.to_str().unwrap()),
             Some("C:\\definitely\\missing\\FotaToolkit.exe"),

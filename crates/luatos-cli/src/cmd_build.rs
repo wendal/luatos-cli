@@ -31,7 +31,16 @@ pub fn cmd_build_luac(src_dirs: &[String], output: &str, bitw: u32, luac_debug: 
     Ok(())
 }
 
-pub fn cmd_build_filesystem(src_dirs: &[String], output: &str, use_luac: bool, bitw: u32, bkcrc: bool, max_size_kb: Option<u32>, luac_debug: u8, format: &OutputFormat) -> anyhow::Result<()> {
+pub fn cmd_build_filesystem(
+    src_dirs: &[String],
+    output: &str,
+    use_luac: bool,
+    bitw: u32,
+    bkcrc: bool,
+    max_size_kb: Option<u32>,
+    luac_debug: u8,
+    format: &OutputFormat,
+) -> anyhow::Result<()> {
     let paths: Vec<std::path::PathBuf> = src_dirs.iter().map(std::path::PathBuf::from).collect();
     let path_refs: Vec<&std::path::Path> = paths.iter().map(|p| p.as_path()).collect();
 

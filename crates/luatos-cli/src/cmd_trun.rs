@@ -375,7 +375,16 @@ pub fn cmd_trun_run(args: &TrunRunArgs, format: &OutputFormat) -> Result<Verdict
 
     // 6. 阶段：flash
     let start = Instant::now();
-    let boot_entries = flash_device(args, &resolved, common_scripts.as_deref(), &ctx_tmp, &script_bin_path, combined_soc.as_deref(), format, &cancel)?;
+    let boot_entries = flash_device(
+        args,
+        &resolved,
+        common_scripts.as_deref(),
+        &ctx_tmp,
+        &script_bin_path,
+        combined_soc.as_deref(),
+        format,
+        &cancel,
+    )?;
     phase_durations.insert(Phase::Flash.as_str().to_string(), start.elapsed().as_millis() as u64);
 
     // 7. 阶段：log_capture（--flash-only 时跳过）
@@ -394,13 +403,7 @@ pub fn cmd_trun_run(args: &TrunRunArgs, format: &OutputFormat) -> Result<Verdict
     // 8. 阶段：finalize（--flash-only 时跳过关键字判定）
     let start = Instant::now();
     let (verdict, keyword_hits, fail_keyword_hits, matched_fail_keywords, fast_failed) = if args.flash_only {
-        (
-            Verdict::Pass,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            false,
-        )
+        (Verdict::Pass, Vec::new(), Vec::new(), Vec::new(), false)
     } else {
         let keyword_hits: Vec<KeywordHit> = keywords
             .iter()
@@ -501,12 +504,7 @@ fn install_ctrlc(format: &OutputFormat, cancel: Arc<AtomicBool>) {
 fn build_script_image_with_ctx(args: &TrunRunArgs, resolved: &ResolvedTestcase, chip: &str, ctx_tmp: &tempfile::TempDir) -> Result<Vec<u8>> {
     let common = resolve_common_scripts(args, &resolve_luatos_root(args.luatos_root.as_deref())?);
     let script_dirs: Vec<&Path> = vec![resolved.scripts_dir.as_path()];
-    build_script_bin(
-        &script_dirs,
-        common.as_deref(),
-        Some(ctx_tmp.path()),
-        chip,
-    ).context("build script.bin 失败")
+    build_script_bin(&script_dirs, common.as_deref(), Some(ctx_tmp.path()), chip).context("build script.bin 失败")
 }
 
 fn write_script_bin(image: &[u8], keep_dir: Option<&str>) -> Result<PathBuf> {
@@ -583,24 +581,15 @@ fn flash_device(
         "bk72xx" | "air8101" => {
             if args.clear_fs {
                 let cb = cmd_flash::make_progress_callback(format, "testcase.run", args.progress_step);
-                luatos_flash::bk7258::clear_filesystem(soc_for_flash, &args.port, cancel.clone(), cb)
-                    .context("clear filesystem failed")?;
+                luatos_flash::bk7258::clear_filesystem(soc_for_flash, &args.port, cancel.clone(), cb).context("clear filesystem failed")?;
             }
 
             if args.full {
                 if args.flash_only {
                     // flash_only 模式：只负责合成+刷机，不抓 boot log，避免串口占用。
                     let folders_refs: Option<Vec<&str>> = Some(script_folders.iter().map(|s| s.as_str()).collect());
-                    luatos_flash::bk7258::flash_bk7258(
-                        soc_for_flash,
-                        folders_refs.as_deref(),
-                        &args.port,
-                        args.baud,
-                        cancel.clone(),
-                        on_progress,
-                        false,
-                    )
-                    .context("flash run failed")?;
+                    luatos_flash::bk7258::flash_bk7258(soc_for_flash, folders_refs.as_deref(), &args.port, args.baud, cancel.clone(), on_progress, false)
+                        .context("flash run failed")?;
                     // air602_flash.exe 刷完 firmware 后会自行重启；随后 native ISP 刷 script 分区
                     // 仅关闭串口并不会让设备从 flash 启动，因此需要显式 RTS 复位确保新 script 跑起来。
                     args.reset.execute(&args.port).context("post-flash reset failed")?;
@@ -638,23 +627,11 @@ fn flash_device(
         _ => {
             if combined_soc.is_some() {
                 // 冷路径：刷整个 soc
-                cmd_flash::cmd_flash_run(
-                    soc_for_flash,
-                    &args.port,
-                    args.baud,
-                    None,
-                    args.progress_step,
-                    format,
-                    &args.reset,
-                    None,
-                    0,
-                )
-                .context("flash run failed")?;
+                cmd_flash::cmd_flash_run(soc_for_flash, &args.port, args.baud, None, args.progress_step, format, &args.reset, None, 0).context("flash run failed")?;
             } else {
                 // 快路径：刷 script.bin
                 let bin_str = script_bin_path.to_str().context("script_bin_path is not valid utf-8")?;
-                cmd_flash::cmd_flash_script_bin(soc_for_flash, &args.port, bin_str, &on_progress)
-                    .context("flash script.bin failed")?;
+                cmd_flash::cmd_flash_script_bin(soc_for_flash, &args.port, bin_str, &on_progress).context("flash script.bin failed")?;
             }
         }
     }

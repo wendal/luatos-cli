@@ -257,7 +257,11 @@ impl SocInfo {
     /// luac 调试信息保留级别：use-debug true→99（全部），false→0（无）。
     /// 缺省维持现状语义 0（SOC 包默认 strip 不变）。
     pub fn script_debug_mode(&self) -> u8 {
-        if self.script.use_debug.unwrap_or(false) { 99 } else { 0 }
+        if self.script.use_debug.unwrap_or(false) {
+            99
+        } else {
+            0
+        }
     }
 }
 

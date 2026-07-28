@@ -29,13 +29,7 @@ fn check_script_size(image_len: usize, partition_size: usize) -> anyhow::Result<
 fn build_script_image_checked(folders: &[String], info: &luatos_soc::SocInfo) -> anyhow::Result<Vec<u8>> {
     let folder_paths: Vec<std::path::PathBuf> = folders.iter().map(std::path::PathBuf::from).collect();
     let path_refs: Vec<&std::path::Path> = folder_paths.iter().map(|p| p.as_path()).collect();
-    let script_data = luatos_luadb::build::build_script_image(
-        &path_refs,
-        info.script_use_luac(),
-        info.script_bitw(),
-        info.use_bkcrc(),
-        luatos_luadb::LUAC_DEBUG_ALL,
-    )?;
+    let script_data = luatos_luadb::build::build_script_image(&path_refs, info.script_use_luac(), info.script_bitw(), info.use_bkcrc(), luatos_luadb::LUAC_DEBUG_ALL)?;
     check_script_size(script_data.len(), info.script_size())?;
     Ok(script_data)
 }

@@ -99,10 +99,7 @@ mod tests {
         assert!(metas.flush_core.is_none());
         assert_eq!(metas.extra, serde_json::Value::Null);
         // 字符串 ID
-        assert_eq!(
-            metas.model.get("air8101").unwrap(),
-            &vec![serde_json::Value::String("sim-001".into())]
-        );
+        assert_eq!(metas.model.get("air8101").unwrap(), &vec![serde_json::Value::String("sim-001".into())]);
     }
 
     #[test]
@@ -120,14 +117,8 @@ mod tests {
             }"#,
         );
         let metas = MetasFile::load(tmp.path()).unwrap();
-        assert_eq!(
-            metas.model.get("air8101").unwrap(),
-            &vec![serde_json::json!(1), serde_json::json!(101)]
-        );
-        assert_eq!(
-            metas.model.get("air8000").unwrap(),
-            &vec![serde_json::json!(1), serde_json::json!(101)]
-        );
+        assert_eq!(metas.model.get("air8101").unwrap(), &vec![serde_json::json!(1), serde_json::json!(101)]);
+        assert_eq!(metas.model.get("air8000").unwrap(), &vec![serde_json::json!(1), serde_json::json!(101)]);
     }
 
     #[test]

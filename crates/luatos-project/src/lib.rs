@@ -637,6 +637,107 @@ luac_debug = {v}
         let _ = fs::remove_dir_all(&tmp);
     }
 
+    /// `test_project_creation`: verify Project::new sets all fields correctly
+    /// for different chip targets.
+    #[test]
+    fn test_project_creation() {
+        // --- 32-bit chip (bk72xx) ---
+        let p32 = Project::new("my_app", "bk72xx");
+        assert_eq!(p32.project.name, "my_app");
+        assert_eq!(p32.project.chip, "bk72xx");
+        assert_eq!(p32.project.version, "0.1.0");
+        assert!(p32.project.description.is_none());
+
+        assert_eq!(p32.build.script_dirs, vec!["lua/"]);
+        assert!(p32.build.script_files.is_empty());
+        assert_eq!(p32.build.output_dir, "build/");
+        assert!(p32.build.use_luac);
+        assert_eq!(p32.build.bitw, 32, "bk72xx should be 32-bit");
+        assert_eq!(p32.build.luac_debug, DEFAULT_LUAC_DEBUG);
+        assert!(!p32.build.ignore_deps);
+        assert_eq!(p32.build.soc_script, "latest");
+        assert_eq!(p32.build.resource_dir, "resource/");
+
+        assert!(p32.flash.soc_file.is_none());
+        assert!(p32.flash.port.is_none());
+        assert!(p32.flash.baud.is_none());
+
+        // --- 64-bit chip (air6208) ---
+        let p64 = Project::new("sensor_hub", "air6208");
+        assert_eq!(p64.project.name, "sensor_hub");
+        assert_eq!(p64.project.chip, "air6208");
+        assert_eq!(p64.build.bitw, 64, "air6208 should be 64-bit");
+
+        // --- Mutating fields after creation ---
+        let mut p = Project::new("custom", "air8101");
+        p.project.description = Some("A test project".to_string());
+        p.flash.port = Some("COM3".to_string());
+        p.flash.baud = Some(921600);
+        p.flash.soc_file = Some("firmware.soc".to_string());
+        p.build.script_dirs = vec!["src/".into(), "lib/".into()];
+        p.build.use_luac = false;
+
+        assert_eq!(p.project.description.as_deref(), Some("A test project"));
+        assert_eq!(p.flash.port.as_deref(), Some("COM3"));
+        assert_eq!(p.flash.baud, Some(921600));
+        assert_eq!(p.flash.soc_file.as_deref(), Some("firmware.soc"));
+        assert_eq!(p.build.script_dirs, vec!["src/", "lib/"]);
+        assert!(!p.build.use_luac);
+    }
+
+    /// `test_project_serialization`: verify TOML and JSON round-trip
+    /// serialization / deserialization of Project.
+    #[test]
+    fn test_project_serialization() {
+        let original = Project::new("serial_test", "air6208");
+
+        // ---- TOML round-trip (via save/load with tempfile) ----
+        let tmp_dir = tempfile::tempdir().unwrap();
+        original.save(tmp_dir.path()).unwrap();
+
+        // Verify the config file was created
+        let config_path = tmp_dir.path().join(CONFIG_FILE_NAME);
+        assert!(config_path.exists(), "config file should exist after save");
+
+        // Load and compare
+        let loaded = Project::load(tmp_dir.path()).unwrap();
+        assert_eq!(original, loaded, "TOML round-trip should preserve all fields");
+
+        // Also verify raw TOML content is valid
+        let raw = fs::read_to_string(&config_path).unwrap();
+        let from_raw: Project = toml::from_str(&raw).unwrap();
+        assert_eq!(original, from_raw);
+
+        // ---- JSON round-trip (in-memory) ----
+        let json = serde_json::to_string_pretty(&original).unwrap();
+        let from_json: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, from_json, "JSON round-trip should preserve all fields");
+
+        // ---- Modified project round-trip ----
+        let mut modified = Project::new("full_config", "bk72xx");
+        modified.project.description = Some("desc".to_string());
+        modified.build.script_dirs = vec!["lua/".into(), "lib/".into()];
+        modified.build.script_files = vec!["extra.lua".into()];
+        modified.build.output_dir = "out/".into();
+        modified.build.use_luac = false;
+        modified.build.luac_debug = 2;
+        modified.build.ignore_deps = true;
+        modified.build.soc_script = "disable".into();
+        modified.build.resource_dir = "res/".into();
+        modified.flash.soc_file = Some("fw.soc".into());
+        modified.flash.port = Some("COM10".into());
+        modified.flash.baud = Some(115200);
+
+        let tmp2 = tempfile::tempdir().unwrap();
+        modified.save(tmp2.path()).unwrap();
+        let loaded2 = Project::load(tmp2.path()).unwrap();
+        assert_eq!(modified, loaded2, "Modified project TOML round-trip should preserve all fields");
+
+        let json2 = serde_json::to_string(&modified).unwrap();
+        let from_json2: Project = serde_json::from_str(&json2).unwrap();
+        assert_eq!(modified, from_json2, "Modified project JSON round-trip should preserve all fields");
+    }
+
     /// soc_script = 指定版本，lib 不存在时返回 Err
     #[test]
     fn soc_script_specific_version_not_found() {

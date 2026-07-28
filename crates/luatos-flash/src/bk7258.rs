@@ -466,7 +466,15 @@ const LOG_CAPTURE_SECS: u64 = 20;
 
 /// Flash via air602_flash.exe subprocess (BK7258 preferred path).
 /// Returns captured boot log lines when `capture_boot_log` is true.
-fn flash_via_subprocess(exe_path: &Path, rom_path: &Path, port: &str, log_br: u32, cancel: &AtomicBool, on_progress: &ProgressCallback, capture_boot_log: bool) -> Result<Vec<String>> {
+fn flash_via_subprocess(
+    exe_path: &Path,
+    rom_path: &Path,
+    port: &str,
+    log_br: u32,
+    cancel: &AtomicBool,
+    on_progress: &ProgressCallback,
+    capture_boot_log: bool,
+) -> Result<Vec<String>> {
     // Strip "COM" prefix — air602_flash.exe wants a bare number
     let port_num: String = port.chars().filter(|c| c.is_ascii_digit()).collect();
     if port_num.is_empty() {
