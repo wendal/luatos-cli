@@ -763,6 +763,8 @@ fn decode_printf_message(body: &[u8]) -> String {
 
         // Read format specifier
         let mut spec = String::new();
+        let mut is_short = false;
+        let mut is_short_short = false;
         let mut is_long = false;
         let mut is_long_long = false;
 
@@ -770,6 +772,13 @@ fn decode_printf_message(body: &[u8]) -> String {
             match next {
                 '0'..='9' | '-' | '+' | ' ' | '#' | '.' => {
                     spec.push(next);
+                    chars.next();
+                }
+                'h' => {
+                    if is_short {
+                        is_short_short = true;
+                    }
+                    is_short = true;
                     chars.next();
                 }
                 'l' => {
@@ -793,14 +802,28 @@ fn decode_printf_message(body: &[u8]) -> String {
                             arg_pos += 8;
                         }
                     } else {
-                        // 4-byte integer
+                        // `short` and `char` integer arguments are promoted to
+                        // `int`/`unsigned int` in C varargs, so they still occupy
+                        // a 4-byte argument slot. Narrow only for presentation.
                         if arg_pos + 4 <= args_data.len() {
-                            let val = i32::from_le_bytes(args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4]));
+                            let raw = u32::from_le_bytes(args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4]));
                             match next {
-                                'x' => result.push_str(&format!("{val:x}")),
-                                'X' => result.push_str(&format!("{val:X}")),
-                                'u' => result.push_str(&format!("{}", val as u32)),
-                                _ => result.push_str(&format!("{val}")),
+                                'd' | 'i' if is_short_short => result.push_str(&(raw as u8 as i8).to_string()),
+                                'd' | 'i' if is_short => result.push_str(&(raw as u16 as i16).to_string()),
+                                'd' | 'i' => result.push_str(&(raw as i32).to_string()),
+                                'u' if is_short_short => result.push_str(&(raw as u8).to_string()),
+                                'u' if is_short => result.push_str(&(raw as u16).to_string()),
+                                'u' => result.push_str(&raw.to_string()),
+                                'x' if is_short_short => result.push_str(&format!("{:x}", raw as u8)),
+                                'x' if is_short => result.push_str(&format!("{:x}", raw as u16)),
+                                'x' => result.push_str(&format!("{raw:x}")),
+                                'X' if is_short_short => result.push_str(&format!("{:X}", raw as u8)),
+                                'X' if is_short => result.push_str(&format!("{:X}", raw as u16)),
+                                'X' => result.push_str(&format!("{raw:X}")),
+                                'o' if is_short_short => result.push_str(&format!("{:o}", raw as u8)),
+                                'o' if is_short => result.push_str(&format!("{:o}", raw as u16)),
+                                'o' => result.push_str(&format!("{raw:o}")),
+                                _ => unreachable!(),
                             }
                             arg_pos += 4;
                         }
@@ -1004,6 +1027,8 @@ fn decode_ec718_printf(body: &[u8]) -> String {
 
         let mut is_long = false;
         let mut is_long_long = false;
+        let mut is_short = false;
+        let mut is_short_short = false;
         let mut has_star = false;
 
         loop {
@@ -1015,6 +1040,13 @@ fn decode_ec718_printf(body: &[u8]) -> String {
                 }
                 Some(&'*') => {
                     has_star = true;
+                    chars.next();
+                }
+                Some(&'h') => {
+                    if is_short {
+                        is_short_short = true;
+                    }
+                    is_short = true;
                     chars.next();
                 }
                 Some(&'l') => {
@@ -1039,12 +1071,27 @@ fn decode_ec718_printf(body: &[u8]) -> String {
                         }
                     } else {
                         if arg_pos + 4 <= args_data.len() {
-                            let val = i32::from_le_bytes(args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4]));
+                            // C varargs promote `short`/`char` integers to a
+                            // 4-byte slot; the `h`/`hh` modifier only controls
+                            // how the decoded value is presented.
+                            let raw = u32::from_le_bytes(args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4]));
                             match spec {
-                                'x' => result.push_str(&format!("{val:x}")),
-                                'X' => result.push_str(&format!("{val:X}")),
-                                'u' => result.push_str(&format!("{}", val as u32)),
-                                _ => result.push_str(&format!("{val}")),
+                                'd' | 'i' if is_short_short => result.push_str(&(raw as u8 as i8).to_string()),
+                                'd' | 'i' if is_short => result.push_str(&(raw as u16 as i16).to_string()),
+                                'd' | 'i' => result.push_str(&(raw as i32).to_string()),
+                                'u' if is_short_short => result.push_str(&(raw as u8).to_string()),
+                                'u' if is_short => result.push_str(&(raw as u16).to_string()),
+                                'u' => result.push_str(&raw.to_string()),
+                                'x' if is_short_short => result.push_str(&format!("{:x}", raw as u8)),
+                                'x' if is_short => result.push_str(&format!("{:x}", raw as u16)),
+                                'x' => result.push_str(&format!("{raw:x}")),
+                                'X' if is_short_short => result.push_str(&format!("{:X}", raw as u8)),
+                                'X' if is_short => result.push_str(&format!("{:X}", raw as u16)),
+                                'X' => result.push_str(&format!("{raw:X}")),
+                                'o' if is_short_short => result.push_str(&format!("{:o}", raw as u8)),
+                                'o' if is_short => result.push_str(&format!("{:o}", raw as u16)),
+                                'o' => result.push_str(&format!("{raw:o}")),
+                                _ => unreachable!(),
                             }
                             arg_pos += 4;
                         }
@@ -1335,6 +1382,22 @@ mod tests {
     }
 
     #[test]
+    fn decode_printf_with_short_ints() {
+        let mut body = b"hd=%hd hu=%hu hx=%hx hX=%hX hhd=%hhd hhu=%hhu next=%u\0".to_vec();
+        body.resize((body.len() + 3) & !3, 0);
+        body.extend_from_slice(&(-2i32).to_le_bytes());
+        body.extend_from_slice(&65535u32.to_le_bytes());
+        body.extend_from_slice(&0xabcdu32.to_le_bytes());
+        body.extend_from_slice(&0xbeefu32.to_le_bytes());
+        body.extend_from_slice(&(-2i32).to_le_bytes());
+        body.extend_from_slice(&255u32.to_le_bytes());
+        body.extend_from_slice(&77u32.to_le_bytes());
+
+        let msg = decode_printf_message(&body);
+        assert_eq!(msg, "hd=-2 hu=65535 hx=abcd hX=BEEF hhd=-2 hhu=255 next=77");
+    }
+
+    #[test]
     fn soc_log_escape_handling() {
         let mut decoder = SocLogDecoder::new();
 
@@ -1434,6 +1497,19 @@ mod tests {
         let entries = decoder.feed(&frame);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].message, "val=42");
+    }
+
+    #[test]
+    fn ec718_printf_with_short_ints() {
+        let mut body = b"hd=%hd hu=%hu hx=%hx next=%u\0".to_vec();
+        body.resize((body.len() + 3) & !3, 0);
+        body.extend_from_slice(&(-2i32).to_le_bytes());
+        body.extend_from_slice(&65535u32.to_le_bytes());
+        body.extend_from_slice(&0xabcdu32.to_le_bytes());
+        body.extend_from_slice(&77u32.to_le_bytes());
+
+        let msg = decode_ec718_printf(&body);
+        assert_eq!(msg, "hd=-2 hu=65535 hx=abcd next=77");
     }
 
     #[test]
