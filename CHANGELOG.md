@@ -18,7 +18,7 @@ All notable changes to this project will be documented in this file.
 
 ### 变更
 
-- 无
+- 修复 SOC/EC718 二进制日志解析遗漏 `printf` 的 `h`/`hh` 长度修饰符，`%hd`、`%hu`、`%hx` 等格式现在可正确还原，且不会造成后续参数错位
 
 ## [1.9.0] - 2026-07-08
 
