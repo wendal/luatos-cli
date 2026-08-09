@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest;
 
 /// CDN 清单地址列表（按优先级排序）
-pub const MANIFEST_URLS: &[&str] = &["http://bj02.air32.cn:10888/files/files.json", "http://sh.air32.cn:10888/files/files.json"];
+pub const MANIFEST_URLS: &[&str] = &["https://cdn18.air32.cn/files/files.json", "http://sh.air32.cn:10888/files/files.json"];
 
 // ─── 数据结构 ──────────────────────────────────────────
 

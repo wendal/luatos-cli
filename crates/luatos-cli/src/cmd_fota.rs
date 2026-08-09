@@ -108,6 +108,22 @@ fn parse_hex_addr(s: &str) -> Option<u64> {
     u64::from_str_radix(hex, 16).ok()
 }
 
+/// Parse `FLASH_FOTA_REGION_LEN` from mem_map.txt content and subtract the 96KB
+/// FOTA reserved area, giving the maximum allowed delta.par size.
+/// Uses the last occurrence in the file (matches luatools_py3 soc.py's greedy regex).
+fn fota_delta_size_limit(mem_text: &str) -> Option<u64> {
+    mem_text
+        .lines()
+        .rev()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("#define FLASH_FOTA_REGION_LEN")?;
+            let value = rest.trim().trim_start_matches('(').trim_end_matches(')').trim();
+            parse_hex_addr(value)
+        })
+        .next()
+        .map(|v| v.saturating_sub(96 * 1024))
+}
+
 /// Run a command, surface stderr on failure, return an error if exit code != 0.
 fn run_cmd(mut cmd: Command) -> Result<()> {
     let status = cmd.status().with_context(|| format!("failed to launch {:?}", cmd.get_program()))?;
@@ -189,8 +205,12 @@ fn build_ec7xx_fota(new_soc: &str, old_soc: &str, chip: &str, toolkit_path: &Pat
     // Try to detect the specific chip variant from mem_map.txt
     // (info.json only says "ec7xx", but FotaToolkit needs the right config like ec718hm.json)
     let mem_map_path = new_up.dir.join("mem_map.txt");
-    let actual_config = if mem_map_path.exists() {
-        let mem_text = fs::read_to_string(&mem_map_path).unwrap_or_default();
+    let mem_text = if mem_map_path.exists() {
+        fs::read_to_string(&mem_map_path).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let actual_config = if !mem_text.is_empty() {
         // Match lines like: #define TYPE_EC718HM 1
         let config_name = mem_text
             .lines()
@@ -265,6 +285,18 @@ fn build_ec7xx_fota(new_soc: &str, old_soc: &str, chip: &str, toolkit_path: &Pat
             return build_ec7xx_script_only_fota(new_soc, out_path);
         }
         bail!("delta.par not found after FotaToolkit. Check FotaToolkit logs above for details.");
+    }
+
+    // Size guard (matches luatools_py3 soc.py): delta.par must fit in the FOTA region
+    // (FLASH_FOTA_REGION_LEN from mem_map.txt minus the 96KB reserved area).
+    match fota_delta_size_limit(&mem_text) {
+        Some(limit) => {
+            let delta_size = fs::metadata(&delta).context("stat delta.par")?.len();
+            if delta_size > limit {
+                bail!("底层差分包大小超过了最大允许大小 {}kb > {}kb", 1 + delta_size / 1024, limit / 1024);
+            }
+        }
+        None => log::warn!("FLASH_FOTA_REGION_LEN not found in mem_map.txt; skipping delta.par size check"),
     }
 
     // common_data = compressed script (full, if present), sdk_data = delta.par (firmware diff)
@@ -757,7 +789,7 @@ mod tests {
     use serde_json::Value;
     use tempfile::tempdir;
 
-    use super::cmd_fota_build;
+    use super::{cmd_fota_build, fota_delta_size_limit};
     use crate::OutputFormat;
 
     fn repo_root() -> PathBuf {
@@ -838,5 +870,32 @@ mod tests {
         );
         let err = result.unwrap_err().to_string();
         assert!(err.contains("script file not found"), "expected missing script error, got: {err}");
+    }
+
+    #[test]
+    fn fota_delta_size_limit_parses_region_len() {
+        // Real value from LuatOS-SoC_V2029_Air780EPM: 0x96000 - 96KB = 516096
+        let text = "#define FLASH_FOTA_REGION_LEN (0x96000)\n";
+        assert_eq!(fota_delta_size_limit(text), Some(0x96000 - 96 * 1024));
+    }
+
+    #[test]
+    fn fota_delta_size_limit_uses_last_occurrence() {
+        // Matches luatools_py3 soc.py's greedy regex: last match wins
+        let text = "#define FLASH_FOTA_REGION_LEN (0x96000)\n#define FLASH_FOTA_REGION_LEN (0x106000)\n";
+        assert_eq!(fota_delta_size_limit(text), Some(0x106000 - 96 * 1024));
+    }
+
+    #[test]
+    fn fota_delta_size_limit_returns_none_when_missing_or_malformed() {
+        assert_eq!(fota_delta_size_limit(""), None);
+        assert_eq!(fota_delta_size_limit("#define TYPE_EC718HM 1\n"), None);
+        assert_eq!(fota_delta_size_limit("#define FLASH_FOTA_REGION_LEN (nonsense)\n"), None);
+    }
+
+    #[test]
+    fn fota_delta_size_limit_saturates_below_reserved_area() {
+        let text = "#define FLASH_FOTA_REGION_LEN (0x1000)\n";
+        assert_eq!(fota_delta_size_limit(text), Some(0));
     }
 }

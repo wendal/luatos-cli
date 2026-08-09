@@ -18,6 +18,8 @@ All notable changes to this project will be documented in this file.
 
 ### 变更
 
+- fota build（EC7xx/EC618/Air8000 差分包）：新增差分包大小防御，从 mem_map.txt 解析 `FLASH_FOTA_REGION_LEN` 并减去 96KB 保留区作为上限，`delta.par` 超限直接报错（对齐 luatools_py3 06c2179）
+- 资源清单首选地址切换为 `https://cdn18.air32.cn`（对齐 luatools_py3 2bc7e67）
 - 修复 SOC/EC718 二进制日志解析遗漏 `printf` 的 `h`/`hh` 长度修饰符，`%hd`、`%hu`、`%hx` 等格式现在可正确还原，且不会造成后续参数错位
 
 ## [1.9.0] - 2026-07-08
