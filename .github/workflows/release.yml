@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -15,20 +16,17 @@ jobs:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-            artifact: luatos-cli.exe
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            artifact: luatos-cli
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            artifact: luatos-cli
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            artifact: luatos-cli
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v6
         with:
@@ -68,18 +66,56 @@ jobs:
           cp target/${{ matrix.target }}/release/luatos-cli dist/
           tar czf luatos-cli-${{ matrix.target }}.tar.gz -C dist .
 
-      - name: Package (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          mkdir dist
-          cp target/${{ matrix.target }}/release/luatos-cli dist/
-          tar czf luatos-cli-${{ matrix.target }}.tar.gz -C dist .
-
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: luatos-cli-${{ matrix.target }}
           path: luatos-cli-${{ matrix.target }}.*
+
+  build-macos:
+    name: Build macOS universal
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin, aarch64-apple-darwin
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-macos-universal-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release (x86_64 + aarch64)
+        run: |
+          cargo build --release --target x86_64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+
+      - name: Package (universal + per-arch)
+        run: |
+          mkdir -p dist/universal dist/x86_64 dist/aarch64
+          lipo -create \
+            target/x86_64-apple-darwin/release/luatos-cli \
+            target/aarch64-apple-darwin/release/luatos-cli \
+            -output dist/universal/luatos-cli
+          cp target/x86_64-apple-darwin/release/luatos-cli dist/x86_64/
+          cp target/aarch64-apple-darwin/release/luatos-cli dist/aarch64/
+          tar czf luatos-cli-universal-apple-darwin.tar.gz -C dist/universal .
+          tar czf luatos-cli-x86_64-apple-darwin.tar.gz -C dist/x86_64 .
+          tar czf luatos-cli-aarch64-apple-darwin.tar.gz -C dist/aarch64 .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: luatos-cli-macos
+          path: luatos-cli-*.tar.gz
 
   build-ffi:
     name: Build FFI ${{ matrix.target }}
@@ -92,17 +128,17 @@ jobs:
             os: windows-latest
             dll: luatos_log_ffi.dll
             archive_fmt: zip
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            dll: luatos_log_ffi.dll
+            archive_fmt: zip
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             dll: libluatos_log_ffi.so
             archive_fmt: tar.gz
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            dll: libluatos_log_ffi.dylib
-            archive_fmt: tar.gz
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            dll: libluatos_log_ffi.dylib
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            dll: libluatos_log_ffi.so
             archive_fmt: tar.gz
     steps:
       - uses: actions/checkout@v6
@@ -148,26 +184,67 @@ jobs:
           cp crates/luatos-log-ffi/examples/python/demo_ctypes.py dist/
           tar czf luatos-log-ffi-${{ matrix.target }}.tar.gz -C dist .
 
-      - name: Build FFI (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          cargo build --release --target ${{ matrix.target }} -p luatos-log-ffi
-          mkdir dist
-          cp target/${{ matrix.target }}/release/${{ matrix.dll }} dist/
-          cp crates/luatos-log-ffi/include/luatos_log.h dist/
-          cp crates/luatos-log-ffi/examples/c/demo.c dist/
-          cp crates/luatos-log-ffi/examples/python/demo_ctypes.py dist/
-          tar czf luatos-log-ffi-${{ matrix.target }}.tar.gz -C dist .
-
       - name: Upload FFI artifact
         uses: actions/upload-artifact@v7
         with:
           name: luatos-log-ffi-${{ matrix.target }}
           path: luatos-log-ffi-${{ matrix.target }}.*
 
+  build-ffi-macos:
+    name: Build FFI macOS universal
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin, aarch64-apple-darwin
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ffi-macos-universal-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build FFI (x86_64 + aarch64)
+        run: |
+          cargo build --release --target x86_64-apple-darwin -p luatos-log-ffi
+          cargo build --release --target aarch64-apple-darwin -p luatos-log-ffi
+
+      - name: Package (universal + per-arch)
+        run: |
+          for arch in universal x86_64 aarch64; do
+            mkdir -p dist/$arch
+            cp crates/luatos-log-ffi/include/luatos_log.h dist/$arch/
+            cp crates/luatos-log-ffi/examples/c/demo.c dist/$arch/
+            cp crates/luatos-log-ffi/examples/python/demo_ctypes.py dist/$arch/
+          done
+          lipo -create \
+            target/x86_64-apple-darwin/release/libluatos_log_ffi.dylib \
+            target/aarch64-apple-darwin/release/libluatos_log_ffi.dylib \
+            -output dist/universal/libluatos_log_ffi.dylib
+          cp target/x86_64-apple-darwin/release/libluatos_log_ffi.dylib dist/x86_64/
+          cp target/aarch64-apple-darwin/release/libluatos_log_ffi.dylib dist/aarch64/
+          for arch in universal x86_64 aarch64; do
+            tar czf luatos-log-ffi-$arch-apple-darwin.tar.gz -C dist/$arch .
+          done
+
+      - name: Upload FFI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: luatos-log-ffi-macos
+          path: luatos-log-ffi-*.tar.gz
+
   release:
     name: Create GitHub Release
-    needs: [build, build-ffi]
+    needs: [build, build-macos, build-ffi, build-ffi-macos]
+    # 仅在 tag 推送时创建 Release；workflow_dispatch 手动触发只验证编译
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

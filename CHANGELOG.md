@@ -14,13 +14,20 @@ All notable changes to this project will be documented in this file.
 - 修复 Air1601/Air1602 `flash test --script` 被忽略的问题：现在会在全量刷机后覆盖脚本分区，再进行关键字判定
 - `flash test` 关键字默认策略收敛：未传 `--keyword` 时默认 `LuatOS@`，显式传入时仅按传入关键字判定
 
-## [Unreleased]
+## [1.9.1] - 2026-08-10
 
 ### 变更
 
 - fota build（EC7xx/EC618/Air8000 差分包）：新增差分包大小防御，从 mem_map.txt 解析 `FLASH_FOTA_REGION_LEN` 并减去 96KB 保留区作为上限，`delta.par` 超限直接报错（对齐 luatools_py3 06c2179）
 - 资源清单首选地址切换为 `https://cdn18.air32.cn`（对齐 luatools_py3 2bc7e67）
 - 修复 SOC/EC718 二进制日志解析遗漏 `printf` 的 `h`/`hh` 长度修饰符，`%hd`、`%hu`、`%hx` 等格式现在可正确还原，且不会造成后续参数错位
+
+### 内部 / CI
+
+- 从 workspace 移除 luatos-mfgui，精简 CI 依赖
+- Release 产物新增 `aarch64-pc-windows-msvc`（windows-11-arm 原生编译）和 `aarch64-unknown-linux-gnu`（ubuntu-24.04-arm 原生编译）
+- macOS 新增 universal 单文件包（`lipo` 合并 x86_64 + aarch64），同时保留按架构的包；luatos-log-ffi 动态库同样处理
+- Release workflow 支持 `workflow_dispatch` 手动触发（仅构建验证，不创建 Release）
 
 ## [1.9.0] - 2026-07-08
 
