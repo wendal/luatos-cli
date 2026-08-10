@@ -31,6 +31,7 @@ pub fn cmd_build_luac(src_dirs: &[String], output: &str, bitw: u32, luac_debug: 
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn cmd_build_filesystem(
     src_dirs: &[String],
     output: &str,

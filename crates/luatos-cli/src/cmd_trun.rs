@@ -550,6 +550,7 @@ fn merge_ctx_layers(args: &TrunRunArgs, root: &Path) -> Result<luatos_testcase::
     build_ctx(root, None, args.ctx.as_deref().map(Path::new), args.full_ctx.as_deref().map(Path::new), 0)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn flash_device(
     args: &TrunRunArgs,
     resolved: &ResolvedTestcase,
