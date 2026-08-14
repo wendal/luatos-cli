@@ -1056,6 +1056,28 @@ mod tests {
         assert_eq!(mask, 0x407C);
     }
 
+    #[test]
+    fn test_flash_sr_params_remaining_known_chips() {
+        // 0x1464C8 → 1 字节 SR，清 BP0-BP4（M1）
+        assert_eq!(flash_sr_params(0x1464C8), (1, [0x05, 0xFF], 0x007C));
+        // 0x15701C → 1 字节 SR，但仅清 BP0-BP1（0x003C）
+        assert_eq!(flash_sr_params(0x15701C), (1, [0x05, 0xFF], 0x003C));
+        // 0x1423C2 / 0x1523C2 → 2 字节 SR（读 SR1+SR2）
+        assert_eq!(flash_sr_params(0x1423C2), (2, [0x05, 0x15], 0x3012));
+        assert_eq!(flash_sr_params(0x1523C2), (2, [0x05, 0x15], 0x3012));
+        // 0x1560C4 → 2 字节 SR，清 CMP + BP0-BP4（M2）
+        assert_eq!(flash_sr_params(0x1560C4), (2, [0x05, 0x35], 0x407C));
+    }
+
+    #[test]
+    fn test_flash_sr_params_default_capacity_heuristic() {
+        // 未列入白名单：容量字节（mid>>16）< 0x14 → 1 字节 SR（M1 掩码）
+        assert_eq!(flash_sr_params(0x100000), (1, [0x05, 0x35], 0x007C));
+        assert_eq!(flash_sr_params(0x120000), (1, [0x05, 0x35], 0x007C));
+        // 未列入白名单：容量字节 ≥ 0x14 → 2 字节 SR（M2 掩码）
+        assert_eq!(flash_sr_params(0x1400FF), (2, [0x05, 0x35], 0x407C));
+    }
+
     /// Non-destructive handshake test.
     /// Run with: cargo test bk_live_handshake -- --ignored --nocapture
     #[test]

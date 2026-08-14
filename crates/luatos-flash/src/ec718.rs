@@ -1621,4 +1621,95 @@ mod tests {
         });
         flash_ec718(soc, port, &on_progress, cancel).expect("flash_ec718");
     }
+
+    #[test]
+    fn test_crc8_maxim_known_values() {
+        // CRC-8/MAXIM（Dallas 1-Wire，多项式 0x31 反转，init=0）对 b"123456789" 的标准校验值为 0xA1
+        assert_eq!(crc8_maxim(b"123456789"), 0xA1);
+        // 长度字段编码场景：[len 低 3 字节]，期望值由本函数实际计算结果固化
+        assert_eq!(crc8_maxim(&[0x04, 0x00, 0x00]), 0x9E);
+        assert_eq!(crc8_maxim(&[0x00, 0x10, 0x00]), 0xEC);
+        assert_eq!(crc8_maxim(&[]), 0x00);
+    }
+
+    #[test]
+    fn test_self_def_check1_deterministic() {
+        // 相同输入必须产生相同输出（确定性）
+        let a = self_def_check1(0x32, 0, 0xCD, 0x32, 4, &[1, 2, 3, 4]);
+        let b = self_def_check1(0x32, 0, 0xCD, 0x32, 4, &[1, 2, 3, 4]);
+        assert_eq!(a, b);
+        // 手算期望值：cmd+index+order_id+norder_id+len 各字节 + 数据求和 = 0x13F，LE 编码
+        assert_eq!(self_def_check1(0x32, 0, 0xCD, 0x32, 4, &[1, 2, 3, 4]), [0x3F, 0x01, 0x00, 0x00]);
+        // 数据不同 → 校验值不同；len 不同 → 校验值不同
+        assert_ne!(self_def_check1(0x32, 0, 0xCD, 0x32, 4, &[1, 2, 3, 5]), [0x3F, 0x01, 0x00, 0x00]);
+        assert_ne!(self_def_check1(0x32, 0, 0xCD, 0x32, 5, &[1, 2, 3, 4]), [0x3F, 0x01, 0x00, 0x00]);
+    }
+
+    /// 构造一个最小合法 binpkg（legacy 格式）：0x34 字节头部 + 单个 364 字节条目元数据 + 4 字节镜像数据。
+    fn build_legacy_binpkg(name: &str, addr: u32, img_size: u32, data: &[u8]) -> Vec<u8> {
+        let mut buf = vec![0u8; 0x34];
+        let mut meta = vec![0u8; ENTRY_META_SIZE];
+        let name_bytes = name.as_bytes();
+        meta[..name_bytes.len()].copy_from_slice(name_bytes);
+        meta[64..68].copy_from_slice(&addr.to_le_bytes());
+        meta[68..72].copy_from_slice(&0x4000u32.to_le_bytes()); // flash_size
+        meta[76..80].copy_from_slice(&img_size.to_le_bytes());
+        buf.extend_from_slice(&meta);
+        buf.extend_from_slice(data);
+        buf
+    }
+
+    #[test]
+    fn test_parse_binpkg_minimal_legacy() {
+        let name = "boot.bin";
+        let data = [0xAA, 0xBB, 0xCC, 0xDD];
+        let binpkg = build_legacy_binpkg(name, 0x1000, data.len() as u32, &data);
+        let result = parse_binpkg(&binpkg).expect("最小合法 binpkg 应解析成功");
+        assert_eq!(result.chip, "unknown", "legacy 格式无 pkgmode 魔数，chip 应为 unknown");
+        assert_eq!(result.entries.len(), 1);
+        let entry = &result.entries[0];
+        assert_eq!(entry.name, name);
+        assert_eq!(entry.addr, 0x1000);
+        assert_eq!(entry.flash_size, 0x4000);
+        assert_eq!(entry.image_size, data.len() as u32);
+        assert_eq!(entry.data.as_deref(), Some(data.as_slice()));
+    }
+
+    #[test]
+    fn test_parse_binpkg_pkgmode_chip_name() {
+        // pkgmode 格式：0x38..0x3F 为魔数 "pkgmode"，芯片名位于 0x190..0x1A0，条目从 0x1D8 开始
+        let mut binpkg = vec![0u8; 0x1D8 + ENTRY_META_SIZE + 4];
+        binpkg[0x38..0x3F].copy_from_slice(b"pkgmode");
+        binpkg[0x190..0x195].copy_from_slice(b"EC718");
+        let mut meta = vec![0u8; ENTRY_META_SIZE];
+        let name_bytes = b"core.bin";
+        meta[..name_bytes.len()].copy_from_slice(name_bytes);
+        meta[64..68].copy_from_slice(&0x24000u32.to_le_bytes());
+        meta[68..72].copy_from_slice(&0x100000u32.to_le_bytes());
+        meta[76..80].copy_from_slice(&4u32.to_le_bytes());
+        binpkg[0x1D8..0x1D8 + ENTRY_META_SIZE].copy_from_slice(&meta);
+        binpkg[0x1D8 + ENTRY_META_SIZE..].copy_from_slice(&[0x01, 0x02, 0x03, 0x04]);
+
+        let result = parse_binpkg(&binpkg).expect("pkgmode binpkg 应解析成功");
+        assert_eq!(result.chip, "EC718");
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].name, "core.bin");
+        assert_eq!(result.entries[0].addr, 0x24000);
+        assert_eq!(result.entries[0].data.as_deref(), Some([0x01, 0x02, 0x03, 0x04].as_slice()));
+    }
+
+    #[test]
+    fn test_parse_binpkg_invalid_inputs() {
+        // 空输入与过小输入必须返回 Err 而不是 panic
+        assert!(parse_binpkg(&[]).is_err(), "空输入应返回 Err");
+        assert!(parse_binpkg(&[0u8; 0x33]).is_err(), "小于 0x34 字节应返回 Err");
+        // 恰好 0x34 字节且无条目：不 panic，返回空条目列表
+        let result = parse_binpkg(&[0u8; 0x34]).expect("0x34 字节边界不应 Err");
+        assert!(result.entries.is_empty());
+        // 条目声明的 img_size 超出剩余数据：data 应为 None，且不 panic
+        let binpkg = build_legacy_binpkg("big.bin", 0, 100, &[0x01, 0x02]);
+        let result = parse_binpkg(&binpkg).expect("数据不足不应 Err");
+        assert_eq!(result.entries.len(), 1);
+        assert!(result.entries[0].data.is_none(), "镜像数据不足时 data 应为 None");
+    }
 }

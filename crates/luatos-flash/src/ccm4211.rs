@@ -945,4 +945,86 @@ mod tests {
         assert_eq!(r2.len(), 1);
         assert_eq!(r2[0].data, vec![0xA5, 0xA6, 0x00, 0xFF]);
     }
+
+    /// 测试专用 unescape 辅助函数（与 SocFrameParser::feed 中的转义还原逻辑一致，
+    /// 仅用于验证 soc_escape 的往返，不涉及任何串口操作）。
+    fn unescape(data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(data.len());
+        let mut i = 0;
+        while i < data.len() {
+            if data[i] == SOC_ESC && i + 1 < data.len() {
+                match data[i + 1] {
+                    SOC_ESC_FLAG => out.push(SOC_FLAG),
+                    SOC_ESC_CODE => out.push(SOC_ESC),
+                    other => out.push(other & 0x03),
+                }
+                i += 2;
+            } else {
+                out.push(data[i]);
+                i += 1;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn test_soc_escape_unescape_roundtrip() {
+        // 特殊字节 0xA5/0xA6 与普通数据混合的往返
+        let cases: &[&[u8]] = &[
+            &[],
+            &[0x01, 0x02, 0x03],
+            &[SOC_FLAG],
+            &[SOC_ESC],
+            &[SOC_FLAG, SOC_ESC],
+            &[0x00, SOC_FLAG, 0x7E, SOC_ESC, 0xFF, SOC_FLAG],
+            &[SOC_FLAG; 16],
+        ];
+        for case in cases {
+            let escaped = soc_escape(case);
+            assert_eq!(unescape(&escaped), *case, "escape/unescape 往返失败");
+            // 转义后不允许出现裸 0xA5（0xA5 一定是帧分隔符）
+            assert!(!escaped.contains(&SOC_FLAG), "转义输出不应包含裸 0xA5");
+        }
+    }
+
+    #[test]
+    fn test_crc16_modbus_known_values() {
+        // 说明：标准 Modbus CRC（init=0xFFFF + xorout=0xFFFF）对 b"123456789" 的校验值是
+        // 0x4B37；本实现采用 init=0、无最终异或（等效 CRC-16/ARC，多项式同为 0x8005 反转），
+        // 实际计算结果为 0xBB3D（与现有 test_crc16_modbus 一致），故以实际值固化。
+        assert_eq!(crc16_modbus(b"123456789"), 0xBB3D);
+        // 额外固定输入，期望值由本函数实际计算结果固化
+        assert_eq!(crc16_modbus(b"LuatOS Air1601"), 0x14BF);
+        assert_eq!(crc16_modbus(b""), 0x0000);
+    }
+
+    #[test]
+    fn test_build_soc_header_layout() {
+        // 全字段字节布局：ms:u64=0（0..8）、address:u32 LE（8..12）、
+        // len:u32 LE（12..16）、cmd:u32 LE（16..20）、sn:u16 LE（20..22）、
+        // type:u8=0（22）、cpu:u8=0（23）
+        let header = build_soc_header(0x09, 0x1470_0000, 5, 0x0102);
+        assert_eq!(header.len(), SOC_HEADER_LEN);
+        assert_eq!(&header[0..8], &[0u8; 8], "ms 字段应为 0");
+        assert_eq!(&header[8..12], &0x1470_0000u32.to_le_bytes(), "address 应为 LE");
+        assert_eq!(&header[12..16], &5u32.to_le_bytes(), "len 应为 LE");
+        assert_eq!(&header[16..20], &0x09u32.to_le_bytes(), "cmd 应为 LE");
+        assert_eq!(&header[20..22], &0x0102u16.to_le_bytes(), "sn 应为 LE");
+        assert_eq!(header[22], 0, "type 字节应为 0");
+        assert_eq!(header[23], 0, "cpu 字节应为 0");
+    }
+
+    #[test]
+    fn test_soc_frame_escape_roundtrip_single_feed() {
+        // 整帧一次性喂入 parser：载荷包含 0xA5/0xA6 特殊字节，验证转义 + CRC 的端到端往返
+        let payload = [0xA5, 0xA6, 0x00, 0xFF, 0xA5];
+        let frame = build_soc_frame(0x0B, 0x1234_5678, &payload, 99);
+        let mut parser = SocFrameParser::new();
+        let responses = parser.feed(&frame);
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].cmd, 0x0B);
+        assert_eq!(responses[0].address, 0x1234_5678);
+        assert_eq!(responses[0].sn, 99);
+        assert_eq!(responses[0].data, payload);
+    }
 }

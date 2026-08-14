@@ -8,9 +8,12 @@
 //   - sf32lb58           : ROM BL 需手动操作（MODE 引脚 + RESET），软件仅打印说明
 //   - 通用               : DTR 脉冲（最佳努力）
 
+// 芯片分发基于 luatos_soc::ChipFamily（chip_type 字符串归一化的单一来源）。
+
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use luatos_soc::ChipFamily;
 
 // ─── 内部辅助 ────────────────────────────────────────────────────────────────
 
@@ -187,20 +190,20 @@ fn ec718_enter_boot(port_name: Option<&str>) -> Result<()> {
 ///
 /// `chip` 为芯片类型字符串，可选；省略时使用通用 DTR 脉冲。
 pub fn device_reboot(port_name: Option<&str>, chip: &str) -> Result<()> {
-    match chip {
-        "ec718" | "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" | "air8000m" => ec718_reboot(port_name),
-        "ccm4211" | "air1601" | "air1602" => {
+    match ChipFamily::from_chip_type(chip) {
+        ChipFamily::Ec718 => ec718_reboot(port_name),
+        ChipFamily::Ccm4211 => {
             let port = port_name.ok_or_else(|| anyhow::anyhow!("ccm4211/air1601/air1602 需要指定 --port"))?;
             dtr_rts_pulse_reboot(port)
         }
-        "sf32lb58" => {
+        ChipFamily::Sf32lb58 => {
             // SF32LB58 ROM BL 需要手动进入，软件无法触发；DTR 脉冲尽力而为
             let port = port_name.ok_or_else(|| anyhow::anyhow!("sf32lb58 需要指定 --port"))?;
             let _ = dtr_pulse_reboot(port);
             Ok(())
         }
         _ => {
-            // bk72xx/air8101/xt804/air6208/air101/air103/air601 及通用：DTR 脉冲
+            // Bk72xx/Xt804/Air6201/Unknown 及通用：DTR 脉冲（保持原 fallback 逻辑）
             let port = port_name.ok_or_else(|| anyhow::anyhow!("请使用 --port 指定串口"))?;
             dtr_pulse_reboot(port)
         }
@@ -213,21 +216,21 @@ pub fn device_reboot(port_name: Option<&str>, chip: &str) -> Result<()> {
 ///
 /// 只发送信号，不等待设备响应或确认。
 pub fn device_enter_boot(port_name: Option<&str>, chip: &str) -> Result<()> {
-    match chip {
-        "bk72xx" | "air8101" => {
+    match ChipFamily::from_chip_type(chip) {
+        ChipFamily::Bk72xx => {
             let port = port_name.ok_or_else(|| anyhow::anyhow!("bk72xx/air8101 需要指定 --port"))?;
             bk7258_enter_boot(port)
         }
-        "xt804" | "air6208" | "air101" | "air103" | "air601" => {
+        ChipFamily::Xt804 => {
             let port = port_name.ok_or_else(|| anyhow::anyhow!("xt804 系列需要指定 --port"))?;
             xt804_enter_boot(port)
         }
-        "ec718" | "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" | "air8000m" => ec718_enter_boot(port_name),
-        "ccm4211" | "air1601" | "air1602" => {
+        ChipFamily::Ec718 => ec718_enter_boot(port_name),
+        ChipFamily::Ccm4211 => {
             let port = port_name.ok_or_else(|| anyhow::anyhow!("ccm4211/air1601/air1602 需要指定 --port"))?;
             ccm4211_enter_boot(port)
         }
-        "sf32lb58" => {
+        ChipFamily::Sf32lb58 => {
             // SF32LB58 ROM BL 进入需手动操作，无法通过软件触发
             eprintln!("SF32LB58 需要手动进入 ROM BL 模式：");
             eprintln!("  1. 短接 MODE 跳线（3-pin 排针）");
@@ -236,7 +239,7 @@ pub fn device_enter_boot(port_name: Option<&str>, chip: &str) -> Result<()> {
             Ok(())
         }
         _ => {
-            // 通用：DTR+RTS 双信号脉冲
+            // Air6201/Unknown 及通用：DTR+RTS 双信号脉冲（保持原 fallback 逻辑）
             let port = port_name.ok_or_else(|| anyhow::anyhow!("请使用 --port 指定串口"))?;
             dtr_rts_pulse_reboot(port)
         }
