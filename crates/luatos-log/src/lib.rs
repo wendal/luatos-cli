@@ -9,8 +9,30 @@
 
 pub mod smart;
 
-use chrono::Local;
 use serde::{Deserialize, Serialize};
+
+// ─── 时间戳缓存 ────────────────────────────────────────────────────────────────
+
+thread_local! {
+    static TS_CACHE: std::cell::RefCell<(i64, String)> = const { std::cell::RefCell::new((0, String::new())) };
+}
+
+/// 获取本地接收时间戳（`%Y-%m-%d %H:%M:%S%.3f`）。
+///
+/// 按秒缓存格式化结果：同一秒内的多次调用直接复用已格式化的字符串，
+/// 避免逐行解析日志时 `Local::now().format()` 带来的两次堆分配开销。
+fn cached_local_timestamp() -> String {
+    let now = chrono::Local::now();
+    let secs = now.timestamp();
+    TS_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.0 != secs {
+            c.1 = now.format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+            c.0 = secs;
+        }
+        c.1.clone()
+    })
+}
 
 // ─── Data types ───────────────────────────────────────────────────────────────
 
@@ -110,7 +132,7 @@ impl LogParser for LuatosParser {
             return None;
         }
 
-        let now = Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+        let now = cached_local_timestamp();
 
         // Try format: [timestamp] L/module message
         if trimmed.starts_with('[') {
@@ -198,7 +220,7 @@ impl LogParser for BootLogParser {
         if let Some(colon_pos) = trimmed.find(": ") {
             let prefix = &trimmed[..colon_pos];
             if prefix.len() <= 20 && prefix.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                let now = Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+                let now = cached_local_timestamp();
                 return Some(LogEntry {
                     timestamp: now,
                     device_time: None,
@@ -246,7 +268,7 @@ impl LogDispatcher {
                 return entry;
             }
         }
-        let now = Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+        let now = cached_local_timestamp();
         LogEntry {
             timestamp: now,
             device_time: None,
@@ -479,7 +501,7 @@ impl SocLogDecoder {
             }
         };
 
-        let now = Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+        let now = cached_local_timestamp();
         let device_time = format!("{}.{:03}", ms / 1000, ms % 1000);
 
         let header = SocLogFrameHeader {
@@ -980,7 +1002,7 @@ impl Ec718LogDecoder {
         // EC718 embeds level prefix in the format string: "I/http ...", "D/net ...", etc.
         let (level, module, msg_body) = parse_level_prefix(&message);
 
-        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+        let now = cached_local_timestamp();
         let device_time = format!("{}.{:03}", ms / 1000, ms % 1000);
 
         Some(LogEntry {
@@ -1758,5 +1780,19 @@ mod tests {
         assert_eq!(cloned.message, "hello");
         assert_eq!(cloned.module.as_deref(), Some("user.main"));
         assert_eq!(cloned.level.as_str(), "I");
+    }
+
+    #[test]
+    fn cached_timestamp_format_matches_previous() {
+        // 时间戳格式应与之前的 Local::now().format("%Y-%m-%d %H:%M:%S%.3f") 保持一致
+        let ts = cached_local_timestamp();
+        assert_eq!(ts.len(), 23, "时间戳应为 YYYY-MM-DD HH:MM:SS.mmm, 实际: {ts}");
+        let b = ts.as_bytes();
+        assert_eq!(b[4], b'-');
+        assert_eq!(b[7], b'-');
+        assert_eq!(b[10], b' ');
+        assert_eq!(b[13], b':');
+        assert_eq!(b[16], b':');
+        assert_eq!(b[19], b'.');
     }
 }

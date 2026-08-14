@@ -156,17 +156,34 @@ impl SmartAnalyzer {
                 severity: DiagnosticSeverity::Warning,
                 suggestion: "可用内存偏低，存在 OOM 风险。建议优化内存使用或减少并发任务。",
                 matcher: |entry| {
-                    let msg = &entry.message;
-                    // 匹配 "free mem: xxx" 且数值很低的情况
-                    if let Some(pos) = msg.find("free") {
-                        let after = &msg[pos..];
-                        // 提取数字
-                        let num: String = after.chars().filter(|c| c.is_ascii_digit()).take(8).collect();
-                        if let Ok(free_bytes) = num.parse::<u64>() {
-                            return free_bytes > 0 && free_bytes < 10240; // < 10KB 为低内存
-                        }
-                    }
-                    false
+                    let msg = entry.message.to_ascii_lowercase();
+                    const KEY: &str = "free mem";
+                    // 只匹配 "free mem" 文本，避免误匹配 "freed"、"wifi free" 等
+                    let Some(pos) = msg.find(KEY) else {
+                        return false;
+                    };
+                    let tail = &msg[pos + KEY.len()..];
+                    // 跳过冒号/空格等分隔符，定位数字起点
+                    let Some(num_start) = tail.find(|c: char| c.is_ascii_digit()) else {
+                        return false;
+                    };
+                    let tail = &tail[num_start..];
+                    // 数字部分（含小数点，兼容 "free mem: 1.2MB" 这类写法）
+                    let num_len = tail.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(tail.len());
+                    let value: f64 = match tail[..num_len].parse() {
+                        Ok(v) => v,
+                        Err(_) => return false, // 解析失败则不匹配
+                    };
+                    // 换算成字节：无单位或 "B" → 字节；"K"/"KB" → *1024；"M"/"MB" → *1024*1024
+                    let bytes = if tail[num_len..].starts_with('k') {
+                        (value * 1024.0) as u64
+                    } else if tail[num_len..].starts_with('m') {
+                        (value * 1024.0 * 1024.0) as u64
+                    } else {
+                        value as u64
+                    };
+                    // 阈值：> 0 且 < 10KB 判定为低内存
+                    bytes > 0 && bytes < 10 * 1024
                 },
             },
             // ── 脚本错误 ──
@@ -430,5 +447,28 @@ mod tests {
         assert!(text.contains("警告"));
         assert!(text.contains("test_rule"));
         assert!(text.contains("fix it"));
+    }
+
+    #[test]
+    fn detect_low_memory_positive() {
+        // "free mem: 8192" → 8192 字节 < 10KB（规则只触发一次，每条用例用独立 analyzer）
+        let mut a1 = SmartAnalyzer::new();
+        let diags = a1.analyze(&make_entry(LogLevel::Info, "free mem: 8192"));
+        assert!(diags.iter().any(|d| d.rule == "low_memory"), "应检测到低内存 (8192 字节)");
+        // "[time] I/main free mem: 5KB" → 5KB = 5120 字节 < 10KB
+        let mut a2 = SmartAnalyzer::new();
+        let diags = a2.analyze(&make_entry(LogLevel::Info, "[time] I/main free mem: 5KB"));
+        assert!(diags.iter().any(|d| d.rule == "low_memory"), "应检测到低内存 (5KB)");
+    }
+
+    #[test]
+    fn no_low_memory_false_positives() {
+        let mut analyzer = SmartAnalyzer::new();
+        // "wifi freed" / 不含 "mem" 的 "free" / 数值过大 / 带小数的 MB 值 → 均不应误报
+        for msg in ["wifi freed...", "free heap: 1024", "free mem: 20000", "free mem: 1.2MB"] {
+            let entry = make_entry(LogLevel::Info, msg);
+            let diags = analyzer.analyze(&entry);
+            assert!(!diags.iter().any(|d| d.rule == "low_memory"), "不应误报低内存: {msg}");
+        }
     }
 }

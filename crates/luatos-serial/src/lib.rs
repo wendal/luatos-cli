@@ -87,8 +87,37 @@ impl SerialBuffer {
 
 // ─── Log streaming ────────────────────────────────────────────────────────────
 
+/// 单行日志的最大字节数：超过该长度仍无换行符时丢弃该行（内存保护）。
+const MAX_LINE_BYTES: usize = 16 * 1024;
+
 /// Callback invoked for each complete log line read from serial.
 pub type LineCallback = Box<dyn Fn(&str) + Send>;
+
+/// 处理一段串口字节流：按 `\n` 切分完整行并通过回调输出（自动去掉 `\r`）。
+///
+/// 当行缓冲达到 [`MAX_LINE_BYTES`] 仍无换行符时，丢弃超长行并清空缓冲，
+/// 防止无换行的数据流让 `line_buf` 无限增长耗尽内存；超长丢弃只警告一次。
+fn feed_log_bytes(data: &[u8], line_buf: &mut Vec<u8>, overflow_warned: &mut bool, mut on_line: impl FnMut(&str)) {
+    for &b in data {
+        if b == b'\n' {
+            let text = String::from_utf8_lossy(line_buf).trim_end_matches('\r').to_string();
+            line_buf.clear();
+            if !text.is_empty() {
+                on_line(&text);
+            }
+        } else if line_buf.len() >= MAX_LINE_BYTES {
+            // 超长且无换行：丢弃已积累的字节，避免内存无限增长
+            if !*overflow_warned {
+                log::warn!("丢弃超长日志行（>{MAX_LINE_BYTES} 字节，无换行）");
+                *overflow_warned = true;
+            }
+            line_buf.clear();
+            line_buf.push(b);
+        } else {
+            line_buf.push(b);
+        }
+    }
+}
 
 /// Open a serial port and stream log lines until `stop` is set.
 ///
@@ -106,21 +135,12 @@ pub fn stream_log_lines(port_name: &str, baud_rate: u32, stop: Arc<AtomicBool>, 
 
     let mut buf = vec![0u8; 4096];
     let mut line_buf: Vec<u8> = Vec::with_capacity(256);
+    let mut overflow_warned = false;
 
     while !stop.load(Ordering::Relaxed) {
         match serial.read(&mut buf) {
             Ok(n) if n > 0 => {
-                for &b in &buf[..n] {
-                    if b == b'\n' {
-                        let text = String::from_utf8_lossy(&line_buf).trim_end_matches('\r').to_string();
-                        line_buf.clear();
-                        if !text.is_empty() {
-                            on_line(&text);
-                        }
-                    } else {
-                        line_buf.push(b);
-                    }
-                }
+                feed_log_bytes(&buf[..n], &mut line_buf, &mut overflow_warned, |t| on_line(t));
             }
             Ok(_) => {}
             Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {
@@ -243,5 +263,34 @@ mod tests {
         assert_eq!(buf.len(), 8);
         let data = buf.drain();
         assert_eq!(data, vec![2, 3, 4, 5, 6, 7, 8, 9]);
+    }
+
+    #[test]
+    fn feed_log_bytes_splits_lines() {
+        let mut line_buf: Vec<u8> = Vec::new();
+        let mut warned = false;
+        let mut lines: Vec<String> = Vec::new();
+        feed_log_bytes(b"first\r\nsecond\nthird", &mut line_buf, &mut warned, |t| lines.push(t.to_string()));
+        assert_eq!(lines, vec!["first".to_string(), "second".to_string()]);
+        assert_eq!(line_buf, b"third", "未换行的残留字节应保留在缓冲中");
+    }
+
+    #[test]
+    fn feed_log_bytes_drops_overlong_no_newline_stream() {
+        let mut line_buf: Vec<u8> = Vec::new();
+        let mut warned = false;
+        let mut lines: Vec<String> = Vec::new();
+
+        // 灌入远超上限且无换行的数据流：应被丢弃而非无限积累
+        let overlong = vec![b'x'; MAX_LINE_BYTES * 3];
+        feed_log_bytes(&overlong, &mut line_buf, &mut warned, |t| lines.push(t.to_string()));
+        assert!(lines.is_empty(), "超长无换行数据不应被当作完整行输出");
+        assert!(line_buf.len() <= MAX_LINE_BYTES, "行缓冲必须保持有界，防止内存耗尽");
+        assert!(warned, "超长行应触发一次警告");
+
+        // 结束残留半行后，正常行仍能被正确解析
+        feed_log_bytes(b"\n", &mut line_buf, &mut warned, |t| lines.push(t.to_string()));
+        feed_log_bytes(b"hello world\n", &mut line_buf, &mut warned, |t| lines.push(t.to_string()));
+        assert_eq!(lines.last().map(String::as_str), Some("hello world"), "丢弃超长行后正常行仍应被解析");
     }
 }

@@ -167,7 +167,9 @@ pub unsafe extern "C" fn luatos_soclog_version(major: *mut c_uint, minor: *mut c
 /// 把 Rust 字符串写入 C 端 `dst`, 末尾追加 NUL. 截断到 `cap-1` 字节.
 unsafe fn write_nul_string(dst: *mut c_char, s: &str, cap: usize) {
     let bytes = s.as_bytes();
-    let n = bytes.len().min(cap.saturating_sub(1));
+    // 先按字节截断到 cap-1, 再用 floor_char_boundary 回退到 UTF-8 字符边界,
+    // 避免切断多字节字符导致 C 端收到无效 UTF-8
+    let n = s.floor_char_boundary(bytes.len().min(cap.saturating_sub(1)));
     std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst as *mut u8, n);
     *dst.add(n) = 0;
 }
@@ -177,4 +179,35 @@ fn format_log_line(e: &LogEntry) -> String {
     let mod_ = e.module.as_deref().unwrap_or("-");
     let dt = e.device_time.as_deref().unwrap_or("-");
     format!("[{}] {}/{} {}", dt, lvl, mod_, e.message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::{c_char, CStr};
+
+    #[test]
+    fn write_nul_string_keeps_short_string_intact() {
+        let mut buf = [0u8; 32];
+        let s = "你好，LuatOS";
+        unsafe { write_nul_string(buf.as_mut_ptr() as *mut c_char, s, buf.len()) };
+        let out = unsafe { CStr::from_ptr(buf.as_ptr() as *const c_char) };
+        assert_eq!(out.to_str().unwrap(), s, "短字符串应原样写入");
+        assert_eq!(buf[s.len()], 0, "末尾应追加 NUL 终止");
+    }
+
+    #[test]
+    fn write_nul_string_truncates_on_char_boundary() {
+        // cap=16 会把 19 字节的字符串截到 15 字节, 恰好落在多字节字符中间,
+        // 应回退到完整字符边界 "abcdefg日志" (13 字节) 并以 NUL 结尾
+        let mut buf = [0xFFu8; 32];
+        let s = "abcdefg日志信息";
+        unsafe { write_nul_string(buf.as_mut_ptr() as *mut c_char, s, 16) };
+        let end = buf.iter().position(|&b| b == 0).unwrap();
+        let out = std::str::from_utf8(&buf[..end]).unwrap();
+        assert_eq!(out, "abcdefg日志", "截断必须停在完整字符边界");
+        assert!(out.ends_with('志'), "输出必须以完整字符结尾");
+        assert_eq!(end, 13);
+        assert_eq!(buf[13], 0, "末尾应追加 NUL 终止");
+    }
 }
