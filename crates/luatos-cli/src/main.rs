@@ -198,8 +198,8 @@ enum SocCommands {
 }
 
 /// DTR/RTS 引脚电平选择（用于 SF32LB58 CH340X 改装硬件调试）
-#[derive(Clone, Copy, clap::ValueEnum)]
-enum SignalLevel {
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub(crate) enum SignalLevel {
     /// 高电平
     High,
     /// 低电平
@@ -207,7 +207,7 @@ enum SignalLevel {
 }
 
 impl SignalLevel {
-    fn as_bool(self) -> bool {
+    pub(crate) fn as_bool(self) -> bool {
         matches!(self, SignalLevel::High)
     }
 }
@@ -231,21 +231,9 @@ enum FlashCommands {
         /// RTS reset and boot-wait options
         #[command(flatten)]
         reset: reset_args::ResetArgs,
-        /// 自动控制 DTR/RTS 进入/退出 ROM BL（适用于 CH340X 增强 DTR 改装硬件，仅 SF32LB58）
-        #[arg(long)]
-        auto_reset: bool,
-        /// 进入 boot 时 DTR 的电平（high=BOOT0拉高，low=BOOT0拉低，默认 low）
-        #[arg(long, value_enum, default_value = "low")]
-        dtr_boot: SignalLevel,
-        /// 触发复位时 RTS 的电平（high=CH340X RTS#拉低=RESET有效，默认 high）
-        #[arg(long, value_enum, default_value = "high")]
-        sf32_rts_reset: SignalLevel,
-        /// 复位脉冲宽度（毫秒，默认 100）
-        #[arg(long, default_value = "100")]
-        reset_ms: u64,
-        /// 进入 boot 后等待 ROM BL 初始化的时长（毫秒，默认 500）
-        #[arg(long, default_value = "500")]
-        sf32_boot_wait_ms: u64,
+        /// SF32LB58 自动复位参数（CH340X 增强 DTR 改装硬件）
+        #[command(flatten)]
+        reset_sf32: reset_args::Sf32ResetArgs,
         /// 刷机完成后继续监听串口日志秒数（0=不监听）
         #[arg(long, default_value = "0")]
         tail_log_secs: u64,
@@ -270,21 +258,9 @@ enum FlashCommands {
         /// RTS reset and boot-wait options
         #[command(flatten)]
         reset: reset_args::ResetArgs,
-        /// 自动控制 DTR/RTS 进入/退出 ROM BL（适用于 CH340X 增强 DTR 改装硬件，仅 SF32LB58）
-        #[arg(long)]
-        auto_reset: bool,
-        /// 进入 boot 时 DTR 的电平（high=BOOT0拉高，low=BOOT0拉低，默认 low）
-        #[arg(long, value_enum, default_value = "low")]
-        dtr_boot: SignalLevel,
-        /// 触发复位时 RTS 的电平（high=CH340X RTS#拉低=RESET有效，默认 high）
-        #[arg(long, value_enum, default_value = "high")]
-        sf32_rts_reset: SignalLevel,
-        /// 复位脉冲宽度（毫秒，默认 100）
-        #[arg(long, default_value = "100")]
-        reset_ms: u64,
-        /// 进入 boot 后等待 ROM BL 初始化的时长（毫秒，默认 500）
-        #[arg(long, default_value = "500")]
-        sf32_boot_wait_ms: u64,
+        /// SF32LB58 自动复位参数（CH340X 增强 DTR 改装硬件）
+        #[command(flatten)]
+        reset_sf32: reset_args::Sf32ResetArgs,
     },
     /// Clear filesystem partition (erase to 0xFF)
     ClearFs {
@@ -327,21 +303,9 @@ enum FlashCommands {
         /// RTS reset and boot-wait options
         #[command(flatten)]
         reset: reset_args::ResetArgs,
-        /// 自动控制 DTR/RTS 进入/退出 ROM BL（适用于 CH340X 增强 DTR 改装硬件，仅 SF32LB58）
-        #[arg(long)]
-        auto_reset: bool,
-        /// 进入 boot 时 DTR 的电平（high=BOOT0拉高，low=BOOT0拉低，默认 low）
-        #[arg(long, value_enum, default_value = "low")]
-        dtr_boot: SignalLevel,
-        /// 触发复位时 RTS 的电平（high=CH340X RTS#拉低=RESET有效，默认 high）
-        #[arg(long, value_enum, default_value = "high")]
-        sf32_rts_reset: SignalLevel,
-        /// 复位脉冲宽度（毫秒，默认 100）
-        #[arg(long, default_value = "100")]
-        reset_ms: u64,
-        /// 进入 boot 后等待 ROM BL 初始化的时长（毫秒，默认 500）
-        #[arg(long, default_value = "500")]
-        sf32_boot_wait_ms: u64,
+        /// SF32LB58 自动复位参数（CH340X 增强 DTR 改装硬件）
+        #[command(flatten)]
+        reset_sf32: reset_args::Sf32ResetArgs,
     },
     /// Air6201 external SPI flash programming (write to script/fskv/lfs partition)
     ExtFlash {
@@ -724,12 +688,12 @@ enum FotaCommands {
         /// Path to FotaToolkit.exe (auto-detected if omitted)
         #[arg(long)]
         fota_toolkit: Option<String>,
-        /// Path to soc_tools.exe (auto-detected if omitted)
-        #[arg(long)]
-        soc_tools: Option<String>,
         /// Build a script-only FOTA package (EC7xx/Air8000, Air1601/Air1602/CCM4211, BK72XX)
         #[arg(long)]
         script_only: bool,
+        /// 强制走差分 FOTA（关闭"底层固件相同自动回落脚本包"）
+        #[arg(long)]
+        force_par: bool,
     },
 }
 
@@ -758,25 +722,11 @@ fn main() {
                 baud,
                 script,
                 reset,
-                auto_reset,
-                dtr_boot,
-                sf32_rts_reset,
-                reset_ms,
-                sf32_boot_wait_ms,
+                reset_sf32,
                 tail_log_secs,
             } => {
                 let script_opt = if script.is_empty() { None } else { Some(script.as_slice()) };
-                let reset_config = if auto_reset {
-                    Some(luatos_flash::sf32lb5x::Sf32ResetConfig {
-                        dtr_boot: dtr_boot.as_bool(),
-                        rts_reset: sf32_rts_reset.as_bool(),
-                        reset_ms,
-                        boot_wait_ms: sf32_boot_wait_ms,
-                        ..Default::default()
-                    })
-                } else {
-                    None
-                };
+                let reset_config = reset_sf32.to_reset_config();
                 cmd_flash::cmd_flash_run(&soc, &port, baud, script_opt, progress_step, &cli.format, &reset, reset_config, tail_log_secs)
             }
             FlashCommands::Script {
@@ -786,27 +736,13 @@ fn main() {
                 script,
                 bin,
                 reset,
-                auto_reset,
-                dtr_boot,
-                sf32_rts_reset,
-                reset_ms,
-                sf32_boot_wait_ms,
+                reset_sf32,
             } => {
                 if let Some(bin_path) = bin {
                     let on_progress = cmd_flash::make_progress_callback(&cli.format, "flash.script".to_string(), progress_step);
                     cmd_flash::cmd_flash_script_bin(&soc, &port, &bin_path, &on_progress).and_then(|_| cmd_flash::print_script_result(&cli.format))
                 } else {
-                    let reset_config = if auto_reset {
-                        Some(luatos_flash::sf32lb5x::Sf32ResetConfig {
-                            dtr_boot: dtr_boot.as_bool(),
-                            rts_reset: sf32_rts_reset.as_bool(),
-                            reset_ms,
-                            boot_wait_ms: sf32_boot_wait_ms,
-                            ..Default::default()
-                        })
-                    } else {
-                        None
-                    };
+                    let reset_config = reset_sf32.to_reset_config();
                     let script_opt: Option<&[String]> = if script.is_empty() { None } else { Some(script.as_slice()) };
                     cmd_flash::cmd_flash_partition("script", &soc, &port, script_opt, progress_step, &cli.format, &reset, reset_config, baud)
                 }
@@ -820,23 +756,9 @@ fn main() {
                 port,
                 baud,
                 reset,
-                auto_reset,
-                dtr_boot,
-                sf32_rts_reset,
-                reset_ms,
-                sf32_boot_wait_ms,
+                reset_sf32,
             } => {
-                let reset_config = if auto_reset {
-                    Some(luatos_flash::sf32lb5x::Sf32ResetConfig {
-                        dtr_boot: dtr_boot.as_bool(),
-                        rts_reset: sf32_rts_reset.as_bool(),
-                        reset_ms,
-                        boot_wait_ms: sf32_boot_wait_ms,
-                        ..Default::default()
-                    })
-                } else {
-                    None
-                };
+                let reset_config = reset_sf32.to_reset_config();
                 cmd_flash::cmd_flash_partition("clear-kv", &soc, &port, None, progress_step, &cli.format, &reset, reset_config, baud)
             }
             FlashCommands::ExtFlash {
@@ -859,7 +781,14 @@ fn main() {
                 let script_opt = if script.is_empty() { None } else { Some(script.as_slice()) };
                 let keywords = resolve_flash_test_keywords(keyword);
                 let fail_keywords = fail_keyword.unwrap_or_default();
-                cmd_flash::cmd_flash_test(&soc, &port, baud, script_opt, timeout, &keywords, &fail_keywords, progress_step, &cli.format)
+                match cmd_flash::cmd_flash_test(&soc, &port, baud, script_opt, timeout, &keywords, &fail_keywords, progress_step, &cli.format) {
+                    Ok(true) => Ok(()),
+                    Ok(false) => {
+                        // 保持原 CLI 行为：FAIL 时以退出码 1 结束进程
+                        std::process::exit(1);
+                    }
+                    Err(e) => Err(e),
+                }
             }
         },
         Commands::Log { action } => match action {
@@ -969,17 +898,9 @@ fn main() {
                 old,
                 output,
                 fota_toolkit,
-                soc_tools,
                 script_only,
-            } => cmd_fota::cmd_fota_build(
-                &new,
-                old.as_deref(),
-                output.as_deref(),
-                fota_toolkit.as_deref(),
-                soc_tools.as_deref(),
-                script_only,
-                &cli.format,
-            ),
+                force_par,
+            } => cmd_fota::cmd_fota_build(&new, old.as_deref(), output.as_deref(), fota_toolkit.as_deref(), force_par, script_only, &cli.format),
         },
         Commands::Guide { action } => match action {
             GuideCommands::Models => cmd_guide::cmd_guide_models(&cli.format),
@@ -1080,6 +1001,87 @@ mod tests {
             panic!("未解析到 flash test 命令");
         };
         assert_eq!(fail_keyword, Some(vec!["PANIC".to_string(), "ASSERT".to_string()]));
+    }
+
+    fn parse_fota_build(args: &[&str]) -> FotaCommands {
+        let mut cli_args = vec!["luatos-cli", "fota", "build"];
+        cli_args.extend_from_slice(args);
+        let cli = Cli::try_parse_from(cli_args).expect("fota build 参数解析失败");
+        let Commands::Fota { action } = cli.command else {
+            panic!("未解析到 fota 子命令");
+        };
+        action
+    }
+
+    #[test]
+    fn fota_build_force_par_parses() {
+        let action = parse_fota_build(&["--new", "a.soc", "--force-par"]);
+        // FotaCommands 只有 Build 一个变体，可直接解构
+        let FotaCommands::Build { force_par, .. } = action;
+        assert!(force_par, "--force-par 应解析为 true");
+    }
+
+    #[test]
+    fn fota_build_force_par_defaults_false() {
+        let action = parse_fota_build(&["--new", "a.soc"]);
+        let FotaCommands::Build { force_par, .. } = action;
+        assert!(!force_par, "未指定 --force-par 时应为 false");
+    }
+
+    #[test]
+    fn fota_build_removed_soc_tools_rejected() {
+        // --soc-tools 死参数已删除，旧命令应解析失败
+        let result = Cli::try_parse_from(["luatos-cli", "fota", "build", "--new", "a.soc", "--soc-tools", "x.exe"]);
+        assert!(result.is_err(), "--soc-tools 已移除，应解析失败");
+    }
+
+    fn parse_flash_reset(args: &[&str]) -> FlashCommands {
+        let mut cli_args = vec!["luatos-cli", "flash", "run"];
+        cli_args.extend_from_slice(args);
+        let cli = Cli::try_parse_from(cli_args).expect("flash run 参数解析失败");
+        let Commands::Flash { action, .. } = cli.command else {
+            panic!("未解析到 flash 子命令");
+        };
+        action
+    }
+
+    #[test]
+    fn flash_run_sf32_reset_args_flatten_parses() {
+        let action = parse_flash_reset(&[
+            "--soc",
+            "soc.bin",
+            "--port",
+            "COM6",
+            "--auto-reset",
+            "--dtr-boot",
+            "high",
+            "--sf32-rts-reset",
+            "low",
+            "--reset-ms",
+            "200",
+            "--sf32-boot-wait-ms",
+            "800",
+        ]);
+        let FlashCommands::Run { reset_sf32, .. } = action else {
+            panic!("未解析到 flash run 命令");
+        };
+        assert!(reset_sf32.auto_reset);
+        // SignalLevel 是 crate 私有枚举，此处只校验配置转换结果
+        let cfg = reset_sf32.to_reset_config().expect("auto_reset=true 时应有复位配置");
+        assert!(cfg.dtr_boot, "dtr-boot high 应转换为 true");
+        assert!(!cfg.rts_reset, "sf32-rts-reset low 应转换为 false");
+        assert_eq!(cfg.reset_ms, 200);
+        assert_eq!(cfg.boot_wait_ms, 800);
+    }
+
+    #[test]
+    fn flash_run_sf32_reset_args_disabled_when_auto_reset_absent() {
+        let action = parse_flash_reset(&["--soc", "soc.bin", "--port", "COM6"]);
+        let FlashCommands::Run { reset_sf32, .. } = action else {
+            panic!("未解析到 flash run 命令");
+        };
+        assert!(!reset_sf32.auto_reset);
+        assert!(reset_sf32.to_reset_config().is_none(), "auto_reset=false 时应返回 None");
     }
 
     fn parse_trun_run(args: &[&str]) -> cmd_trun::TrunCommands {

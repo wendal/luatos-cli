@@ -1,4 +1,5 @@
 use anyhow::Context;
+use luatos_soc::ChipFamily;
 
 use crate::{
     cmd_log,
@@ -113,6 +114,29 @@ fn tail_log_after_flash(soc: &str, port: &str, timeout_secs: u64, format: &Outpu
     Ok(())
 }
 
+/// 注册 Ctrl+C 取消处理。trun 等流程已注册过时静默忽略（返回 false 表示未接管）。
+/// 统一取消消息为 "Cancelling..."，避免各刷机入口维护多份重复的 ctrlc 闭包。
+fn install_cancel_handler(format: &OutputFormat, command: &str, cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    let format_clone = *format;
+    let command = command.to_string();
+    let cancel_clone = cancel.clone();
+    let _ = ctrlc::set_handler(move || {
+        if let Err(e) = event::emit_message(&format_clone, &command, MessageLevel::Warn, "Cancelling...") {
+            log::warn!("输出取消事件失败: {e}");
+        }
+        cancel_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+}
+
+/// cmd_flash_run / cmd_flash_partition 支持刷机的芯片族（作为分发 match 的前置校验）。
+/// 每个已知芯片族都必须在此有明确归属，避免新增族时静默落入 Unsupported 分支。
+fn family_flash_supported(family: ChipFamily) -> bool {
+    matches!(
+        family,
+        ChipFamily::Bk72xx | ChipFamily::Xt804 | ChipFamily::Ccm4211 | ChipFamily::Ec718 | ChipFamily::Sf32lb58
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_flash_run(
     soc: &str,
@@ -126,27 +150,27 @@ pub fn cmd_flash_run(
     tail_log_secs: u64,
 ) -> anyhow::Result<()> {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let format_clone = *format;
 
     // Set up Ctrl+C handler (容错: trun 流程下, trun 已经注册过, 第二次注册返回
     // Error::MultipleHandlers, 这里静默忽略。单独调用 cmd_flash run 时,
     // 这是首次注册, 正常生效。)
-    let cancel_clone = cancel.clone();
-    let _ = ctrlc::set_handler(move || {
-        if let Err(e) = event::emit_message(&format_clone, "flash.run", MessageLevel::Warn, "Cancelling flash...") {
-            log::warn!("输出取消事件失败: {e}");
-        }
-        cancel_clone.store(true, std::sync::atomic::Ordering::Relaxed);
-    });
+    install_cancel_handler(format, "flash.run", &cancel);
 
     let on_progress = make_progress_callback(format, "flash.run", step);
 
     // Detect chip type from SOC info.json
     let info = luatos_soc::read_soc_info(soc)?;
-    let chip = info.chip.chip_type.as_str();
+    let family = info.family();
 
-    match chip {
-        "bk72xx" | "air8101" => {
+    if !family_flash_supported(family) {
+        anyhow::bail!(
+            "Unsupported chip type: {}. Supported: bk72xx, air6208, air101, air1601, air1602, ec7xx",
+            info.chip.chip_type
+        );
+    }
+
+    match family {
+        ChipFamily::Bk72xx => {
             let folders_refs: Option<Vec<&str>> = script_folders.map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
             let lines = luatos_flash::bk7258::flash_bk7258(soc, folders_refs.as_deref(), port, baud, cancel, on_progress, true)?;
             match format {
@@ -161,26 +185,26 @@ pub fn cmd_flash_run(
                 OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "boot_log": lines }))?,
             }
         }
-        "air6208" | "air101" | "air103" | "air601" => {
+        ChipFamily::Xt804 => {
             reset.execute(port)?;
             luatos_flash::xt804::flash_xt804(soc, port, on_progress, cancel)?;
             match format {
                 OutputFormat::Text => {
                     println!("XT804 flash completed successfully.");
                 }
-                OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": chip }))?,
+                OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": family.name() }))?,
             }
         }
-        "air1601" | "air1602" | "ccm4211" => {
+        ChipFamily::Ccm4211 => {
             luatos_flash::ccm4211::flash_ccm4211(soc, port, &on_progress, cancel)?;
             match format {
                 OutputFormat::Text => {
                     println!("CCM4211 flash completed successfully.");
                 }
-                OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": chip }))?,
+                OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": family.name() }))?,
             }
         }
-        "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" => {
+        ChipFamily::Ec718 => {
             // EC718 series: auto-detect boot mode, reboot if needed
             let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress)?;
             luatos_flash::ec718::flash_ec718(soc, &boot_port, &on_progress, cancel)?;
@@ -188,22 +212,21 @@ pub fn cmd_flash_run(
                 OutputFormat::Text => {
                     println!("EC718 flash completed successfully.");
                 }
-                OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": chip }))?,
+                OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": family.name() }))?,
             }
         }
-        "sf32lb58" => {
+        ChipFamily::Sf32lb58 => {
             let folders_refs: Option<Vec<&str>> = script_folders.map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
             luatos_flash::sf32lb5x::flash_sf32lb5x(soc, port, folders_refs.as_deref(), on_progress, cancel, reset_config.as_ref(), baud)?;
             match format {
                 OutputFormat::Text => {
                     println!("SF32LB58 flash completed successfully.");
                 }
-                OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": chip }))?,
+                OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": family.name() }))?,
             }
         }
-        _ => {
-            anyhow::bail!("Unsupported chip type: {chip}. Supported: bk72xx, air6208, air101, air1601, air1602, ec7xx");
-        }
+        // family_flash_supported 已在上方校验，其余族不可能到达这里
+        ChipFamily::Unknown | ChipFamily::Air6201 => unreachable!("family_flash_supported 已校验芯片族"),
     }
 
     if tail_log_secs > 0 {
@@ -260,25 +283,16 @@ pub fn cmd_flash_partition(
 ) -> anyhow::Result<()> {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let command = format!("flash.{op}");
-    let cancel_command = command.clone();
-    let format_clone = *format;
-
-    let cancel_clone = cancel.clone();
-    let _ = ctrlc::set_handler(move || {
-        if let Err(e) = event::emit_message(&format_clone, &cancel_command, MessageLevel::Warn, "Cancelling...") {
-            log::warn!("输出取消事件失败: {e}");
-        }
-        cancel_clone.store(true, std::sync::atomic::Ordering::Relaxed);
-    });
+    install_cancel_handler(format, &command, &cancel);
 
     let on_progress = make_progress_callback(format, command.clone(), step);
 
     // Detect chip type
     let info = luatos_soc::read_soc_info(soc)?;
-    let chip = info.chip.chip_type.as_str();
+    let family = info.family();
 
-    match chip {
-        "bk72xx" | "air8101" => match op {
+    match family {
+        ChipFamily::Bk72xx => match op {
             "script" => {
                 let folders = script_folders.expect("script folder required");
                 let refs: Vec<&str> = folders.iter().map(|s| s.as_str()).collect();
@@ -297,7 +311,7 @@ pub fn cmd_flash_partition(
             }
             _ => unreachable!(),
         },
-        "air6208" | "air101" | "air103" | "air601" => {
+        ChipFamily::Xt804 => {
             reset.execute(port)?;
             match op {
                 "script" => {
@@ -319,7 +333,7 @@ pub fn cmd_flash_partition(
                 _ => unreachable!(),
             }
         }
-        "air1601" | "air1602" | "ccm4211" => match op {
+        ChipFamily::Ccm4211 => match op {
             "script" => {
                 let folders = script_folders.expect("script folder required");
                 let script_data = build_script_image_checked(folders, &info)?;
@@ -333,7 +347,7 @@ pub fn cmd_flash_partition(
             }
             _ => unreachable!(),
         },
-        "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" => match op {
+        ChipFamily::Ec718 => match op {
             "script" => {
                 let folders = script_folders.expect("script folder required");
                 let script_data = build_script_image_checked(folders, &info)?;
@@ -347,7 +361,7 @@ pub fn cmd_flash_partition(
                 );
             }
         },
-        "sf32lb58" => match op {
+        ChipFamily::Sf32lb58 => match op {
             "script" => {
                 let folders = script_folders.expect("script folder required");
                 let refs: Vec<&str> = folders.iter().map(|s| s.as_str()).collect();
@@ -361,8 +375,8 @@ pub fn cmd_flash_partition(
             }
             _ => unreachable!(),
         },
-        _ => {
-            anyhow::bail!("Unsupported chip type: {chip}");
+        ChipFamily::Unknown | ChipFamily::Air6201 => {
+            anyhow::bail!("Unsupported chip type: {}", info.chip.chip_type);
         }
     }
 
@@ -412,15 +426,7 @@ fn collect_script_files(folders: &[String]) -> anyhow::Result<Vec<String>> {
 pub fn cmd_flash_ext_flash(port: &str, baud: u32, partition: &str, file: &str, ext_prog: bool, step: u8, format: &OutputFormat) -> anyhow::Result<()> {
     let data = std::fs::read(file).with_context(|| format!("无法读取文件: {file}"))?;
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let format_clone = *format;
-
-    let cancel_clone = cancel.clone();
-    let _ = ctrlc::set_handler(move || {
-        if let Err(e) = event::emit_message(&format_clone, "flash.ext-flash", MessageLevel::Warn, "Cancelling...") {
-            log::warn!("输出取消事件失败: {e}");
-        }
-        cancel_clone.store(true, std::sync::atomic::Ordering::Relaxed);
-    });
+    install_cancel_handler(format, "flash.ext-flash", &cancel);
 
     let on_progress = make_progress_callback(format, "flash.ext-flash", step);
     luatos_flash::air6201::flash_partition(port, baud, partition, &data, ext_prog, &on_progress, cancel)?;
@@ -435,15 +441,7 @@ pub fn cmd_flash_ext_flash(port: &str, baud: u32, partition: &str, file: &str, e
 /// Air6201 外置 SPI Flash 分区擦除
 pub fn cmd_flash_ext_erase(port: &str, baud: u32, partition: &str, ext_prog: bool, step: u8, format: &OutputFormat) -> anyhow::Result<()> {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let format_clone = *format;
-
-    let cancel_clone = cancel.clone();
-    let _ = ctrlc::set_handler(move || {
-        if let Err(e) = event::emit_message(&format_clone, "flash.ext-erase", MessageLevel::Warn, "Cancelling...") {
-            log::warn!("输出取消事件失败: {e}");
-        }
-        cancel_clone.store(true, std::sync::atomic::Ordering::Relaxed);
-    });
+    install_cancel_handler(format, "flash.ext-erase", &cancel);
 
     let on_progress = make_progress_callback(format, "flash.ext-erase", step);
     luatos_flash::air6201::erase_ext_partition(port, baud, partition, ext_prog, &on_progress, cancel)?;
@@ -509,9 +507,9 @@ fn evaluate_flash_test_outcome(all_lines: &[String], pass_keywords: &[String], f
     }
 }
 
-fn should_overlay_script_for_flash_test(chip: &str, script_folders: Option<&[String]>) -> bool {
+fn should_overlay_script_for_flash_test(family: ChipFamily, script_folders: Option<&[String]>) -> bool {
     let has_script = script_folders.is_some_and(|folders| !folders.is_empty());
-    has_script && matches!(chip, "air1601" | "air1602" | "ccm4211")
+    has_script && matches!(family, ChipFamily::Ccm4211)
 }
 
 /// Closed-loop flash test: flash firmware → capture boot log → check keywords → PASS/FAIL.
@@ -526,7 +524,7 @@ pub fn cmd_flash_test(
     fail_keywords: &[String],
     step: u8,
     format: &OutputFormat,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -534,36 +532,30 @@ pub fn cmd_flash_test(
     use std::time::{Duration, Instant};
 
     let cancel = Arc::new(AtomicBool::new(false));
-    let format_clone = *format;
-    let cancel_clone = cancel.clone();
-    let _ = ctrlc::set_handler(move || {
-        if let Err(e) = event::emit_message(&format_clone, "flash.test", MessageLevel::Warn, "Cancelling flash test...") {
-            log::warn!("输出取消事件失败: {e}");
-        }
-        cancel_clone.store(true, Ordering::Relaxed);
-    });
+    install_cancel_handler(format, "flash.test", &cancel);
 
     let on_progress = make_progress_callback(format, "flash.test", step);
 
     // Step 1: Flash the firmware
     let info = luatos_soc::read_soc_info(soc)?;
     let chip = info.chip.chip_type.clone();
+    let family = info.family();
     let (_, _, log_br) = cmd_log::resolve_log_mode(chip.as_str(), info.log_baud_rate());
 
-    let boot_lines_from_flash: Vec<String> = match chip.as_str() {
-        "bk72xx" | "air8101" => {
+    let boot_lines_from_flash: Vec<String> = match family {
+        ChipFamily::Bk72xx => {
             let folders_refs: Option<Vec<&str>> = script_folders.map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
             luatos_flash::bk7258::flash_bk7258(soc, folders_refs.as_deref(), port, baud, cancel.clone(), on_progress, true)?
         }
-        "air6208" | "air101" | "air103" | "air601" => {
+        ChipFamily::Xt804 => {
             let on_progress2 = make_progress_callback(format, "flash.test", step);
             luatos_flash::xt804::flash_xt804(soc, port, on_progress2, cancel.clone())?;
             Vec::new() // XT804 does not return boot lines from flash
         }
-        "air1601" | "air1602" | "ccm4211" => {
+        ChipFamily::Ccm4211 => {
             let on_progress2 = make_progress_callback(format, "flash.test", step);
             luatos_flash::ccm4211::flash_ccm4211(soc, port, &on_progress2, cancel.clone())?;
-            if should_overlay_script_for_flash_test(chip.as_str(), script_folders) {
+            if should_overlay_script_for_flash_test(family, script_folders) {
                 event::emit_message(format, "flash.test", MessageLevel::Info, "Applying script overlay from --script folders...")?;
                 let folders = script_folders.expect("script folders required");
                 let script_data = build_script_image_checked(folders, &info)?;
@@ -571,14 +563,14 @@ pub fn cmd_flash_test(
             }
             Vec::new()
         }
-        "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" => {
+        ChipFamily::Ec718 => {
             let on_progress2 = make_progress_callback(format, "flash.test", step);
             let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress2)?;
             luatos_flash::ec718::flash_ec718(soc, &boot_port, &on_progress2, cancel.clone())?;
             Vec::new()
         }
-        _ => {
-            anyhow::bail!("Unsupported chip type for flash test: {chip}");
+        ChipFamily::Unknown | ChipFamily::Air6201 | ChipFamily::Sf32lb58 => {
+            anyhow::bail!("Unsupported chip type for flash test: {}", info.chip.chip_type);
         }
     };
 
@@ -842,11 +834,8 @@ pub fn cmd_flash_test(
         )?,
     }
 
-    if !all_passed {
-        std::process::exit(1);
-    }
-
-    Ok(())
+    // 退出码由调用方决定：false 时以 FAIL（退出码 1）结束进程
+    Ok(all_passed)
 }
 
 /// 刷写预编译的 script.bin（跳过 Lua 编译）
@@ -858,18 +847,20 @@ pub fn cmd_flash_script_bin(soc: &str, port: &str, bin_path: &str, on_progress: 
 
     let cancel = Arc::new(AtomicBool::new(false));
     let info = luatos_soc::read_soc_info(soc)?;
-    let chip = info.chip.chip_type.as_str();
 
-    match chip {
-        "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" => {
+    match info.family() {
+        ChipFamily::Ec718 => {
             let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), on_progress)?;
             luatos_flash::ec718::flash_script_ec718(soc, &boot_port, &script_data, on_progress, cancel)?;
         }
-        "air1601" | "air1602" | "ccm4211" => {
+        ChipFamily::Ccm4211 => {
             luatos_flash::ccm4211::flash_script_ccm4211(soc, port, &script_data, on_progress, cancel)?;
         }
         _ => {
-            anyhow::bail!("--bin script flash not supported for chip '{chip}'. Use 'flash script' with --script folders instead.");
+            anyhow::bail!(
+                "--bin script flash not supported for chip '{}'. Use 'flash script' with --script folders instead.",
+                info.chip.chip_type
+            );
         }
     }
 
@@ -895,17 +886,33 @@ mod tests {
     #[test]
     fn should_overlay_script_for_ccm4211_flash_test_when_script_present() {
         let script = vec!["tmp-script".to_string()];
-        assert!(should_overlay_script_for_flash_test("air1601", Some(&script)));
-        assert!(should_overlay_script_for_flash_test("air1602", Some(&script)));
-        assert!(should_overlay_script_for_flash_test("ccm4211", Some(&script)));
+        assert!(should_overlay_script_for_flash_test(ChipFamily::Ccm4211, Some(&script)));
     }
 
     #[test]
     fn should_not_overlay_script_for_flash_test_when_script_absent_or_chip_unsupported() {
         let script = vec!["tmp-script".to_string()];
-        assert!(!should_overlay_script_for_flash_test("air1601", None));
-        assert!(!should_overlay_script_for_flash_test("air1601", Some(&[])));
-        assert!(!should_overlay_script_for_flash_test("bk72xx", Some(&script)));
+        assert!(!should_overlay_script_for_flash_test(ChipFamily::Ccm4211, None));
+        assert!(!should_overlay_script_for_flash_test(ChipFamily::Ccm4211, Some(&[])));
+        assert!(!should_overlay_script_for_flash_test(ChipFamily::Bk72xx, Some(&script)));
+    }
+
+    /// 每个已知芯片族都必须在 family_flash_supported 中有明确归属（真=可刷机，假=明确不支持）。
+    #[test]
+    fn family_flash_supported_covers_all_known_families() {
+        assert!(family_flash_supported(ChipFamily::Bk72xx));
+        assert!(family_flash_supported(ChipFamily::Xt804));
+        assert!(family_flash_supported(ChipFamily::Ccm4211));
+        assert!(family_flash_supported(ChipFamily::Ec718));
+        assert!(family_flash_supported(ChipFamily::Sf32lb58));
+        assert!(!family_flash_supported(ChipFamily::Air6201));
+        assert!(!family_flash_supported(ChipFamily::Unknown));
+    }
+
+    /// family_flash_supported 与 cmd_flash_run 的 Unsupported 文案一致（Unknown 族必须被拒绝）。
+    #[test]
+    fn unknown_family_is_rejected_by_flash_run_support_check() {
+        assert!(!family_flash_supported(ChipFamily::Unknown));
     }
 
     #[test]

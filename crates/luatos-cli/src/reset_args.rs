@@ -17,6 +17,42 @@ pub struct ResetArgs {
     pub boot_wait_ms: u64,
 }
 
+/// SF32LB58 自动复位参数（可 flatten 到任意需要它的子命令）
+#[derive(clap::Args, Debug, Clone)]
+pub struct Sf32ResetArgs {
+    /// 自动控制 DTR/RTS 进入/退出 ROM BL（适用于 CH340X 增强 DTR 改装硬件，仅 SF32LB58）
+    #[arg(long)]
+    pub auto_reset: bool,
+    /// 进入 boot 时 DTR 的电平（high=BOOT0拉高，low=BOOT0拉低，默认 low）
+    #[arg(long, value_enum, default_value = "low")]
+    pub dtr_boot: crate::SignalLevel,
+    /// 触发复位时 RTS 的电平（high=CH340X RTS#拉低=RESET有效，默认 high）
+    #[arg(long, value_enum, default_value = "high")]
+    pub sf32_rts_reset: crate::SignalLevel,
+    /// 复位脉冲宽度（毫秒，默认 100）
+    #[arg(long, default_value = "100")]
+    pub reset_ms: u64,
+    /// 进入 boot 后等待 ROM BL 初始化的时长（毫秒，默认 500）
+    #[arg(long, default_value = "500")]
+    pub sf32_boot_wait_ms: u64,
+}
+
+impl Sf32ResetArgs {
+    /// 转换为 SF32 复位配置（auto_reset=false 时为 None）。
+    pub fn to_reset_config(&self) -> Option<luatos_flash::sf32lb5x::Sf32ResetConfig> {
+        if !self.auto_reset {
+            return None;
+        }
+        Some(luatos_flash::sf32lb5x::Sf32ResetConfig {
+            dtr_boot: self.dtr_boot.as_bool(),
+            rts_reset: self.sf32_rts_reset.as_bool(),
+            reset_ms: self.reset_ms,
+            boot_wait_ms: self.sf32_boot_wait_ms,
+            ..Default::default()
+        })
+    }
+}
+
 impl ResetArgs {
     /// Execute the RTS reset if --rts-reset is set.
     /// Opens the serial port, pulses RTS HIGH for rts_reset_ms, sets RTS LOW,

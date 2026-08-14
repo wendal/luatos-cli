@@ -14,6 +14,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
 use serde::Serialize;
 
+use luatos_soc::ChipFamily;
 use luatos_testcase::{build_ctx, build_script_bin, inject_identifiers, resolve_testcase, scan_testcases, write_ctx_to_temp, ResolvedTestcase};
 
 use crate::cmd_flash;
@@ -366,7 +367,7 @@ pub fn cmd_trun_run(args: &TrunRunArgs, format: &OutputFormat) -> Result<Verdict
     let script_bin = build_script_image_with_ctx(args, &resolved, &chip, &ctx_tmp)?;
     let script_bin_path = write_script_bin(&script_bin, args.keep_soc.as_deref())?;
     // 仅非 bk72xx 在全量模式时才需要合成 combined.soc
-    let combined_soc = if args.full && !matches!(chip.as_str(), "bk72xx" | "air8101") {
+    let combined_soc = if args.full && !matches!(soc_info.family(), ChipFamily::Bk72xx) {
         Some(combine_soc(args, &script_bin, &soc_info)?)
     } else {
         None
@@ -525,8 +526,7 @@ fn combine_soc(args: &TrunRunArgs, script_bin: &[u8], soc_info: &luatos_soc::Soc
     };
     std::fs::create_dir_all(&dir).ok();
     let out = dir.join("combined.soc");
-    let chip = soc_info.chip.chip_type.as_str();
-    if matches!(chip, "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg") {
+    if soc_info.family().is_ec718() {
         let script_addr = soc_info.script_addr();
         luatos_soc::combine_ec7xx_soc(&args.soc, script_bin, script_addr, out.to_str().unwrap()).context("combine_ec7xx_soc failed")?;
     } else {
@@ -576,10 +576,10 @@ fn flash_device(
     script_folders.push(ctx_tmp.path().display().to_string());
 
     let info = luatos_soc::read_soc_info(soc_for_flash)?;
-    let chip = info.chip.chip_type.as_str();
+    let family = info.family();
 
-    match chip {
-        "bk72xx" | "air8101" => {
+    match family {
+        ChipFamily::Bk72xx => {
             if args.clear_fs {
                 let cb = cmd_flash::make_progress_callback(format, "testcase.run", args.progress_step);
                 luatos_flash::bk7258::clear_filesystem(soc_for_flash, &args.port, cancel.clone(), cb).context("clear filesystem failed")?;

@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
+use luatos_soc::ChipFamily;
 
 use crate::{event, OutputFormat};
 
@@ -166,7 +167,7 @@ fn select_rom_path(dir: &Path, info_rom_file: &str) -> PathBuf {
     binpkgs.into_iter().next().unwrap_or_else(|| dir.join(info_rom_file))
 }
 
-fn build_ec7xx_fota(new_soc: &str, old_soc: &str, chip: &str, toolkit_path: &Path, toolkit_dir: &Path, out_path: &Path) -> Result<()> {
+fn build_ec7xx_fota(new_soc: &str, old_soc: &str, chip: &str, toolkit_path: &Path, toolkit_dir: &Path, out_path: &Path, force_par: bool) -> Result<()> {
     let tmp = tempfile::tempdir().context("tempdir")?;
     let work_dir = tmp.path();
 
@@ -280,6 +281,9 @@ fn build_ec7xx_fota(new_soc: &str, old_soc: &str, chip: &str, toolkit_path: &Pat
             log::info!("FotaToolkit stderr: {}", stderr.trim());
         }
         if stdout.contains("same images") || stderr.contains("same images") {
+            if force_par {
+                bail!("底层固件相同，但 --force-par 已指定，拒绝自动回落为脚本包");
+            }
             log::info!("Firmware cores identical — auto-fallback to script-only FOTA");
             // Fall back to script-only: compress and assemble only the script partition
             return build_ec7xx_script_only_fota(new_soc, out_path);
@@ -641,7 +645,7 @@ struct Air6208FotaResult {
 
 // ─── Public command handler ─────────────────────────────────────────────────
 
-// 8-arg CLI entry point — mirrors the FotaCommands::Build clap struct directly
+// 7-arg CLI entry point — mirrors the FotaCommands::Build clap struct directly
 // rather than threading a config object. Acceptable to silence the lint here.
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_fota_build(
@@ -649,7 +653,7 @@ pub fn cmd_fota_build(
     old_soc: Option<&str>,
     output: Option<&str>,
     fota_toolkit_path: Option<&str>,
-    _soc_tools_path: Option<&str>,
+    force_par: bool,
     script_only: bool,
     format: &OutputFormat,
 ) -> Result<()> {
@@ -659,11 +663,12 @@ pub fn cmd_fota_build(
     }
 
     let info = luatos_soc::read_soc_info(new_soc)?;
+    // 保留原始 chip 字符串用于输出文件名与结果展示（行为与改动前一致）
     let chip = info.chip.chip_type.as_str();
 
-    match chip {
+    match info.family() {
         // EC7xx / EC618 - differential or script-only
-        "ec7xx" | "ec618" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" | "air780epv" => {
+        ChipFamily::Ec718 => {
             if script_only {
                 let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{chip}_script_fota.bin")));
                 build_ec7xx_script_only_fota(new_soc, &out_path)?;
@@ -674,14 +679,14 @@ pub fn cmd_fota_build(
                 let (toolkit, toolkit_dir) = find_fota_toolkit(chip, fota_toolkit_path)?;
                 let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{chip}_fota.bin")));
 
-                build_ec7xx_fota(new_soc, old, chip, &toolkit, &toolkit_dir, &out_path)?;
+                build_ec7xx_fota(new_soc, old, chip, &toolkit, &toolkit_dir, &out_path, force_par)?;
                 let size = fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
                 print_result(format, chip, new_soc, old_soc, &[(&out_path, size)])?;
             }
         }
 
         // Air1601 / Air1602 / CCM4211 - full or script-only
-        "air1601" | "air1602" | "ccm4211" => {
+        ChipFamily::Ccm4211 => {
             let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("{chip}_fota.bin")));
             if script_only {
                 build_ccm4211_script_only_fota(new_soc, &out_path)?;
@@ -696,7 +701,7 @@ pub fn cmd_fota_build(
         }
 
         // Air8101 / BK72XX - full or script-only (new format only)
-        "bk72xx" | "air8101" => {
+        ChipFamily::Bk72xx => {
             if old_soc.is_some() {
                 log::warn!("--old is ignored for Air8101/BK72XX: only full/script package generation is supported");
             }
@@ -707,7 +712,7 @@ pub fn cmd_fota_build(
         }
 
         // Air6208 / XT804 - full only
-        "air6208" | "xt804" => {
+        ChipFamily::Xt804 => {
             if old_soc.is_some() {
                 log::warn!("--old is ignored for Air6208/XT804: only full FOTA is supported");
             }
@@ -738,8 +743,9 @@ pub fn cmd_fota_build(
             print_result(format, chip, new_soc, old_soc, &outputs)?;
         }
 
-        other => bail!(
-            "FOTA not supported for chip '{other}'. \
+        // 其余族（Sf32lb58 / Air6201 / Unknown）不支持 FOTA，错误文案保留原样
+        ChipFamily::Sf32lb58 | ChipFamily::Air6201 | ChipFamily::Unknown => bail!(
+            "FOTA not supported for chip '{chip}'. \
              Supported: EC7xx/EC618/Air8000 (differential), Air1601/Air1602/CCM4211 (full or --script-only), Air8101/BK72XX (new-format full or --script-only), Air6208/XT804 (full)."
         ),
     }
@@ -832,7 +838,7 @@ mod tests {
             None,
             Some(out.to_str().unwrap()),
             Some("C:\\definitely\\missing\\FotaToolkit.exe"),
-            None,
+            false,
             true,
             &OutputFormat::Text,
         );
@@ -864,7 +870,7 @@ mod tests {
             None,
             Some(out.to_str().unwrap()),
             Some("C:\\definitely\\missing\\FotaToolkit.exe"),
-            None,
+            false,
             true,
             &OutputFormat::Text,
         );

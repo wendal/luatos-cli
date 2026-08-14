@@ -7,10 +7,13 @@ use crate::{
     OutputFormat,
 };
 use anyhow::Context;
+use luatos_soc::ChipFamily;
 
 pub fn resolve_log_mode(chip: &str, requested_baud: u32) -> (bool, bool, u32) {
-    let is_ec718 = matches!(chip, "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg");
-    let use_binary_log = matches!(chip, "air1601" | "air1602" | "ccm4211") || is_ec718;
+    // 通过芯片族归一化判断（air8000m/air780epv 等新型号自动获得正确行为）
+    let family = ChipFamily::from_chip_type(chip);
+    let is_ec718 = family.is_ec718();
+    let use_binary_log = family.uses_binary_log();
     let baud = if is_ec718 && requested_baud == 2_000_000 { 921_600 } else { requested_baud };
     (use_binary_log, is_ec718, baud)
 }
@@ -71,11 +74,6 @@ pub fn cmd_log_view(port: &str, baud: u32, smart: bool, reset: &ResetArgs, forma
             }
         }),
     )?;
-
-    // 输出智能分析汇总
-    if let Some(analyzer) = if smart { Some(luatos_log::smart::SmartAnalyzer::new()) } else { None } {
-        let _ = analyzer; // 已在回调中消费
-    }
 
     event::emit_message(format, "log.view", MessageLevel::Info, "Log viewing stopped.")?;
     Ok(())

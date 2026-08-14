@@ -1,3 +1,5 @@
+use luatos_soc::ChipFamily;
+
 use crate::cmd_flash;
 use crate::cmd_log;
 use crate::reset_args::ResetArgs;
@@ -12,18 +14,20 @@ pub fn cmd_pipeline_flash_log(soc: &str, port: &str, baud: u32, probe: bool, sma
 
     // Read SOC info to determine chip type
     let info = luatos_soc::read_soc_info(soc)?;
-    let chip = info.chip.chip_type.as_str();
 
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let step = 10u8;
 
-    match chip {
-        "air6208" | "air101" | "air103" | "air601" => {
+    match info.family() {
+        ChipFamily::Xt804 => {
             let progress = cmd_flash::make_progress_callback(format, "pipeline.flash-log", step);
             luatos_flash::xt804::flash_xt804(soc, port, progress, cancel)?;
         }
-        other => {
-            anyhow::bail!("Pipeline flash-log not yet supported for chip: {}. Use individual flash/log commands instead.", other);
+        _ => {
+            anyhow::bail!(
+                "Pipeline flash-log not yet supported for chip: {}. Use individual flash/log commands instead.",
+                info.chip.chip_type
+            );
         }
     }
 
