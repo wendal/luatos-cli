@@ -168,13 +168,16 @@ fn is_main(name: &str) -> bool {
 /// Later directories override earlier ones when filenames collide.
 /// Returns the final binary image.
 pub fn build_script_image(script_dirs: &[&Path], use_luac: bool, bitw: u32, use_bkcrc: bool, debug_mode: u8) -> Result<Vec<u8>> {
-    let (collect_dirs, _tmp_guard): (Vec<PathBuf>, Option<PathBuf>) = if use_luac {
+    // _tmp_guard 持有 TempDir：use_luac 时临时目录必须存活到函数末尾，
+    // 因为 collect_script_entries 依赖其中的 luac 编译产物读取文件；
+    // 函数返回时 TempDir 自动删除目录，无需（也不应）手动 remove_dir_all，避免 Windows 残留
+    let (collect_dirs, _tmp_guard): (Vec<PathBuf>, Option<tempfile::TempDir>) = if use_luac {
         let tmp = tempfile::tempdir().context("failed to create temp directory")?;
         for dir in script_dirs {
             compile_lua_dir(dir, tmp.path(), bitw, debug_mode)?;
         }
-        let kept: PathBuf = tmp.keep();
-        (vec![kept.clone()], Some(kept))
+        // TempDir 存活期间路径始终有效；collect_script_entries 在函数内同步完成读取，返回前数据已全部读入内存
+        (vec![tmp.path().to_path_buf()], Some(tmp))
     } else {
         (script_dirs.iter().map(|d| d.to_path_buf()).collect(), None)
     };
@@ -188,10 +191,8 @@ pub fn build_script_image(script_dirs: &[&Path], use_luac: bool, bitw: u32, use_
 
     let result = if use_bkcrc { add_bk_crc(&image) } else { image };
 
-    // Clean up temp dir if we created one
-    if let Some(tmp_path) = _tmp_guard {
-        let _ = fs::remove_dir_all(&tmp_path);
-    }
+    // 显式释放守卫，触发 TempDir 自动清理（collect_script_entries 已完成读取，此时删除目录是安全的）
+    drop(_tmp_guard);
 
     Ok(result)
 }

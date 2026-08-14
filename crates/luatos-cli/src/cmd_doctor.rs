@@ -351,6 +351,9 @@ mod tests {
 
     #[test]
     fn check_lua_compiler_passes() {
+        // 隔离 helper 缓存目录，避免依赖真实用户目录权限（CI/沙箱环境可能不可写）
+        let tmp = tempfile::tempdir().expect("创建临时目录失败");
+        std::env::set_var("LUATOS_CLI_HELPER_CACHE", tmp.path());
         let result = check_lua_compiler();
         assert!(result.passed, "内嵌 Lua 编译器应当可用: {}", result.detail);
     }

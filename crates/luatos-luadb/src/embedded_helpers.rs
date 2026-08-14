@@ -135,29 +135,50 @@ fn helper_for_kind(kind: HelperKind) -> EmbeddedHelper {
 }
 
 fn helper_cache_dir() -> Result<PathBuf, String> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    // 候选 1：环境变量显式指定的缓存目录，直接使用该值（不附加 CACHE_SUBDIR 子目录）
+    if let Some(dir) = env::var_os("LUATOS_CLI_HELPER_CACHE") {
+        if !dir.is_empty() {
+            candidates.push(PathBuf::from(dir));
+        }
+    }
+
+    // 候选 2：系统标准缓存目录（Windows 取 LOCALAPPDATA；Unix 优先 XDG_CACHE_HOME，其次 ~/.cache）
     #[cfg(target_os = "windows")]
     {
         if let Some(dir) = env::var_os("LOCALAPPDATA") {
-            return Ok(PathBuf::from(dir).join(CACHE_SUBDIR));
+            candidates.push(PathBuf::from(dir).join(CACHE_SUBDIR));
         }
     }
-
     #[cfg(not(target_os = "windows"))]
     {
         if let Some(dir) = env::var_os("XDG_CACHE_HOME") {
-            return Ok(PathBuf::from(dir).join(CACHE_SUBDIR));
+            candidates.push(PathBuf::from(dir).join(CACHE_SUBDIR));
         }
         if let Some(home) = env::var_os("HOME") {
-            return Ok(PathBuf::from(home).join(".cache").join(CACHE_SUBDIR));
+            candidates.push(PathBuf::from(home).join(".cache").join(CACHE_SUBDIR));
         }
     }
 
+    // 候选 3：系统临时目录兜底
     let temp = env::temp_dir();
-    if temp.as_os_str().is_empty() {
-        Err("unable to determine a helper cache directory".to_string())
-    } else {
-        Ok(temp.join(CACHE_SUBDIR))
+    if !temp.as_os_str().is_empty() {
+        candidates.push(temp.join(CACHE_SUBDIR));
     }
+
+    // 依次尝试"创建 + 权限设置（Unix 0o700）+ 可写探测"；成功即返回，失败记录日志后尝试下一个候选
+    for candidate in candidates {
+        let ready = ensure_private_cache_dir(&candidate).and_then(|_| cache_dir_is_writable(&candidate));
+        match ready {
+            Ok(()) => return Ok(candidate),
+            Err(err) => {
+                log::warn!("helper 缓存目录 {} 不可用（{}），尝试下一个候选", candidate.display(), err);
+            }
+        }
+    }
+
+    Err("无法确定可写的 helper 缓存目录（请检查目录权限，或设置 LUATOS_CLI_HELPER_CACHE 环境变量）".to_string())
 }
 
 fn ensure_private_cache_dir(path: &Path) -> io::Result<()> {
@@ -166,6 +187,16 @@ fn ensure_private_cache_dir(path: &Path) -> io::Result<()> {
     {
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     }
+    Ok(())
+}
+
+/// 探测目录是否真实可写：写入并删除一个临时文件。
+/// 仅 create_dir_all 无法发现"目录已存在但 ACL 拒绝写入"的情况（Windows 上对已存在目录不做权限检查，
+/// 实际写文件时才报"拒绝访问"），因此候选目录必须通过写入探测才会被采用。
+fn cache_dir_is_writable(dir: &Path) -> io::Result<()> {
+    let probe = dir.join(format!(".cache-probe-{}-{}", std::process::id(), TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed)));
+    fs::write(&probe, b"probe")?;
+    let _ = fs::remove_file(&probe);
     Ok(())
 }
 
