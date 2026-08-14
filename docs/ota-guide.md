@@ -42,7 +42,6 @@ luatos-cli fota build --new <新固件.soc> [--old <旧固件.soc>] [--output <�
 | `--old` | 否 | 旧固件 `.soc` 文件路径（提供时为差分FOTA，否则为全量FOTA） |
 | `-o` `--output` | 否 | 输出路径，默认按芯片生成（如 `<芯片名>_fota.sota` / `bk72xx_fota.bin`） |
 | `--fota-toolkit` | 否 | `FotaToolkit.exe` 路径（仅差分FOTA需要，默认自动搜索） |
-| `--soc-tools` | 否 | **已弃用**，保留仅为兼容旧命令 |
 | `--script-only` | 否 | 生成仅脚本的升级包（EC7xx/Air8000、CCM4211、BK72XX 支持） |
 | `--force-par` | 否 | EC7xx/Air8000 差分 FOTA：关闭自动回落，强制调用 FotaToolkit 生成差分包 |
 
@@ -248,10 +247,6 @@ pub fn assemble_ota_package(
 ### Q: 如何验证生成的 OTA 包？
 
 产物与原始 C++ 工具 `soc_tools.exe` 的产物二进制兼容。可通过比对 CRC32 和 MD5 校验值验证一致性。
-
-### Q: soc_tools 参数还能用吗？
-
-`soc_tools` 参数已弃用，因为 `zip_file` 和 `make_ota_file` 现在由纯 Rust 实现。该参数仅保留以兼容旧命令，不影响功能。
 
 ### Q: `--script-only` 适用于什么场景？
 

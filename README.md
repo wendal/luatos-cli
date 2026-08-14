@@ -10,7 +10,7 @@ LuatOS 命令行工具集（纯 Rust）——刷机、日志、项目管理、�
 - **FOTA 打包**：支持 EC7xx 差分/脚本、CCM4211 全量/脚本、Air8101(BK72XX) 新格式全量/脚本；EC7xx 差分时若底层固件相同自动回落到脚本更新包（`--force-par` 可强制走差分）
 - **二级帮助入口**：`--help` 提示型号入口，`guide models` / `guide model --model <型号>` 直接给推荐命令
 - **刷机后继续监听**：`flash run --tail-log-secs <N>` 刷机后自动按型号波特率续接日志，减少开机日志丢失
-- **trun 单点调试**：`trun <name> --soc base.soc --port COM6` 一站式完成 testcase 合成 → 刷机 → 抓日志 → 关键字校验 → ctx.json 监听，取代 luatos-autotest-v2 在开发期的临时合成
+- **trun 单点调试**：`trun <name> --soc base.soc --port COM6` 一站式完成 testcase 合成 → 刷机 → 抓日志 → 关键字校验，取代 luatos-autotest-v2 在开发期的临时合成
 - **日志系统**：文本 / 二进制日志查看、录制、解析，支持智能诊断
 - **项目与构建**：项目向导、配置管理、Lua 依赖分析、luac/LuaDB 构建
 - **AI 友好输出**：全局 `--format text|json|jsonl`
@@ -85,7 +85,7 @@ luatos-cli fota build --new v2.soc --old v1.soc --force-par  # 强制走 FotaToo
 
 ## trun 单点调试
 
-`trun` 子命令（test run）把 luatos-autotest-v2 在开发期的"合成 → 刷机 → 抓日志 → 关键字 → 设备回报" 五步流程合成一条命令。无需启动 Flask/MQTT/Runner 多进程，开发期单点验证从分钟级降到秒级。
+`trun` 子命令（test run）把 luatos-autotest-v2 在开发期的"合成 → 刷机 → 抓日志 → 关键字校验" 四步流程合成一条命令。无需启动 Flask/MQTT/Runner 多进程，开发期单点验证从分钟级降到秒级。
 
 ### 三档 ctx.json 合并规则
 
@@ -123,7 +123,7 @@ luatos-cli trun exftp \
   --luatos-root D:/github/LuatOS \
   --soc base.soc \
   --port COM6 \
-  --full-soc --keep-soc ./artifacts
+  --full --keep-soc ./artifacts
 
 # 传入额外 ctx.json 字段（与 <LuatOS>/testcase/local_ctx.json 合并）
 luatos-cli trun exftp \
@@ -146,7 +146,7 @@ luatos-cli trun exftp \
 - **不替代**：Runner 多进程池、Orchestrator 派发、relay 时序、SQLite 历史、MQTT 双向桥、飞书/钉钉 webhook、FOTA 多机差异化烧写
 - **ctx.json 字段名完全兼容**：`test_id` / `runner_id` / `runner_mode` / `report_url` / `status_url` / `mqtt.*` / `wifi_ssid` 等 autotest-v2 设备端 SDK 不感知来源
 - **test_id 格式一致**：`test_<unix_secs_base36>_<random_hex>`，CLI 的 `runner_id` 用 `cli-<hostname>-<pid>` 后缀避免和 autotest-v2 真实 runner_id 冲突
-- **未来桥接**：autotest-v2 想用 Rust CLI 替代 Python 烧写，只需在 Orchestrator 调 `luatos-cli trun <name> --ctx <ctx.json> --full-soc --keep-soc ./artifacts --jsonl`
+- **未来桥接**：autotest-v2 想用 Rust CLI 替代 Python 烧写，只需在 Orchestrator 调 `luatos-cli trun <name> --ctx <ctx.json> --full --keep-soc ./artifacts --jsonl`
 
 ## 常用命令分组
 

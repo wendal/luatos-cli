@@ -33,16 +33,17 @@ Linux 上 `serialport` 需要系统依赖：`libudev-dev` 与 `pkg-config`（CI 
 
 Cargo workspace（`Cargo.toml`）包含 12 个 crate（`luatos-gui` 注释禁用，不参与构建）：
 
-- **crates/luatos-cli** — 二进制入口。`main.rs` 用 clap 派生宏定义子命令树（`serial` / `soc` / `flash` / `log` / `project` / `build` / `resource` / `device` / `doctor` / `fota` / `guide` / `version`）。各 `cmd_*.rs` 模块实现业务逻辑，全局 `--format text|json|jsonl` 决定输出形式。
-- **crates/luatos-flash** — 刷机协议：BK7258（Air8101）、XT804（Air6208/Air101/Air103）、CCM4211（Air1601/Air1602）、EC718（Air8000/Air780）、SF32LB5x、Air6201 外置 SPI。每个芯片一个模块，公共类型为 `FlashProgress` 与 `ProgressCallback = Box<dyn Fn(&FlashProgress) + Send>`。`sf32lb5x` 通过 git 依赖的 `sftool-lib`（fork 仓库）实现。
-- **crates/luatos-soc** — SOC 固件包（ZIP+7z）解析、解包、打包、注入（`combine.rs`）、OTA 包生成。`pack.rs` 包含 LZMA 库（`lzma_ffi.c` + `lzma_sdk/`）的 FFI 绑定。
+- **crates/luatos-cli** — 二进制入口。`main.rs` 用 clap 派生宏定义子命令树（`serial` / `soc` / `flash` / `log` / `pipeline` / `project` / `build` / `resource` / `device` / `doctor` / `fota` / `guide` / `trun` / `version`）。各 `cmd_*.rs` 模块实现业务逻辑，全局 `--format text|json|jsonl` 决定输出形式；关键模块：`cmd_pipeline.rs`（刷机+日志流水线）、`cmd_trun.rs`（testcase 单点调试）、`cmd_doctor.rs`（环境诊断）、`cmd_guide.rs`（型号二级帮助）。
+- **crates/luatos-flash** — 刷机协议：BK7258（Air8101）、XT804（Air6208/Air101/Air103）、CCM4211（Air1601/Air1602）、EC718（Air8000/Air780）、SF32LB5x、Air6201 外置 SPI。每个芯片一个模块，公共类型为 `FlashProgress` 与 `ProgressCallback = Box<dyn Fn(&FlashProgress) + Send>`。`sf32lb5x` 通过本地 `sftool-lib` crate（`[patch]` 覆盖 git 依赖）实现。
+- **crates/luatos-soc** — SOC 固件包（ZIP+7z）解析、解包、打包、注入（`combine.rs`）、OTA 包生成。`ota.rs` 含 LZMA SDK 的 FFI 绑定（`lzma_sdk_compress`），`pack.rs` 为纯 Rust ZIP/7z 打包。
 - **crates/luatos-luadb** — LuaDB 文件系统镜像打包，含内置 Lua 5.3 编译器（`build.rs` 走 `cc` 编译 `embedded_helpers.rs`）与 BK CRC16 framing。
 - **crates/luatos-serial** — 串口枚举、文本/二进制日志流。
 - **crates/luatos-project** — 项目脚手架、导入（LuaTools `.ini`/`.luatos`）、Lua 依赖分析（`lua_deps.rs`）、配置 `luatos-project.toml`、向导（`wizard.rs`）、分析（`analyze.rs`）、打包（`archive.rs`）、模板（`template.rs`）。
 - **crates/luatos-resource** — 从 LuatOS CDN 拉取固件清单、下载固件资源（带 SHA256 校验）。
 - **crates/luatos-log** — 日志解析框架。核心 trait 是 `LogParser`（`name()` + `parse_line()`），内置 `LuatosParser` / `BootLogParser` / `SocLogDecoder`，`LogDispatcher` 按注册顺序尝试解析。`smart.rs` 提供智能诊断。
+- **crates/luatos-log-ffi** — C ABI 动态库（cdylib），导出 `luatos_soclog_analyze()` 与 `pySoclogAnalyze()` 别名，供 Python/C/Go 等语言直接消费 SOC 日志解码。
 - **crates/luatos-mcp** — MCP 服务端（独立二进制 `main.rs`），供 AI 工具调用。
-- **crates/luatos-mfgui** — 量产刷机 GUI（egui 0.34），多 worker 并行刷机。
+- **crates/luatos-testcase** — testcase 解析与发现（metas / discovery / ctx.json 合并 / script.bin 构建），承载 `trun` 的独立可测逻辑（path crate, lib only）。
 - **crates/sftool-lib** — 本地 fork 路径补丁，覆盖 `sftool` git 依赖，去掉 `probe-rs` 依赖。
 
 ## 关键约定

@@ -2,17 +2,46 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.8.1] - 2026-05-30
+## [Unreleased]
 
 ### 变更
 
-#### flash test 快速判 FAIL 支持
+#### 芯片族统一建模（ChipFamily）
 
-- 新增 `--fail-keyword`（可重复）用于快速判 FAIL：命中任意一项立即失败；未传时不启用快速失败判定
-- `flash test` 结果为 `FAIL` 时，文本输出新增 `Missing keywords` 汇总，便于快速定位未命中项
-- JSON/JSONL 结果新增 `missing_keywords`、`fail_keywords`、`matched_fail_keywords`、`fast_failed` 字段，便于 MCP/自动化流程直接消费
-- 修复 Air1601/Air1602 `flash test --script` 被忽略的问题：现在会在全量刷机后覆盖脚本分区，再进行关键字判定
-- `flash test` 关键字默认策略收敛：未传 `--keyword` 时默认 `LuatOS@`，显式传入时仅按传入关键字判定
+- 新增 `luatos_soc::ChipFamily` 枚举（Bk72xx/Xt804/Ccm4211/Ec718/Sf32lb58/Air6201/Unknown），`SocInfo::family()` 提供归一化映射；刷机/日志/FOTA/设备控制的分发点全部收敛到该枚举，消除各模块芯片字符串匹配不一致（如 `air8000m` 此前仅 device/量产 GUI 支持、CLI 刷机会报不支持，现已统一归入 EC718 家族）
+
+#### FOTA
+
+- `fota build` 新增 `--force-par`：EC7xx 差分时若底层固件相同，默认自动回落为脚本包；加 `--force-par` 强制走差分并拒绝回落（此前文档已描述该参数但代码缺失）
+- 移除已失效的 `--soc-tools` 参数（`soc_tools.exe` 已被纯 Rust OTA 实现替代）
+
+#### flash test 退出码
+
+- `flash test` 内部不再直接 `std::process::exit(1)`，改为返回 `Result<bool>`，由 CLI 层决定退出码（FAIL 仍为 1），为库复用与 MCP 集成铺路
+
+#### 资源下载安全
+
+- zip 解压增加路径穿越防护（拒绝 `..` 与绝对路径条目，防 zip-slip）
+- 下载与清单抓取增加连接/读超时（15s/60s）与大小上限校验，防止挂起与恶意大文件
+- 明文 HTTP 镜像源使用前输出中间人风险警告
+
+#### Lua 编译器 helper 缓存健壮性
+
+- helper 缓存目录支持 `LUATOS_CLI_HELPER_CACHE` 环境变量覆盖，并改为候选链（env → LOCALAPPDATA/XDG → temp），目录不可写时自动降级，不再因单个目录权限问题导致 luac 功能不可用
+
+#### 日志与串口打磨
+
+- 串口文本日志行缓冲增加 16KB 上限，防止无换行数据流耗尽内存
+- 智能诊断 low_memory 规则收紧：仅匹配 `free mem` 前缀并支持 KB/MB 单位换算，消除误报
+- 日志解析时间戳改为线程局部秒级缓存，降低每行日志的格式化开销
+- `luatos_log_ffi` 输出字符串截断改为按 UTF-8 字符边界回退，避免 C 端收到无效 UTF-8
+
+#### 内部 / CI
+
+- 删除已移出 workspace 的 `crates/luatos-mfgui` 残留目录
+- `flash run`/script/clear-kv 的 SF32 复位参数收敛为 `Sf32ResetArgs`（flatten），消除三处重复定义；Ctrl+C 处理器统一提取为公共函数
+- 补齐 luatos-flash 协议模块硬件无关纯函数测试（帧编解码/CRC/头部布局/binpkg 解析等 11 个）
+- 修正 README trun 示例（`--full-soc` → `--full`）与 ctx.json 监听描述（监听器已移除）
 
 ## [1.9.1] - 2026-08-10
 
@@ -259,6 +288,18 @@ All notable changes to this project will be documented in this file.
   - 新阶段切换（Connecting → Erasing → Writing 等）始终输出，无论步进值
   - `done` / `error` 事件始终输出
   - 适用于所有 flash 子命令：`run`、`script`、`clear-fs`、`flash-fs`、`clear-kv`、`ext-flash`、`ext-erase`、`test`
+
+## [1.8.1] - 2026-05-30
+
+### 变更
+
+#### flash test 快速判 FAIL 支持
+
+- 新增 `--fail-keyword`（可重复）用于快速判 FAIL：命中任意一项立即失败；未传时不启用快速失败判定
+- `flash test` 结果为 `FAIL` 时，文本输出新增 `Missing keywords` 汇总，便于快速定位未命中项
+- JSON/JSONL 结果新增 `missing_keywords`、`fail_keywords`、`matched_fail_keywords`、`fast_failed` 字段，便于 MCP/自动化流程直接消费
+- 修复 Air1601/Air1602 `flash test --script` 被忽略的问题：现在会在全量刷机后覆盖脚本分区，再进行关键字判定
+- `flash test` 关键字默认策略收敛：未传 `--keyword` 时默认 `LuatOS@`，显式传入时仅按传入关键字判定
 
 ## [1.8.0] - 2026-04-26
 
