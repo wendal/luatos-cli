@@ -8,6 +8,8 @@
 use std::cmp::Reverse;
 use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -194,11 +196,28 @@ pub fn fetch_manifest_with_cache(cache_path: &Path) -> Result<ResourceManifest> 
     serde_json::from_str(&body).context("解析资源清单 JSON 失败")
 }
 
+/// 获取共享的 HTTP 客户端（连接超时 15s，读超时 60s）
+///
+/// 用 `OnceLock` 缓存单例 agent，`Agent::get` 接受 `&self`，可直接复用。
+fn http_agent() -> &'static ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(15))
+            .timeout_read(Duration::from_secs(60))
+            .build()
+    })
+}
+
 /// 从 CDN URL 列表获取清单原始 JSON 字符串（内部使用）
 fn fetch_manifest_raw_from(urls: &[&str]) -> Result<String> {
     let mut last_err = None;
     for url in urls {
-        match ureq::get(url).call() {
+        // 明文 HTTP 镜像存在中间人风险，仅告警，仍允许尝试
+        if url.starts_with("http://") {
+            log::warn!("镜像源使用明文 HTTP，存在中间人风险: {url}");
+        }
+        match http_agent().get(url).call() {
             Ok(resp) => return resp.into_string().context("读取清单响应体失败"),
             Err(e) => {
                 log::warn!("获取清单失败 {url}: {e}");
@@ -404,7 +423,17 @@ pub fn download_files(module: &str, files: &[FileEntry], mirrors: &[Mirror], out
 
 /// 从单个 URL 下载文件（内部辅助函数）
 fn download_single_file(url: &str, dest: &Path, total_size: u64, filename: &str, on_event: Option<&DownloadCallback>) -> Result<()> {
-    let resp = ureq::get(url).call()?;
+    let resp = http_agent().get(url).call()?;
+
+    // 校验服务端返回的 Content-Length 与预期大小是否一致（仅警告，部分 CDN 使用 chunked 编码）
+    if total_size > 0 {
+        if let Some(cl) = resp.header("Content-Length").and_then(|v| v.parse::<u64>().ok()) {
+            if cl != total_size {
+                log::warn!("文件 {filename} 的 Content-Length ({cl}) 与预期大小 ({total_size}) 不一致: {url}");
+            }
+        }
+    }
+
     let mut reader = resp.into_reader();
     let mut file = std::fs::File::create(dest)?;
     let mut buf = [0u8; 8192];
@@ -417,6 +446,12 @@ fn download_single_file(url: &str, dest: &Path, total_size: u64, filename: &str,
         }
         file.write_all(&buf[..n])?;
         downloaded += n as u64;
+
+        // 超过预期大小则删除半成品并报错，防止恶意/异常服务器撑爆磁盘
+        if total_size > 0 && downloaded > total_size {
+            let _ = std::fs::remove_file(dest);
+            bail!("文件 {filename} 大小超过预期（预期 {total_size} 字节，已下载 {downloaded} 字节）: {url}");
+        }
 
         if let Some(cb) = &on_event {
             cb(&DownloadEvent::Progress {
@@ -454,6 +489,16 @@ fn extract_zip_to_stem_dir(zip_path: &Path) -> Result<std::path::PathBuf> {
         // 跳过目录条目
         if entry_name.ends_with('/') {
             continue;
+        }
+        // zip-slip 防护：拒绝绝对路径条目，防止写出解压目录
+        if Path::new(&entry_name).is_absolute() {
+            let _ = std::fs::remove_dir_all(&dest_dir);
+            bail!("zip 条目包含绝对路径，已拒绝解压: {entry_name}");
+        }
+        // zip-slip 防护：拒绝包含 ".." 分段的条目（兼容 Windows zip 的反斜杠）
+        if entry_name.split(['/', '\\']).any(|seg| seg == "..") {
+            let _ = std::fs::remove_dir_all(&dest_dir);
+            bail!("zip 条目包含路径穿越（..），已拒绝解压: {entry_name}");
         }
         let out_path = dest_dir.join(&entry_name);
         if let Some(p) = out_path.parent() {
@@ -661,5 +706,66 @@ mod tests {
         let dest = extract_zip_to_stem_dir(&zip_path).unwrap();
         assert_eq!(dest, soc_script_dir.join("v2026.04.10.16"));
         assert!(dest.join("lib").join("airlbs.lua").exists());
+    }
+
+    /// zip-slip 防护：条目名含 `../` 时应解压失败，且不留下越界文件或半成品目录
+    #[test]
+    fn extract_zip_rejects_dotdot_entry() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = dir.path().join("evil.zip");
+
+        // 构造含 `../evil.txt` 条目名的 zip
+        let file = std::fs::File::create(&zip_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let opts = zip::write::SimpleFileOptions::default();
+        writer.start_file("../evil.txt", opts).unwrap();
+        writer.write_all(b"evil").unwrap();
+        writer.finish().unwrap();
+
+        let result = extract_zip_to_stem_dir(&zip_path);
+        assert!(result.is_err(), "含 ../ 的条目应解压失败");
+        assert!(!dir.path().join("evil.txt").exists(), "不允许逃逸到上级目录");
+        assert!(!dir.path().join("evil").exists(), "失败后应清理半成品目录");
+    }
+
+    /// zip-slip 防护：绝对路径条目（如 `/abs.txt`）应解压失败
+    #[test]
+    fn extract_zip_rejects_absolute_entry() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = dir.path().join("abs.zip");
+
+        // 构造含绝对路径条目名的 zip
+        let file = std::fs::File::create(&zip_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let opts = zip::write::SimpleFileOptions::default();
+        writer.start_file("/abs.txt", opts).unwrap();
+        writer.write_all(b"abs").unwrap();
+        writer.finish().unwrap();
+
+        let result = extract_zip_to_stem_dir(&zip_path);
+        assert!(result.is_err(), "绝对路径条目应解压失败");
+        assert!(!dir.path().join("abs.txt").exists());
+    }
+
+    /// zip-slip 防护：Windows zip 的反斜杠路径穿越（`..\evil.txt`）也应拒绝
+    #[test]
+    fn extract_zip_rejects_backslash_traversal() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = dir.path().join("bs.zip");
+
+        // 构造含反斜杠路径穿越条目名的 zip
+        let file = std::fs::File::create(&zip_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let opts = zip::write::SimpleFileOptions::default();
+        writer.start_file("..\\evil2.txt", opts).unwrap();
+        writer.write_all(b"evil2").unwrap();
+        writer.finish().unwrap();
+
+        let result = extract_zip_to_stem_dir(&zip_path);
+        assert!(result.is_err(), "含反斜杠穿越的条目应解压失败");
+        assert!(!dir.path().join("evil2.txt").exists());
     }
 }
