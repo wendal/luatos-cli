@@ -1,5 +1,6 @@
 // info.json schema for SOC files.
 
+use crate::ChipFamily;
 use serde::{Deserialize, Serialize};
 
 /// Top-level SOC metadata from info.json.
@@ -262,6 +263,11 @@ impl SocInfo {
         } else {
             0
         }
+    }
+
+    /// 归一化的芯片族（基于 chip.chip_type）。
+    pub fn family(&self) -> ChipFamily {
+        ChipFamily::from_chip_type(&self.chip.chip_type)
     }
 }
 
