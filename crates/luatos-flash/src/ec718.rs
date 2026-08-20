@@ -1287,14 +1287,46 @@ pub fn build_log_probe() -> Vec<u8> {
     crate::ccm4211::build_log_probe()
 }
 
+/// Replace the SOC-packaged `script.bin` with caller-built LuaDB bytes.
+///
+/// Full flash burns whatever is in the script entry; without this overlay, `--script`
+/// folders would be ignored and the device would keep the demo/script.bin inside the `.soc`.
+fn overlay_script_entry(binpkg: &mut BinpkgResult, overlay: &[u8], script_addr: u32) -> Result<()> {
+    if let Some(entry) = binpkg.entries.iter_mut().find(|entry| entry.name.eq_ignore_ascii_case("script")) {
+        entry.data = Some(overlay.to_vec());
+        entry.image_size = overlay.len() as u32;
+        return Ok(());
+    }
+    if script_addr == 0 {
+        bail!("--script was given but SOC has no script partition address");
+    }
+    binpkg.entries.push(BinpkgEntry {
+        name: "script".to_string(),
+        addr: script_addr,
+        flash_size: 0,
+        image_size: overlay.len() as u32,
+        hash: String::new(),
+        image_type: "AP".to_string(),
+        data: Some(overlay.to_vec()),
+    });
+    Ok(())
+}
+
 /// Flash EC718 firmware via native Rust protocol.
 ///
 /// Handles full flash: agentboot + all partitions from .soc file.
-pub fn flash_ec718(soc_path: &str, port: &str, on_progress: &ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
+/// `script_overlay` replaces the `script.bin` packaged in the SOC when `flash run --script` is used.
+pub fn flash_ec718(soc_path: &str, port: &str, on_progress: &ProgressCallback, cancel: Arc<AtomicBool>, script_overlay: Option<&[u8]>) -> Result<()> {
     on_progress(&FlashProgress::info("Preparing", 0.0, "Parsing SOC file..."));
 
     // Parse SOC file
-    let (binpkg, _script_data, force_br) = extract_and_parse_soc(soc_path)?;
+    let (mut binpkg, _script_data, force_br) = extract_and_parse_soc(soc_path)?;
+    if let Some(overlay) = script_overlay {
+        let info = luatos_soc::read_soc_info(soc_path)?;
+        let script_addr = info.download.script_addr.as_deref().and_then(luatos_soc::parse_addr).unwrap_or(0) as u32;
+        overlay_script_entry(&mut binpkg, overlay, script_addr)?;
+        on_progress(&FlashProgress::info("Preparing", 0.5, &format!("Using --script overlay ({} bytes)", overlay.len())));
+    }
 
     log::info!("EC718 chip: {}, {} entries, force_br={}", binpkg.chip, binpkg.entries.len(), force_br,);
 
@@ -1619,7 +1651,49 @@ mod tests {
         let on_progress: ProgressCallback = Box::new(|p| {
             eprintln!("[{:>6.1}%] {} — {}", p.percent, p.stage, p.message);
         });
-        flash_ec718(soc, port, &on_progress, cancel).expect("flash_ec718");
+        flash_ec718(soc, port, &on_progress, cancel, None).expect("flash_ec718");
+    }
+
+    #[test]
+    fn overlay_script_entry_replaces_existing_script() {
+        let mut binpkg = BinpkgResult {
+            chip: "EC718".into(),
+            entries: vec![BinpkgEntry {
+                name: "script".into(),
+                addr: 0x48E000,
+                flash_size: 0,
+                image_size: 4,
+                hash: String::new(),
+                image_type: "AP".into(),
+                data: Some(b"old!".to_vec()),
+            }],
+        };
+        overlay_script_entry(&mut binpkg, b"new-script", 0x48E000).unwrap();
+        assert_eq!(binpkg.entries.len(), 1);
+        assert_eq!(binpkg.entries[0].data.as_deref(), Some(b"new-script".as_ref()));
+        assert_eq!(binpkg.entries[0].image_size, 10);
+    }
+
+    #[test]
+    fn overlay_script_entry_pushes_when_soc_has_no_script() {
+        let mut binpkg = BinpkgResult {
+            chip: "EC718".into(),
+            entries: vec![],
+        };
+        overlay_script_entry(&mut binpkg, b"lua", 0x48E000).unwrap();
+        assert_eq!(binpkg.entries[0].name, "script");
+        assert_eq!(binpkg.entries[0].addr, 0x48E000);
+        assert_eq!(binpkg.entries[0].data.as_deref(), Some(b"lua".as_ref()));
+    }
+
+    #[test]
+    fn overlay_script_entry_errors_without_addr_or_existing_entry() {
+        let mut binpkg = BinpkgResult {
+            chip: "EC718".into(),
+            entries: vec![],
+        };
+        let err = overlay_script_entry(&mut binpkg, b"lua", 0).unwrap_err();
+        assert!(err.to_string().contains("script partition"));
     }
 
     #[test]

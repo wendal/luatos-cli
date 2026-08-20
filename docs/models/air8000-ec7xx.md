@@ -12,6 +12,9 @@
 # 全量刷机（推荐自动端口）
 luatos-cli flash run --soc firmware.soc --port auto
 
+# 全量刷机并覆盖脚本区
+luatos-cli flash run --soc firmware.soc --port auto --script lua/
+
 # 刷机后继续监听日志
 luatos-cli flash run --soc firmware.soc --port auto --tail-log-secs 30
 
@@ -35,3 +38,4 @@ luatos-cli log view-binary --port auto --baud 921600 --probe
 
 - EC718 USB CDC 在 Windows 下 2000000 常不稳定，建议 `921600`
 - 刷机与日志端口可能重枚举，`auto` 更稳妥
+- `flash run --script` 会在全量刷机时用所选目录生成 script.bin，覆盖 SOC 包内自带脚本

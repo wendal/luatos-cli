@@ -27,6 +27,18 @@ fn check_script_size(image_len: usize, partition_size: usize) -> anyhow::Result<
     Ok(())
 }
 
+#[cfg(test)]
+fn script_folders_present(folders: Option<&[String]>) -> bool {
+    folders.is_some_and(|dirs| !dirs.is_empty())
+}
+
+fn build_script_overlay(script_folders: Option<&[String]>, info: &luatos_soc::SocInfo) -> anyhow::Result<Option<Vec<u8>>> {
+    let Some(folders) = script_folders.filter(|dirs| !dirs.is_empty()) else {
+        return Ok(None);
+    };
+    Ok(Some(build_script_image_checked(folders, info)?))
+}
+
 fn build_script_image_checked(folders: &[String], info: &luatos_soc::SocInfo) -> anyhow::Result<Vec<u8>> {
     let folder_paths: Vec<std::path::PathBuf> = folders.iter().map(std::path::PathBuf::from).collect();
     let path_refs: Vec<&std::path::Path> = folder_paths.iter().map(|p| p.as_path()).collect();
@@ -196,7 +208,11 @@ pub fn cmd_flash_run(
             }
         }
         ChipFamily::Ccm4211 => {
-            luatos_flash::ccm4211::flash_ccm4211(soc, port, &on_progress, cancel)?;
+            let overlay = build_script_overlay(script_folders, &info)?;
+            if overlay.is_some() {
+                event::emit_message(format, "flash.run", MessageLevel::Info, "Applying script overlay from --script folders...")?;
+            }
+            luatos_flash::ccm4211::flash_ccm4211(soc, port, &on_progress, cancel, overlay.as_deref())?;
             match format {
                 OutputFormat::Text => {
                     println!("CCM4211 flash completed successfully.");
@@ -206,8 +222,12 @@ pub fn cmd_flash_run(
         }
         ChipFamily::Ec718 => {
             // EC718 series: auto-detect boot mode, reboot if needed
+            let overlay = build_script_overlay(script_folders, &info)?;
+            if overlay.is_some() {
+                event::emit_message(format, "flash.run", MessageLevel::Info, "Applying script overlay from --script folders...")?;
+            }
             let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress)?;
-            luatos_flash::ec718::flash_ec718(soc, &boot_port, &on_progress, cancel)?;
+            luatos_flash::ec718::flash_ec718(soc, &boot_port, &on_progress, cancel, overlay.as_deref())?;
             match format {
                 OutputFormat::Text => {
                     println!("EC718 flash completed successfully.");
@@ -507,11 +527,6 @@ fn evaluate_flash_test_outcome(all_lines: &[String], pass_keywords: &[String], f
     }
 }
 
-fn should_overlay_script_for_flash_test(family: ChipFamily, script_folders: Option<&[String]>) -> bool {
-    let has_script = script_folders.is_some_and(|folders| !folders.is_empty());
-    has_script && matches!(family, ChipFamily::Ccm4211)
-}
-
 /// Closed-loop flash test: flash firmware → capture boot log → check keywords → PASS/FAIL.
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_flash_test(
@@ -554,19 +569,21 @@ pub fn cmd_flash_test(
         }
         ChipFamily::Ccm4211 => {
             let on_progress2 = make_progress_callback(format, "flash.test", step);
-            luatos_flash::ccm4211::flash_ccm4211(soc, port, &on_progress2, cancel.clone())?;
-            if should_overlay_script_for_flash_test(family, script_folders) {
+            let overlay = build_script_overlay(script_folders, &info)?;
+            if overlay.is_some() {
                 event::emit_message(format, "flash.test", MessageLevel::Info, "Applying script overlay from --script folders...")?;
-                let folders = script_folders.expect("script folders required");
-                let script_data = build_script_image_checked(folders, &info)?;
-                luatos_flash::ccm4211::flash_script_ccm4211(soc, port, &script_data, &on_progress2, cancel.clone())?;
             }
+            luatos_flash::ccm4211::flash_ccm4211(soc, port, &on_progress2, cancel.clone(), overlay.as_deref())?;
             Vec::new()
         }
         ChipFamily::Ec718 => {
             let on_progress2 = make_progress_callback(format, "flash.test", step);
+            let overlay = build_script_overlay(script_folders, &info)?;
+            if overlay.is_some() {
+                event::emit_message(format, "flash.test", MessageLevel::Info, "Applying script overlay from --script folders...")?;
+            }
             let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress2)?;
-            luatos_flash::ec718::flash_ec718(soc, &boot_port, &on_progress2, cancel.clone())?;
+            luatos_flash::ec718::flash_ec718(soc, &boot_port, &on_progress2, cancel.clone(), overlay.as_deref())?;
             Vec::new()
         }
         ChipFamily::Unknown | ChipFamily::Air6201 | ChipFamily::Sf32lb58 => {
@@ -884,17 +901,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn should_overlay_script_for_ccm4211_flash_test_when_script_present() {
+    fn script_folders_present_requires_non_empty_list() {
         let script = vec!["tmp-script".to_string()];
-        assert!(should_overlay_script_for_flash_test(ChipFamily::Ccm4211, Some(&script)));
-    }
-
-    #[test]
-    fn should_not_overlay_script_for_flash_test_when_script_absent_or_chip_unsupported() {
-        let script = vec!["tmp-script".to_string()];
-        assert!(!should_overlay_script_for_flash_test(ChipFamily::Ccm4211, None));
-        assert!(!should_overlay_script_for_flash_test(ChipFamily::Ccm4211, Some(&[])));
-        assert!(!should_overlay_script_for_flash_test(ChipFamily::Bk72xx, Some(&script)));
+        assert!(script_folders_present(Some(&script)));
+        assert!(!script_folders_present(None));
+        assert!(!script_folders_present(Some(&[])));
     }
 
     /// 每个已知芯片族都必须在 family_flash_supported 中有明确归属（真=可刷机，假=明确不支持）。

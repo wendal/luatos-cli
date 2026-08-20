@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### 变更
 
+- `flash run --script` / `flash test --script` 在 **EC718** 与 **CCM4211** 上会覆盖 SOC 包内的 `script.bin`（此前参数会被静默忽略，设备仍跑固件自带脚本）
+
 #### 芯片族统一建模（ChipFamily）
 
 - 新增 `luatos_soc::ChipFamily` 枚举（Bk72xx/Xt804/Ccm4211/Ec718/Sf32lb58/Air6201/Unknown），`SocInfo::family()` 提供归一化映射；刷机/日志/FOTA/设备控制的分发点全部收敛到该枚举，消除各模块芯片字符串匹配不一致（如 `air8000m` 此前仅 device/量产 GUI 支持、CLI 刷机会报不支持，现已统一归入 EC718 家族）

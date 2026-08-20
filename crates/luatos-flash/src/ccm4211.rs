@@ -561,7 +561,8 @@ fn soc_reset_device(port: &mut Box<dyn SerialPort>) -> Result<()> {
 /// Flash full firmware for CCM4211/Air1601.
 ///
 /// Downloads bootloader + core + script (if present) via ISP+SOC protocol.
-pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
+/// `script_overlay` replaces the `script.bin` packaged in the SOC when `flash run --script` is used.
+pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCallback, cancel: Arc<AtomicBool>, script_overlay: Option<&[u8]>) -> Result<()> {
     // Extract .soc
     on_progress(&FlashProgress::info("Extract", 0.0, "Unpacking .soc file"));
     let tmpdir = tempfile::tempdir().context("Create temp dir")?;
@@ -669,9 +670,15 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
         bail!("Cancelled");
     }
 
-    // Download script (if exists)
-    if script_path.exists() {
-        let script_data = std::fs::read(&script_path).context("Failed to read script")?;
+    // Download script: --script overlay wins over the SOC-packaged script.bin.
+    let script_data = if let Some(overlay) = script_overlay {
+        Some(overlay.to_vec())
+    } else if script_path.exists() {
+        Some(std::fs::read(&script_path).context("Failed to read script")?)
+    } else {
+        None
+    };
+    if let Some(script_data) = script_data {
         on_progress(&FlashProgress::info("Script", 80.0, "Downloading script").with_region("script"));
         soc_download_file(&mut port, &mut parser, &mut sn, script_addr, &script_data, block_len, on_progress, "Script", 80.0, 95.0)?;
         on_progress(&FlashProgress::info("Script", 95.0, "Script OK").with_region("script"));

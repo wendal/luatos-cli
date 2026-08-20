@@ -44,11 +44,11 @@ pub async fn flash_run(
                 luatos_flash::xt804::flash_xt804(&soc_path, &port, on_progress, cancel).map_err(|e| format!("XT804 刷机失败: {e}"))?;
             }
             "air1601" | "air1602" | "ccm4211" => {
-                luatos_flash::ccm4211::flash_ccm4211(&soc_path, &port, &on_progress, cancel).map_err(|e| format!("CCM4211 刷机失败: {e}"))?;
+                luatos_flash::ccm4211::flash_ccm4211(&soc_path, &port, &on_progress, cancel, None).map_err(|e| format!("CCM4211 刷机失败: {e}"))?;
             }
             "ec7xx" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" => {
                 let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(&port), &on_progress).map_err(|e| format!("EC718 进入下载模式失败: {e}"))?;
-                luatos_flash::ec718::flash_ec718(&soc_path, &boot_port, &on_progress, cancel).map_err(|e| format!("EC718 刷机失败: {e}"))?;
+                luatos_flash::ec718::flash_ec718(&soc_path, &boot_port, &on_progress, cancel, None).map_err(|e| format!("EC718 刷机失败: {e}"))?;
             }
             _ => {
                 return Err(format!("不支持的芯片类型: {chip}"));
