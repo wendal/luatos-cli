@@ -8,6 +8,7 @@ pub enum ChipFamily {
     Ccm4211,  // Air1601 / Air1602
     Ec718,    // Air8000 / Air780E* / EC7xx / EC618
     Sf32lb58, // SF32LB5x
+    Rda8910,  // Air724UG / UIS8910DM
     Air6201,  // 外置 SPI Flash
     Unknown,  // 未识别
 }
@@ -21,6 +22,7 @@ impl ChipFamily {
             "air1601" | "air1602" | "ccm4211" => ChipFamily::Ccm4211,
             "ec7xx" | "ec618" | "ec718" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" | "air780epv" | "air8000m" => ChipFamily::Ec718,
             "sf32lb58" | "sf32lb52" | "sf32lb55" | "sf32lb56" | "sf32lb57" => ChipFamily::Sf32lb58,
+            "uis8910" | "rda8910" | "air724ug" | "8910dm" => ChipFamily::Rda8910,
             "air6201" => ChipFamily::Air6201,
             _ => ChipFamily::Unknown,
         }
@@ -44,6 +46,7 @@ impl ChipFamily {
             ChipFamily::Ccm4211 => "ccm4211",
             ChipFamily::Ec718 => "ec7xx",
             ChipFamily::Sf32lb58 => "sf32lb58",
+            ChipFamily::Rda8910 => "rda8910",
             ChipFamily::Air6201 => "air6201",
             ChipFamily::Unknown => "unknown",
         }
@@ -83,6 +86,10 @@ mod tests {
         assert_eq!(ChipFamily::from_chip_type("air780epv"), ChipFamily::Ec718);
         assert_eq!(ChipFamily::from_chip_type("sf32lb58"), ChipFamily::Sf32lb58);
         assert_eq!(ChipFamily::from_chip_type("sf32lb52"), ChipFamily::Sf32lb58);
+        assert_eq!(ChipFamily::from_chip_type("uis8910"), ChipFamily::Rda8910);
+        assert_eq!(ChipFamily::from_chip_type("rda8910"), ChipFamily::Rda8910);
+        assert_eq!(ChipFamily::from_chip_type("air724ug"), ChipFamily::Rda8910);
+        assert_eq!(ChipFamily::from_chip_type("8910dm"), ChipFamily::Rda8910);
         assert_eq!(ChipFamily::from_chip_type("air6201"), ChipFamily::Air6201);
     }
 
@@ -115,6 +122,7 @@ mod tests {
         assert!(!ChipFamily::Bk72xx.uses_binary_log());
         assert!(!ChipFamily::Xt804.uses_binary_log());
         assert!(!ChipFamily::Sf32lb58.uses_binary_log());
+        assert!(!ChipFamily::Rda8910.uses_binary_log());
         assert!(!ChipFamily::Air6201.uses_binary_log());
         assert!(!ChipFamily::Unknown.uses_binary_log());
     }
@@ -126,6 +134,7 @@ mod tests {
         assert_eq!(ChipFamily::Ec718.to_string(), "ec7xx");
         assert_eq!(ChipFamily::Unknown.to_string(), "unknown");
         assert_eq!(ChipFamily::Sf32lb58.to_string(), "sf32lb58");
+        assert_eq!(ChipFamily::Rda8910.to_string(), "rda8910");
     }
 
     /// family() 基于 chip.chip_type 归一化。

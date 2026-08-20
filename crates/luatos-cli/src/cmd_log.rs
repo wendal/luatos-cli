@@ -25,55 +25,100 @@ pub fn cmd_log_view(port: &str, baud: u32, smart: bool, reset: &ResetArgs, forma
         stop_clone.store(true, std::sync::atomic::Ordering::Relaxed);
     });
 
-    // RTS 复位脉冲：先复位模组再开始采集，以捕获开机日志
-    reset.execute(port)?;
+    // --port auto：自动探测 RDA8910 运行模式 log 口（按 VID/PID + 接口号，对齐 ec7xx）
+    let actual_port = if port == "auto" {
+        match luatos_flash::rda8910::find_rda8910_log_port() {
+            Some(p) => {
+                event::emit_message(format, "log.view", MessageLevel::Info, format!("Auto-detected RDA8910 log port: {p}"))?;
+                p
+            }
+            None => {
+                anyhow::bail!(
+                    "No RDA8910 log port found. Ensure the module is running (not in boot mode).\n\
+                     Try specifying the port manually with --port COMx"
+                );
+            }
+        }
+    } else {
+        port.to_string()
+    };
 
-    event::emit_message(format, "log.view", MessageLevel::Info, format!("Viewing log on {port} @ {baud} bps (Ctrl+C to stop)"))?;
+    // RTS 复位脉冲：先复位模组再开始采集，以捕获开机日志
+    reset.execute(&actual_port)?;
+
+    event::emit_message(
+        format,
+        "log.view",
+        MessageLevel::Info,
+        format!("Viewing log on {actual_port} @ {baud} bps (Ctrl+C to stop)"),
+    )?;
     if smart {
         event::emit_message(format, "log.view", MessageLevel::Info, "🧠 智能分析已启用")?;
     }
 
-    let dispatcher = luatos_log::LogDispatcher::default_parsers();
     let format_clone = *format;
-    let analyzer = if smart {
-        Some(std::sync::Mutex::new(luatos_log::smart::SmartAnalyzer::new()))
-    } else {
-        None
-    };
 
-    luatos_serial::stream_log_lines(
-        port,
-        baud,
-        stop,
-        Box::new(move |line| {
-            let entry = dispatcher.parse(line);
-            if let Err(e) = event::emit_log_entry(&format_clone, "log.view", &entry) {
-                log::warn!("输出日志事件失败: {e}");
-            }
-            if let Some(ref analyzer) = analyzer {
-                if let Ok(mut a) = analyzer.lock() {
-                    let diags = a.analyze(&entry);
-                    for diag in &diags {
-                        match format_clone {
-                            OutputFormat::Text => {
-                                eprintln!("\n{}\n", luatos_log::smart::format_diagnostic(diag));
-                            }
-                            OutputFormat::Json | OutputFormat::Jsonl => {
-                                let _ = event::emit_jsonl_event(
-                                    &format_clone,
-                                    serde_json::json!({
-                                        "type": "diagnostic",
-                                        "command": "log.view",
-                                        "diagnostic": diag,
-                                    }),
-                                );
+    if luatos_flash::rda8910::is_running_port_name(&actual_port) {
+        // RDA8910：x.6 soc_log 口为二进制 host trace，需 DTR/RTS 拉高才有数据流 + 行提取
+        // （对齐 luatools_py3 用 common_log.dll pyAnalyzeHost 解码的行为）
+        let rda_decoder = std::sync::Mutex::new(luatos_log::Rda8910LogDecoder::new());
+        luatos_serial::stream_binary(
+            &actual_port,
+            baud,
+            stop,
+            Box::new(move |data| {
+                if let Ok(mut dec) = rda_decoder.lock() {
+                    for entry in dec.feed(data) {
+                        if let Err(e) = event::emit_log_entry(&format_clone, "log.view", &entry) {
+                            log::warn!("输出日志事件失败: {e}");
+                        }
+                    }
+                }
+            }),
+            None,
+            true, // RDA8910 log 口需要 DTR/RTS 拉高
+        )?;
+    } else {
+        let dispatcher = luatos_log::LogDispatcher::default_parsers();
+        let analyzer = if smart {
+            Some(std::sync::Mutex::new(luatos_log::smart::SmartAnalyzer::new()))
+        } else {
+            None
+        };
+        luatos_serial::stream_log_lines(
+            &actual_port,
+            baud,
+            stop,
+            Box::new(move |line| {
+                let entry = dispatcher.parse(line);
+                if let Err(e) = event::emit_log_entry(&format_clone, "log.view", &entry) {
+                    log::warn!("输出日志事件失败: {e}");
+                }
+                if let Some(ref analyzer) = analyzer {
+                    if let Ok(mut a) = analyzer.lock() {
+                        let diags = a.analyze(&entry);
+                        for diag in &diags {
+                            match format_clone {
+                                OutputFormat::Text => {
+                                    eprintln!("\n{}\n", luatos_log::smart::format_diagnostic(diag));
+                                }
+                                OutputFormat::Json | OutputFormat::Jsonl => {
+                                    let _ = event::emit_jsonl_event(
+                                        &format_clone,
+                                        serde_json::json!({
+                                            "type": "diagnostic",
+                                            "command": "log.view",
+                                            "diagnostic": diag,
+                                        }),
+                                    );
+                                }
                             }
                         }
                     }
                 }
-            }
-        }),
-    )?;
+            }),
+        )?;
+    }
 
     event::emit_message(format, "log.view", MessageLevel::Info, "Log viewing stopped.")?;
     Ok(())

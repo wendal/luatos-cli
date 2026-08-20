@@ -50,6 +50,14 @@ const GUIDES: &[ModelGuide] = &[
         log_example: "luatos-cli log view --port COM13 --baud 1000000",
         docs_path: "docs\\models\\sf32lb58.md",
     },
+    ModelGuide {
+        key: "air724ug",
+        aliases: &["air724ug", "uis8910", "rda8910"],
+        description: "Air724UG/UIS8910DM（文本日志，开发刷机仅 AP/PS/LUA）",
+        flash_example: "luatos-cli flash run --soc firmware.soc --port COM12",
+        log_example: "luatos-cli log view --port COM12 --baud 921600",
+        docs_path: "docs\\models\\air724ug.md",
+    },
 ];
 
 fn normalize(input: &str) -> String {

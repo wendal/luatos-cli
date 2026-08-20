@@ -4,6 +4,7 @@
 //   - BK7258 (Air8101): native UART ISP protocol
 //   - XT804 (Air6208/Air101): XMODEM-1K flash protocol
 //   - CCM4211 (Air1601/Air1602): ISP + SOC framed download protocol
+//   - RDA8910 (Air724UG/UIS8910DM): FDL1/FDL2 staged download protocol
 //   - Air6201: external SPI flash UART protocol
 
 pub mod air6201;
@@ -11,6 +12,7 @@ pub mod bk7258;
 pub mod ccm4211;
 pub mod device;
 pub mod ec718;
+pub mod rda8910;
 pub mod sf32lb5x;
 pub mod xt804;
 

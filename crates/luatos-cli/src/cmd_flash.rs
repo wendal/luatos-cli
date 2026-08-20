@@ -57,9 +57,16 @@ fn tail_log_after_flash(soc: &str, port: &str, timeout_secs: u64, format: &Outpu
     let info = luatos_soc::read_soc_info(soc)?;
     let chip = info.chip.chip_type.as_str();
     let (use_binary_log, is_ec718, log_baud) = cmd_log::resolve_log_mode(chip, info.log_baud_rate());
+    let is_rda8910 = info.family() == ChipFamily::Rda8910;
 
     let log_port: String = if is_ec718 {
         match luatos_flash::ec718::wait_for_log_port(15) {
+            Some(p) => p,
+            None => port.to_string(),
+        }
+    } else if is_rda8910 {
+        // RDA8910 刷完后重启枚举为运行口，需等待其 log 口重新出现（下载口随后消失）
+        match luatos_flash::rda8910::wait_for_rda8910_log_port(15) {
             Some(p) => p,
             None => port.to_string(),
         }
@@ -109,6 +116,24 @@ fn tail_log_after_flash(soc: &str, port: &str, timeout_secs: u64, format: &Outpu
             init_data.as_deref(),
             is_ec718,
         )?;
+    } else if is_rda8910 {
+        // RDA8910：x.6 soc_log 口为二进制 host trace，需 DTR/RTS 拉高才有数据流 + 行提取
+        let rda_decoder = std::sync::Mutex::new(luatos_log::Rda8910LogDecoder::new());
+        let fmt = *format;
+        luatos_serial::stream_binary(
+            &log_port,
+            log_baud,
+            stop,
+            Box::new(move |data| {
+                if let Ok(mut dec) = rda_decoder.lock() {
+                    for entry in dec.feed(data) {
+                        let _ = event::emit_log_entry(&fmt, "flash.run.tail", &entry);
+                    }
+                }
+            }),
+            None,
+            true, // RDA8910 log 口需要 DTR/RTS 拉高
+        )?;
     } else {
         let dispatcher = luatos_log::LogDispatcher::default_parsers();
         let fmt = *format;
@@ -145,7 +170,7 @@ fn install_cancel_handler(format: &OutputFormat, command: &str, cancel: &std::sy
 fn family_flash_supported(family: ChipFamily) -> bool {
     matches!(
         family,
-        ChipFamily::Bk72xx | ChipFamily::Xt804 | ChipFamily::Ccm4211 | ChipFamily::Ec718 | ChipFamily::Sf32lb58
+        ChipFamily::Bk72xx | ChipFamily::Xt804 | ChipFamily::Ccm4211 | ChipFamily::Ec718 | ChipFamily::Sf32lb58 | ChipFamily::Rda8910
     )
 }
 
@@ -176,7 +201,7 @@ pub fn cmd_flash_run(
 
     if !family_flash_supported(family) {
         anyhow::bail!(
-            "Unsupported chip type: {}. Supported: bk72xx, air6208, air101, air1601, air1602, ec7xx",
+            "Unsupported chip type: {}. Supported: bk72xx, air6208, air101, air1601, air1602, ec7xx, uis8910",
             info.chip.chip_type
         );
     }
@@ -241,6 +266,22 @@ pub fn cmd_flash_run(
             match format {
                 OutputFormat::Text => {
                     println!("SF32LB58 flash completed successfully.");
+                }
+                OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": family.name() }))?,
+            }
+        }
+        ChipFamily::Rda8910 => {
+            // --port auto 支持：自动探测下载口（SPRD U2S Diag, VID 0525:PID a4a7）
+            let boot_port = luatos_flash::rda8910::auto_enter_boot_mode(Some(port), &on_progress)?;
+            // --script 覆盖：全量刷机时把用户脚本写入 LUA 分区（与 EC718/CCM4211 行为一致）
+            let overlay = build_script_overlay(script_folders, &info)?;
+            if overlay.is_some() {
+                event::emit_message(format, "flash.run", MessageLevel::Info, "Applying script overlay from --script folders...")?;
+            }
+            luatos_flash::rda8910::flash_rda8910(soc, &boot_port, &on_progress, cancel, overlay.as_deref())?;
+            match format {
+                OutputFormat::Text => {
+                    println!("RDA8910 flash completed successfully.");
                 }
                 OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": family.name() }))?,
             }
@@ -394,6 +435,21 @@ pub fn cmd_flash_partition(
                 anyhow::bail!("SF32LB58 {op} 暂不支持，请手动使用 ImgDownUart 或其他工具操作分区");
             }
             _ => unreachable!(),
+        },
+        ChipFamily::Rda8910 => match op {
+            "script" => {
+                let folders = script_folders.expect("script folder required");
+                let script_data = build_script_image_checked(folders, &info)?;
+                // --port auto 支持：自动探测下载口（SPRD U2S Diag, VID 0525:PID a4a7）
+                let boot_port = luatos_flash::rda8910::auto_enter_boot_mode(Some(port), &on_progress)?;
+                luatos_flash::rda8910::flash_script_rda8910(soc, &boot_port, &script_data, &on_progress, cancel)?;
+            }
+            _ => {
+                anyhow::bail!(
+                    "RDA8910 only supports 'script' partition operation currently. \
+                     Use 'flash run' for full firmware flash."
+                );
+            }
         },
         ChipFamily::Unknown | ChipFamily::Air6201 => {
             anyhow::bail!("Unsupported chip type: {}", info.chip.chip_type);
@@ -586,7 +642,7 @@ pub fn cmd_flash_test(
             luatos_flash::ec718::flash_ec718(soc, &boot_port, &on_progress2, cancel.clone(), overlay.as_deref())?;
             Vec::new()
         }
-        ChipFamily::Unknown | ChipFamily::Air6201 | ChipFamily::Sf32lb58 => {
+        ChipFamily::Unknown | ChipFamily::Air6201 | ChipFamily::Sf32lb58 | ChipFamily::Rda8910 => {
             anyhow::bail!("Unsupported chip type for flash test: {}", info.chip.chip_type);
         }
     };
@@ -916,6 +972,7 @@ mod tests {
         assert!(family_flash_supported(ChipFamily::Ccm4211));
         assert!(family_flash_supported(ChipFamily::Ec718));
         assert!(family_flash_supported(ChipFamily::Sf32lb58));
+        assert!(family_flash_supported(ChipFamily::Rda8910));
         assert!(!family_flash_supported(ChipFamily::Air6201));
         assert!(!family_flash_supported(ChipFamily::Unknown));
     }

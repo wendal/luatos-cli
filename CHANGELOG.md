@@ -8,9 +8,18 @@ All notable changes to this project will be documented in this file.
 
 - `flash run --script` / `flash test --script` 在 **EC718** 与 **CCM4211** 上会覆盖 SOC 包内的 `script.bin`（此前参数会被静默忽略，设备仍跑固件自带脚本）
 
+#### 新增芯片支持（RDA8910 / Air724UG）
+
+- 新增 `luatos_flash::rda8910` 模块：支持 Air724UG（UIS8910DM / RDA8910）分级下载刷机（ROM → FDL1 → FDL2 → Flash 分区），含 HDLC 帧/转义、ROM 阶段 CRC16 与 FDL 阶段 CheckSum 双校验算法、PAC 私有固件包解析（magic `0xFFFAFFFA`）
+- `luatos-soc` 新增 `ChipFamily::Rda8910` 族（`uis8910` / `rda8910` / `air724ug` / `8910dm`）
+- `flash run` / `flash script` 支持 rda8910 族；`flash run --script` 会覆盖 PAC 内 LUA 分区（与 EC718/CCM4211 一致）；`flash test` 与 FOTA 明确提示暂不支持
+- 提供 `load_fdl2_only` 调试接口 + `#[ignore]` 硬件测试：仅加载 FDL1/FDL2 到 RAM 并复位（不写 Flash 分区），可安全反复验证下载链路而不触碰 modem/factory 等关键分区
+- `log view --port auto` 与 `flash run --tail-log-secs` 支持自动识别 RDA8910 运行模式 log 口（按 VID/PID + USB 接口号：0x4d11→x.6、0x4e00→x.2，对齐 luatools_py3 端口表；接口信息缺失时降级 AT 行为探测）；刷机后等待 log 口重新枚举再抓启动日志
+- 新增协议文档 `docs/rda-flash-protocol.md`
+
 #### 芯片族统一建模（ChipFamily）
 
-- 新增 `luatos_soc::ChipFamily` 枚举（Bk72xx/Xt804/Ccm4211/Ec718/Sf32lb58/Air6201/Unknown），`SocInfo::family()` 提供归一化映射；刷机/日志/FOTA/设备控制的分发点全部收敛到该枚举，消除各模块芯片字符串匹配不一致（如 `air8000m` 此前仅 device/量产 GUI 支持、CLI 刷机会报不支持，现已统一归入 EC718 家族）
+- 新增 `luatos_soc::ChipFamily` 枚举（Bk72xx/Xt804/Ccm4211/Ec718/Sf32lb58/Rda8910/Air6201/Unknown），`SocInfo::family()` 提供归一化映射；刷机/日志/FOTA/设备控制的分发点全部收敛到该枚举，消除各模块芯片字符串匹配不一致（如 `air8000m` 此前仅 device/量产 GUI 支持、CLI 刷机会报不支持，现已统一归入 EC718 家族）
 
 #### FOTA
 

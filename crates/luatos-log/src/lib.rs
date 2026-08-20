@@ -1022,6 +1022,137 @@ impl Default for Ec718LogDecoder {
     }
 }
 
+// ─── RDA8910 host trace decoder ───────────────────────────────────────────────
+
+/// 从 RDA8910 (Air724UG) 运行模式 x.6 soc_log 口的二进制 host trace 流中提取 Lua 日志行。
+///
+/// UNISOC-8910 的 host trace 把"已格式化的 Lua 日志行"作为字符串参数内联在二进制流里
+/// （luatools_py3 用 common_log.dll 的 `pyAnalyzeHost` 解码）。真机抓包显示日志行以
+/// `D/` `I/` `W/` `E/` + 模块名开头、以不可打印字节收尾，例如：
+///
+/// ```text
+/// ...二进制... :%.*s>> ...D/user.adc adc0 -1...二进制...
+/// ...二进制... :%.*s>> ...I/user.adc CPU TEMP 29960 单位0.001摄氏度...二进制...
+/// ```
+///
+/// 因此本解码器不解析 trace 帧协议本身，而是按 `[DIWE]/` 标记 + 可打印 UTF-8 连续段
+/// 提取日志行（跳过 CFW_GetRFTemperature / nd6_tmr 等其它 trace 事件的可读碎串）。
+pub struct Rda8910LogDecoder {
+    /// 跨 feed 累积的原始字节（保留尾部供跨块标记续接）。
+    buf: Vec<u8>,
+}
+
+impl Rda8910LogDecoder {
+    pub fn new() -> Self {
+        Self { buf: Vec::with_capacity(8192) }
+    }
+
+    /// Feed 原始字节，返回从中提取出的完整日志行条目。
+    pub fn feed(&mut self, data: &[u8]) -> Vec<LogEntry> {
+        self.buf.extend_from_slice(data);
+        let mut entries = Vec::new();
+
+        // 防失控：缓冲区过长说明长时间无有效标记，只留尾部继续找。
+        const HARD_CAP: usize = 256 * 1024;
+        if self.buf.len() > HARD_CAP {
+            const KEEP: usize = 4096;
+            self.buf = self.buf[self.buf.len() - KEEP..].to_vec();
+            return entries;
+        }
+
+        let n = self.buf.len();
+        let mut i = 0usize;
+        let mut drain_to = 0usize; // 已确认消费掉的字节数
+        while i + 2 < n {
+            let b = self.buf[i];
+            if (b == b'D' || b == b'I' || b == b'W' || b == b'E') && self.buf[i + 1] == b'/' {
+                match extract_printable_run(&self.buf, i) {
+                    Some((end, text)) => {
+                        let (level, module, body) = parse_level_prefix(&text);
+                        if let Some(module) = module {
+                            if !module.is_empty() {
+                                entries.push(LogEntry {
+                                    timestamp: cached_local_timestamp(),
+                                    device_time: None,
+                                    level,
+                                    module: Some(module),
+                                    message: body,
+                                    raw: text,
+                                });
+                            }
+                        }
+                        drain_to = end;
+                        i = end;
+                        continue;
+                    }
+                    None => {
+                        // 日志行延伸至缓冲区末尾（多字节 UTF-8 未到齐）→ 等下一批数据，先停。
+                        break;
+                    }
+                }
+            } else {
+                i += 1;
+            }
+        }
+
+        // 丢弃已消费部分，保留未处理的尾部（含可能跨块断开的标记）。
+        if drain_to > 0 {
+            self.buf.drain(..drain_to);
+        }
+        entries
+    }
+}
+
+impl Default for Rda8910LogDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// 从 `start` 起截取一段可打印 UTF-8 连续段（ASCII 可打印 + 合法多字节字符），
+/// 到首个不可打印字节或缓冲区末尾为止。多字节字符在缓冲区末尾被截断时返回 None
+/// （等待下一批数据补齐），避免把半个字符当成边界。
+fn extract_printable_run(buf: &[u8], start: usize) -> Option<(usize, String)> {
+    let n = buf.len();
+    let mut i = start;
+    let mut out = Vec::with_capacity(64);
+    while i < n {
+        let b = buf[i];
+        if (0x20..=0x7E).contains(&b) {
+            out.push(b);
+            i += 1;
+            continue;
+        }
+        if b == b'\n' || b == b'\r' || b == 0 || b < 0x20 || b == 0x7F {
+            break; // 控制字符 → 段结束
+        }
+        // 多字节 UTF-8
+        let len = match b {
+            0xC2..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            0xF0..=0xF4 => 4,
+            _ => 0, // 孤立续字节 / 非法 → 段结束
+        };
+        if len == 0 {
+            break;
+        }
+        if i + len > n {
+            return None; // 字符未收齐，等下一批
+        }
+        let seq = &buf[i..i + len];
+        if !seq[1..].iter().all(|&c| (0x80..=0xBF).contains(&c)) {
+            break;
+        }
+        out.extend_from_slice(seq);
+        i += len;
+    }
+    if out.is_empty() {
+        return None;
+    }
+    let s = String::from_utf8(out).ok()?;
+    Some((i, s))
+}
+
 /// Decode printf format string with length-prefixed string arguments (EC718 variant).
 fn decode_ec718_printf(body: &[u8]) -> String {
     if body.is_empty() {
@@ -1631,6 +1762,55 @@ mod tests {
         assert_eq!(entries[0].message, "msg0");
         assert_eq!(entries[1].message, "msg1");
         assert_eq!(entries[2].message, "msg2");
+    }
+
+    // ─── Rda8910LogDecoder tests ───────────────────────────
+
+    /// 模拟真机抓包：二进制 host trace 中夹带 `:%.*s>>` 模板与 `[DIWE]/模块 消息` 日志行，
+    /// 以及 CFW_GetRFTemperature / nd6_tmr 等无关可读碎串。
+    fn rda_mock_chunk() -> Vec<u8> {
+        let mut d = Vec::new();
+        d.extend_from_slice(b"\x80\x10\x23\xc0 :%.*s>> \x00\x80D/user.adc adc0 -1\x1a\x9c");
+        d.extend_from_slice(
+            b"\x81\x11CFW_GetRFTemperature\x12\x9d :%.*s>> \x01\x90I/user.adc CPU TEMP 29960 \xe5\x8d\x95\xe4\xbd\x8d0.001\xe6\x91\x84\xe6\xb0\x8f\xe5\xba\xa6\xf0\xff",
+        );
+        d.extend_from_slice(b"\x82\x12nd6_tmr\x0e\xa1 :%.*s>> \x02\x91W/user.net reconnect\x09\xaa");
+        d
+    }
+
+    #[test]
+    fn rda8910_decoder_extracts_log_lines_and_skips_junk() {
+        let mut decoder = Rda8910LogDecoder::new();
+        let entries = decoder.feed(&rda_mock_chunk());
+        assert_eq!(entries.len(), 3, "应提取 3 条日志行");
+        assert_eq!(entries[0].module.as_deref(), Some("user.adc"));
+        assert_eq!(entries[0].level, LogLevel::Debug);
+        assert_eq!(entries[0].message, "adc0 -1");
+        assert_eq!(entries[1].module.as_deref(), Some("user.adc"));
+        assert_eq!(entries[1].level, LogLevel::Info);
+        assert_eq!(entries[1].message, "CPU TEMP 29960 单位0.001摄氏度");
+        assert_eq!(entries[2].module.as_deref(), Some("user.net"));
+        assert_eq!(entries[2].level, LogLevel::Warn);
+        assert_eq!(entries[2].message, "reconnect");
+    }
+
+    #[test]
+    fn rda8910_decoder_handles_chunk_boundary_split_marker() {
+        let mut decoder = Rda8910LogDecoder::new();
+        let data = rda_mock_chunk();
+        // 把数据切成两半喂入，日志行标记跨块时也能拼出完整行
+        let mid = data.len() / 2;
+        let mut first = decoder.feed(&data[..mid]);
+        first.extend(decoder.feed(&data[mid..]));
+        assert_eq!(first.len(), 3, "分块喂入后仍应提取 3 条日志行");
+        assert_eq!(first[0].module.as_deref(), Some("user.adc"));
+    }
+
+    #[test]
+    fn rda8910_decoder_ignores_noise_without_marker() {
+        let mut decoder = Rda8910LogDecoder::new();
+        let entries = decoder.feed(b"\x80\x81\x82 CFW_GetRFTemperature nd6_tmr \xff\xfe");
+        assert!(entries.is_empty(), "无可读日志标记时不应产出条目");
     }
 
     #[test]

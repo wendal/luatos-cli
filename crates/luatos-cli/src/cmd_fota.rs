@@ -743,8 +743,8 @@ pub fn cmd_fota_build(
             print_result(format, chip, new_soc, old_soc, &outputs)?;
         }
 
-        // 其余族（Sf32lb58 / Air6201 / Unknown）不支持 FOTA，错误文案保留原样
-        ChipFamily::Sf32lb58 | ChipFamily::Air6201 | ChipFamily::Unknown => bail!(
+        // 其余族（Sf32lb58 / Rda8910 / Air6201 / Unknown）不支持 FOTA
+        ChipFamily::Sf32lb58 | ChipFamily::Rda8910 | ChipFamily::Air6201 | ChipFamily::Unknown => bail!(
             "FOTA not supported for chip '{chip}'. \
              Supported: EC7xx/EC618/Air8000 (differential), Air1601/Air1602/CCM4211 (full or --script-only), Air8101/BK72XX (new-format full or --script-only), Air6208/XT804 (full)."
         ),
