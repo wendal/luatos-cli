@@ -16,6 +16,7 @@ All notable changes to this project will be documented in this file.
 - 提供 `load_fdl2_only` 调试接口 + `#[ignore]` 硬件测试：仅加载 FDL1/FDL2 到 RAM 并复位（不写 Flash 分区），可安全反复验证下载链路而不触碰 modem/factory 等关键分区
 - `log view --port auto` 与 `flash run --tail-log-secs` 支持自动识别 RDA8910 运行模式 log 口（按 VID/PID + USB 接口号：0x4d11→x.6、0x4e00→x.2，对齐 luatools_py3 端口表；接口信息缺失时降级 AT 行为探测）；刷机后等待 log 口重新枚举再抓启动日志
 - 新增协议文档 `docs/rda-flash-protocol.md`
+- **修复 RDA8910 log 口日志解码**：`Rda8910LogDecoder` 此前只做可打印段提取，C 侧 `LLOGx(fmt, ...)` 日志的格式串参数（`%s`/`%ld`/`%x` 等）被整体丢弃，导致 `I/main LuatOS@%s base %s bsp %s 64bit` 这类开机日志只显示格式串字面量。现按 `luatos-sdk-rda8910` `osi_log.c` 的参数编码（`%s`→NUL 结尾 4 对齐字符串、整型→u32 LE、`%lld`/double→8 字节 LE）消费帧内二进制参数并做 printf 替换；新增传输层反转义（`5c ee/ec/a3` → `0x11`/`0x13`/`0x5c`，对齐 luatools_py3 `host_device.handle_data`）；过滤两类**不会误伤真实日志**的假阳性 `[DIWE]/` 标记：落在帧二进制 `sn/tick/tag` 头部的、以及落在 **fmtid 型帧**（tag 最高位 `TRACE_TDB_FLAG` 置位 + level≤5 + 字符可打印，帧内仅 fmtid+原始 u32 参数，如 CFW 组件的 `I/mCFW_GprsGetstatus`）参数里的
 
 #### 芯片族统一建模（ChipFamily）
 

@@ -1026,49 +1026,81 @@ impl Default for Ec718LogDecoder {
 
 /// 从 RDA8910 (Air724UG) 运行模式 x.6 soc_log 口的二进制 host trace 流中提取 Lua 日志行。
 ///
-/// UNISOC-8910 的 host trace 把"已格式化的 Lua 日志行"作为字符串参数内联在二进制流里
-/// （luatools_py3 用 common_log.dll 的 `pyAnalyzeHost` 解码）。真机抓包显示日志行以
-/// `D/` `I/` `W/` `E/` + 模块名开头、以不可打印字节收尾，例如：
+/// 传输层编码对齐 luatools_py3 `host_device.handle_data`：剥除裸 `0x11`/`0x13`
+/// （XON/XOFF 流控），并反转义 `5c ee`→`0x11`、`5c ec`→`0x13`、`5c a3`→`0x5c`。
 ///
-/// ```text
-/// ...二进制... :%.*s>> ...D/user.adc adc0 -1...二进制...
-/// ...二进制... :%.*s>> ...I/user.adc CPU TEMP 29960 单位0.001摄氏度...二进制...
-/// ```
+/// 日志事件帧（见 luatos-sdk-rda8910 `osi_log.c` `osiTraceVprintf`/`prvFillTraceHeader`）：
+/// `[0xAD][len_msb][len_lsb][0x98][sn:u16][tick:u16][tag:u32][fmt: NUL + 4 对齐][args...]`，
+/// tag 高 4 位为日志级别（0=NEVER..5=VERBOSE），低 28 位为 4 个 7 位 ASCII 模块字符。
 ///
-/// 因此本解码器不解析 trace 帧协议本身，而是按 `[DIWE]/` 标记 + 可打印 UTF-8 连续段
-/// 提取日志行（跳过 CFW_GetRFTemperature / nd6_tmr 等其它 trace 事件的可读碎串）。
+/// C 侧 `LLOGx("tag", fmt, ...)` 把完整行文本（含 `I/main ` 前缀）作为格式串、参数
+/// 分别序列化（`prvStrParamBuf`），参数编码：
+///   %s          → 字符串内容 + NUL，随后按 4 字节对齐（无长度前缀）
+///   %d/%u/%x/%o/%c/%p → u32 LE（%h/%hh 按 C 变参提升仍占 4 字节）
+///   %lld        → u64 LE；%f/%g/%e/%a(double) → f64 LE（8 字节）
+/// Lua 侧 `log.info()` 经 `print()` 已格式化为完整文本，作为 `%s` 参数内联在
+/// `:%.*s>> ` 包装事件中，无需再次解析。
+///
+/// 因此本解码器按 `[DIWE]/` 标记定位日志行；当标记恰好位于某 trace 帧的格式串起点时
+/// 判定为 C 侧日志并消费其后的二进制参数做 printf 替换，否则视为已格式化文本原样输出。
+/// 真机抓包中日志行以 `D/` `I/` `W/` `E/` + 模块名开头，例如
+/// `I/main LuatOS@%s base %s bsp %s 64bit`。
 pub struct Rda8910LogDecoder {
-    /// 跨 feed 累积的原始字节（保留尾部供跨块标记续接）。
+    /// 已反转义的干净字节缓冲（跨 feed 累积，保留尾部供跨块标记续接）。
     buf: Vec<u8>,
+    /// 上一批末尾遗留的裸 `0x5c`（可能是反转义前缀，等下一批补齐）。
+    pending: Vec<u8>,
 }
 
 impl Rda8910LogDecoder {
     pub fn new() -> Self {
-        Self { buf: Vec::with_capacity(8192) }
+        Self {
+            buf: Vec::with_capacity(8192),
+            pending: Vec::with_capacity(2),
+        }
     }
 
     /// Feed 原始字节，返回从中提取出的完整日志行条目。
     pub fn feed(&mut self, data: &[u8]) -> Vec<LogEntry> {
-        self.buf.extend_from_slice(data);
-        let mut entries = Vec::new();
+        // 合并本批数据与上批遗留的未定字节（末尾 0x5c 可能为反转义前缀）。
+        let mut combined = Vec::with_capacity(self.pending.len() + data.len());
+        combined.extend_from_slice(&self.pending);
+        combined.extend_from_slice(data);
+        self.pending.clear();
+
+        // 末尾是 0x5c 时可能是 `5c ee/ec/a3` 转义对的前缀，等下一批再反转义。
+        if combined.last() == Some(&0x5c) {
+            self.pending = combined;
+            return Vec::new();
+        }
+
+        // 反转义并追加到干净缓冲。
+        self.buf.extend_from_slice(&unescape_rda8910(&combined));
 
         // 防失控：缓冲区过长说明长时间无有效标记，只留尾部继续找。
         const HARD_CAP: usize = 256 * 1024;
         if self.buf.len() > HARD_CAP {
             const KEEP: usize = 4096;
             self.buf = self.buf[self.buf.len() - KEEP..].to_vec();
-            return entries;
+            return Vec::new();
         }
 
         let n = self.buf.len();
         let mut i = 0usize;
         let mut drain_to = 0usize; // 已确认消费掉的字节数
+        let mut entries = Vec::new();
         while i + 2 < n {
             let b = self.buf[i];
             if (b == b'D' || b == b'I' || b == b'W' || b == b'E') && self.buf[i + 1] == b'/' {
-                match extract_printable_run(&self.buf, i) {
-                    Some((end, text)) => {
-                        let (level, module, body) = parse_level_prefix(&text);
+                // `[DIWE]/` 落在某帧的二进制头部（sn/tick/tag）内、或 fmtid 型帧的
+                // 二进制参数里（如 `I/mCFW_GprsGetstatus`）都是假阳性。
+                if is_in_frame_header(&self.buf, i) || is_in_fmtid_frame(&self.buf, i) {
+                    i += 1;
+                    continue;
+                }
+                match self.extract_line(&self.buf, i) {
+                    Some((end, message)) => {
+                        let (level, module, body) = parse_level_prefix(&message);
                         if let Some(module) = module {
                             if !module.is_empty() {
                                 entries.push(LogEntry {
@@ -1077,7 +1109,7 @@ impl Rda8910LogDecoder {
                                     level,
                                     module: Some(module),
                                     message: body,
-                                    raw: text,
+                                    raw: message,
                                 });
                             }
                         }
@@ -1086,7 +1118,7 @@ impl Rda8910LogDecoder {
                         continue;
                     }
                     None => {
-                        // 日志行延伸至缓冲区末尾（多字节 UTF-8 未到齐）→ 等下一批数据，先停。
+                        // 行未收齐（格式串 / 多字节 UTF-8 延伸至缓冲区末尾）→ 等下一批数据。
                         break;
                     }
                 }
@@ -1101,12 +1133,280 @@ impl Rda8910LogDecoder {
         }
         entries
     }
+
+    /// 从 `i`（`[DIWE]/` 标记处）提取一条完整日志行，返回 `(已消费字节数, 行文本)`。
+    ///
+    /// 若标记恰好是某 trace 帧的格式串起点（帧头 + sn/tick/tag 共 12 字节可回溯确认），
+    /// 说明是 C 侧 `LLOGx(fmt, ...)` 日志：按格式串消费其后的二进制参数并做 printf 替换；
+    /// 否则视为 Lua 侧已格式化的文本，原样返回可打印段。
+    fn extract_line(&self, buf: &[u8], i: usize) -> Option<(usize, String)> {
+        // 先取可打印段作为兜底文本（对未格式化的 Lua 文本已足够）。
+        let (run_end, run_text) = extract_printable_run(buf, i)?;
+
+        // 只有确认是 C 侧日志帧（标记位于格式串起点）时才做参数解码。
+        let Some((_, payload_end)) = trace_frame_region(buf, i) else {
+            return Some((run_end, run_text));
+        };
+        if payload_end > buf.len() {
+            // 帧未收齐：先按文本输出，避免误等导致整批停滞。
+            return Some((run_end, run_text));
+        }
+
+        // 格式串从标记延伸到 NUL（含行尾 \n），参数紧随其后。
+        let end_cap = (i + 2048).min(payload_end);
+        let nul = buf[i..end_cap].iter().position(|&b| b == 0).map(|d| i + d)?;
+        let fmt_bytes = &buf[i..nul];
+        let fmt = String::from_utf8_lossy(fmt_bytes);
+        if !fmt.contains('%') {
+            return Some((nul + 1, run_text));
+        }
+
+        // 参数区起点 = 格式串长度（含 NUL）按 4 对齐后的位置，且不超出帧负载。
+        let args_start = i + align4(fmt_bytes.len() + 1);
+        if args_start > payload_end {
+            return Some((nul + 1, run_text));
+        }
+        match decode_rda8910_printf(&fmt, &buf[args_start..payload_end]) {
+            Some((decoded, consumed)) => {
+                let decoded = decoded.trim_end_matches(['\n', '\r']).to_string();
+                if !decoded.trim().is_empty() && args_start + consumed <= payload_end {
+                    Some((args_start + consumed, decoded))
+                } else {
+                    Some((nul + 1, run_text))
+                }
+            }
+            _ => Some((nul + 1, run_text)),
+        }
+    }
 }
 
 impl Default for Rda8910LogDecoder {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// 回溯确认 `fmt_start` 处的 `[DIWE]/` 标记是否为某 host trace 帧的格式串起点。
+///
+/// 帧布局（`osiTraceHeader_t` host 变体）：
+/// `[0xAD][len_msb][len_lsb][0x98][sn:u16][tick:u16][tag:u32][fmt...]`，
+/// 即格式串起点前的第 12 字节为 `0xAD`、第 9 字节为 `0x98`，且 tag 高 4 位为合法日志级别、
+/// 低 28 位为 4 个可打印 ASCII 字符。Lua 侧消息（作为 `%s` 参数内联）不满足此布局。
+/// 返回 `(帧起点, 帧负载结束位置)`。
+fn trace_frame_region(buf: &[u8], fmt_start: usize) -> Option<(usize, usize)> {
+    if fmt_start < 12 || buf[fmt_start - 12] != 0xAD || buf[fmt_start - 9] != 0x98 {
+        return None;
+    }
+    let len = ((buf[fmt_start - 11] as usize) << 8) | buf[fmt_start - 10] as usize;
+    if len < 8 {
+        return None; // 负载过小，不可能是日志帧
+    }
+    let tag = u32::from_le_bytes(buf[fmt_start - 4..fmt_start].try_into().unwrap_or([0; 4]));
+    if tag >> 28 > 5 {
+        return None; // 日志级别非法
+    }
+    let chars = [(tag & 0x7F) as u8, ((tag >> 7) & 0x7F) as u8, ((tag >> 14) & 0x7F) as u8, ((tag >> 21) & 0x7F) as u8];
+    if !chars.iter().all(|&c| (0x20..=0x7E).contains(&c) || c == b' ') {
+        return None;
+    }
+    let frame_start = fmt_start - 12;
+    Some((frame_start, frame_start + 4 + len))
+}
+
+/// 判断 `i` 处的 `[DIWE]/` 标记是否落在某 host trace 帧的二进制头部（sn/tick/tag）内。
+///
+/// 帧头 `[0xAD][len_msb][len_lsb][0x98]` 之后紧跟 8 字节 `[sn:u16][tick:u16][tag:u32]`，
+/// 若标记位于其后 4..=11 字节处，说明它其实是二进制头部里偶然拼出的可打印串
+/// （如 sn=`I/` + tick=`mC` + tag=`FW_G` 恰好形成 `I/mCFW_GprsGetstatus`），应跳过；
+/// 真正的日志行标记要么在格式串起点（帧头 12 字节前），要么深埋在 `:%.*s>> ` 消息参数里。
+fn is_in_frame_header(buf: &[u8], i: usize) -> bool {
+    for k in 4..=11 {
+        if i >= k && buf[i - k] == 0xAD && buf[i - k + 3] == 0x98 {
+            // 校验长度字段合理，降低对真实日志行的误判。
+            let len = ((buf[i - k + 1] as usize) << 8) | buf[i - k + 2] as usize;
+            if (8..=8192).contains(&len) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// 判断 `i` 处的 `[DIWE]/` 标记是否落在某个 fmtid 型帧的二进制参数里。
+///
+/// fmtid 帧的 tag 最高位 `bit31` 置位（`TRACE_TDB_FLAG`，见 `osi_log.c` `prvTraceIdBasic`），
+/// 帧内没有内联格式串，只有 `[fmtid:u32] + 原始 u32 参数`。参数（如 `0x6D2F4987` 的字节
+/// `87 49 2f 6d` 拼出 `I/m`）里的可打印串是假阳性，应跳过。
+fn is_in_fmtid_frame(buf: &[u8], i: usize) -> bool {
+    // 向后找包围该标记的帧头 `0xAD len 0x98`；只有 tag 同时满足
+    //  bit31=TRACE_TDB_FLAG、level(bit28-30)<=5、4 个 7bit tag 字符可打印
+    //  才判定为 fmtid 帧。真实 Lua 日志帧的 tag 是 `(level<<28)|chars`（level 0~5），
+    //  bit31 恒为 0，不会被误判，因此本过滤不会丢掉真实日志行。
+    let lo = i.saturating_sub(2048);
+    let hi = i.saturating_sub(4);
+    for p in (lo..=hi).rev() {
+        if buf[p] == 0xAD && buf[p + 3] == 0x98 {
+            let len = ((buf[p + 1] as usize) << 8) | buf[p + 2] as usize;
+            let payload_end = p + 4 + len;
+            if len >= 8 && payload_end >= i && payload_end <= buf.len() {
+                let tag = u32::from_le_bytes(buf[p + 8..p + 12].try_into().unwrap_or([0; 4]));
+                if tag >> 31 != 1 {
+                    // 最近的包围帧不是 fmtid 帧（如真实 Lua 日志帧）→ 不构成假阳性。
+                    return false;
+                }
+                let level = (tag >> 28) & 0x7;
+                if level > 5 {
+                    continue;
+                }
+                let chars = [(tag & 0x7F) as u8, ((tag >> 7) & 0x7F) as u8, ((tag >> 14) & 0x7F) as u8, ((tag >> 21) & 0x7F) as u8];
+                if chars.iter().all(|&c| (0x20..=0x7E).contains(&c) || c == b' ') {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// 对齐 luatools_py3 `host_device.handle_data` 的 UART 反转义：
+/// `5c ee`→0x11、`5c ec`→0x13、`5c a3`→0x5c。调用方需保证输入末尾无未定的 `5c`。
+fn unescape_rda8910(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len());
+    let mut i = 0;
+    while i < data.len() {
+        if data[i] == 0x5c && i + 1 < data.len() {
+            match data[i + 1] {
+                0xee => {
+                    out.push(0x11);
+                    i += 2;
+                    continue;
+                }
+                0xec => {
+                    out.push(0x13);
+                    i += 2;
+                    continue;
+                }
+                0xa3 => {
+                    out.push(0x5c);
+                    i += 2;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        out.push(data[i]);
+        i += 1;
+    }
+    out
+}
+
+fn align4(x: usize) -> usize {
+    (x + 3) & !3
+}
+
+/// 按 RDA8910（luatos-sdk-rda8910 `osi_log.c` `prvStrParamBuf`）的参数编码解码 printf 格式串。
+/// 返回 `(替换后的文本, 已消费的参数字节数)`；遇到无法确定参数布局的格式符时返回 None，
+/// 避免参数错位。
+fn decode_rda8910_printf(fmt: &str, args: &[u8]) -> Option<(String, usize)> {
+    let mut result = String::with_capacity(fmt.len() + 16);
+    let mut pos = 0usize;
+    let mut chars = fmt.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            result.push(c);
+            continue;
+        }
+        let mut longs = 0u8;
+        let mut star = false;
+        let conv: char = loop {
+            match chars.peek().copied() {
+                Some('0'..='9') | Some('-') | Some('+') | Some(' ') | Some('#') | Some('.') => {
+                    chars.next();
+                }
+                Some('*') => {
+                    star = true;
+                    chars.next();
+                }
+                Some('h') | Some('z') | Some('t') | Some('j') | Some('L') => {
+                    chars.next();
+                }
+                Some('l') => {
+                    longs += 1;
+                    chars.next();
+                }
+                Some(c2 @ ('d' | 'i' | 'u' | 'x' | 'X' | 'o' | 'c' | 'p' | 's' | 'f' | 'g' | 'e' | 'a' | 'F' | 'G' | 'E' | 'A' | 'n' | '%')) => {
+                    chars.next();
+                    break c2;
+                }
+                Some(_) | None => return None, // 未知格式符 → 参数布局不定，放弃
+            }
+        };
+        if conv == '%' {
+            result.push('%');
+            continue;
+        }
+        if star {
+            // %*d / %.*s 等宽度/精度参数占位不明确，放弃整行解码避免错位。
+            return None;
+        }
+        match conv {
+            's' => {
+                // %s → NUL 结尾字符串，随后 4 字节对齐
+                let start = pos;
+                let mut end = start;
+                while end < args.len() && args[end] != 0 {
+                    end += 1;
+                }
+                if end >= args.len() {
+                    return None; // 未收齐，等下一批
+                }
+                result.push_str(&String::from_utf8_lossy(&args[start..end]));
+                pos = align4(end + 1);
+            }
+            'd' | 'i' | 'u' | 'x' | 'X' | 'o' | 'c' | 'p' => {
+                if longs >= 2 {
+                    if pos + 8 > args.len() {
+                        return None;
+                    }
+                    let raw = i64::from_le_bytes(args[pos..pos + 8].try_into().ok()?);
+                    pos += 8;
+                    match conv {
+                        'x' => result.push_str(&format!("{:x}", raw as u64)),
+                        'X' => result.push_str(&format!("{:X}", raw as u64)),
+                        'u' => result.push_str(&format!("{}", raw as u64)),
+                        _ => result.push_str(&format!("{raw}")),
+                    }
+                } else {
+                    if pos + 4 > args.len() {
+                        return None;
+                    }
+                    let raw = u32::from_le_bytes(args[pos..pos + 4].try_into().ok()?);
+                    pos += 4;
+                    match conv {
+                        'd' | 'i' => result.push_str(&format!("{}", raw as i32)),
+                        'u' => result.push_str(&format!("{raw}")),
+                        'x' => result.push_str(&format!("{raw:x}")),
+                        'X' => result.push_str(&format!("{raw:X}")),
+                        'o' => result.push_str(&format!("{raw:o}")),
+                        'c' => result.push(raw as u8 as char),
+                        'p' => result.push_str(&format!("0x{raw:08x}")),
+                        _ => {}
+                    }
+                }
+            }
+            'f' | 'g' | 'e' | 'a' | 'F' | 'G' | 'E' | 'A' => {
+                if pos + 8 > args.len() {
+                    return None;
+                }
+                let v = f64::from_le_bytes(args[pos..pos + 8].try_into().ok()?);
+                pos += 8;
+                result.push_str(&format!("{v}"));
+            }
+            'n' => return None,
+            _ => return None,
+        }
+    }
+    Some((result, pos))
 }
 
 /// 从 `start` 起截取一段可打印 UTF-8 连续段（ASCII 可打印 + 合法多字节字符），
@@ -1811,6 +2111,156 @@ mod tests {
         let mut decoder = Rda8910LogDecoder::new();
         let entries = decoder.feed(b"\x80\x81\x82 CFW_GetRFTemperature nd6_tmr \xff\xfe");
         assert!(entries.is_empty(), "无可读日志标记时不应产出条目");
+    }
+
+    /// 构造一个合法的 RDA8910 host trace 日志帧（sn/tick/tag/fmt/args）。
+    /// fmt 需以 `\n` 结尾；args 需按 RDA8910 参数编码预先组好（含 NUL 与 4 对齐填充）。
+    fn build_rda_frame(fmt: &str, tag: u32, args: &[u8]) -> Vec<u8> {
+        let fmt_bytes = fmt.as_bytes();
+        let fmt_aligned = align4(fmt_bytes.len() + 1);
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&[0u8, 0]); // sn
+        payload.extend_from_slice(&[0u8, 0]); // tick
+        payload.extend_from_slice(&tag.to_le_bytes());
+        payload.extend_from_slice(fmt_bytes);
+        payload.resize(8 + fmt_aligned, 0); // 格式串 + NUL + 4 对齐填充
+        payload.extend_from_slice(args);
+        let len = payload.len();
+        let mut frame = vec![0xAD, (len >> 8) as u8, (len & 0xff) as u8, 0x98];
+        frame.extend_from_slice(&payload);
+        frame
+    }
+
+    /// 构造一个合法 tag：`(level << 28) | 4 个 7 位 ASCII 字符`。
+    fn make_rda_tag(level: u8, chars: [char; 4]) -> u32 {
+        let mut v = 0u32;
+        for (i, c) in chars.iter().enumerate() {
+            v |= ((*c as u32) & 0x7F) << (i * 7);
+        }
+        v | ((level as u32) << 28)
+    }
+
+    #[test]
+    fn rda8910_decoder_decodes_c_side_printf_args() {
+        // C 侧 LLOGI("main", "LuatOS@%s base %s bsp %s 64bit", ...)：
+        // 格式串含 %s，参数为 3 个 NUL 结尾、4 对齐的字符串。
+        let fmt = "I/main LuatOS@%s base %s bsp %s 64bit\n";
+        let mut args = Vec::new();
+        args.extend_from_slice(b"Air724UG\0"); // 9 字节，4 对齐到 12
+        args.extend_from_slice(&[0, 0, 0]);
+        args.extend_from_slice(b"V1009\0"); // 6 字节，4 对齐到 8
+        args.extend_from_slice(&[0, 0]);
+        args.extend_from_slice(b"V1\0"); // 3 字节，4 对齐到 4
+        args.extend_from_slice(&[0]);
+        let frame = build_rda_frame(fmt, make_rda_tag(3, ['m', 'a', 'i', 'n']), &args);
+
+        let mut decoder = Rda8910LogDecoder::new();
+        let entries = decoder.feed(&frame);
+        assert_eq!(entries.len(), 1, "应解码出 1 条日志行");
+        assert_eq!(entries[0].level, LogLevel::Info);
+        assert_eq!(entries[0].module.as_deref(), Some("main"));
+        assert_eq!(entries[0].message, "LuatOS@Air724UG base V1009 bsp V1 64bit");
+    }
+
+    #[test]
+    fn rda8910_decoder_decodes_int_args() {
+        // C 侧 LLOGD("main", "%s luavm %ld %ld %ld", ...)：%ld 在 32 位 ARM 上占 u32。
+        let fmt = "D/main %s luavm %ld %ld %ld\n";
+        let mut args = Vec::new();
+        args.extend_from_slice(b"v1.0.0\0"); // 7 字节，4 对齐到 8
+        args.extend_from_slice(&[0]);
+        args.extend_from_slice(&(42u32).to_le_bytes());
+        args.extend_from_slice(&(256u32).to_le_bytes());
+        args.extend_from_slice(&(0xFFFF_FFFEu32).to_le_bytes());
+        let frame = build_rda_frame(fmt, make_rda_tag(4, ['m', 'a', 'i', 'n']), &args);
+
+        let mut decoder = Rda8910LogDecoder::new();
+        let entries = decoder.feed(&frame);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].module.as_deref(), Some("main"));
+        assert_eq!(entries[0].message, "v1.0.0 luavm 42 256 -2");
+    }
+
+    #[test]
+    fn rda8910_decoder_unescapes_transport_escape() {
+        // 传输层转义：`5c a3`→`5c`（反斜杠）。消息内联在 `:%.*s>> ` 事件里，
+        // 标记不在帧格式串起点，按已格式化文本输出。
+        let mut d = Vec::new();
+        d.extend_from_slice(b"\x80\x10\x23\xc0 :%.*s>> \x00\x80I/user C:");
+        d.extend_from_slice(&[0x5c, 0xa3]); // 转义后的反斜杠
+        d.extend_from_slice(b"temp\\dir\n\x1a\x9c");
+        let mut decoder = Rda8910LogDecoder::new();
+        let entries = decoder.feed(&d);
+        assert_eq!(entries.len(), 1, "应还原转义的反斜杠并提取 1 条日志行");
+        assert_eq!(entries[0].module.as_deref(), Some("user"));
+        assert_eq!(entries[0].message, "C:\\temp\\dir");
+    }
+
+    #[test]
+    fn rda8910_decoder_skips_marker_in_binary_frame_header() {
+        // C 侧 SDK trace（如 CFW 组件）的格式串不带 `I/` 前缀，日志级别在 tag 里。
+        // 若帧的二进制 sn/tick/tag 恰好拼成可打印串 `I/mCFW_GprsGetstatus`，不应被当成日志行。
+        let fmt = b"prsGetstatus\n";
+        let fmt_aligned = align4(fmt.len() + 1);
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0x2F49u16.to_le_bytes()); // sn = `I/`
+        payload.extend_from_slice(&0x436Du16.to_le_bytes()); // tick = `mC`
+        payload.extend_from_slice(&0x475F5746u32.to_le_bytes()); // tag = `FW_G` (level 4)
+        payload.extend_from_slice(fmt);
+        payload.resize(8 + fmt_aligned, 0);
+        let len = payload.len();
+        let mut frame = vec![0xAD, (len >> 8) as u8, (len & 0xff) as u8, 0x98];
+        frame.extend_from_slice(&payload);
+
+        let mut decoder = Rda8910LogDecoder::new();
+        let entries = decoder.feed(&frame);
+        assert!(entries.is_empty(), "二进制帧头里的 `I/` 不应被识别为日志行");
+    }
+
+    #[test]
+    fn rda8910_decoder_skips_marker_in_fmtid_frame_args() {
+        // 真机抓包：fmtid 型帧（tag bit31=TRACE_TDB_FLAG），帧内无内联格式串，
+        // 第一个 u32 参数 0x6D2F4987 的字节 `87 49 2f 6d` 拼出 `I/m`，后续字符串参数
+        // "CFW_GprsGetstatus" → 不应被当成日志行。
+        let frame: Vec<u8> = vec![
+            0xad, 0x00, 0x28, 0x98, // 帧头 (len=40, flowid 0x98)
+            0x43, 0x12, // sn
+            0x63, 0x22, // tick
+            0x52, 0xe8, 0x90, 0xc8, // tag = 0xC890E852, bit31 置位
+            0xdb, 0xb7, 0x00, 0x10, // fmtid = 0x1000B7DB
+            0x87, 0x49, 0x2f, 0x6d, // arg0 = 0x6D2F4987 → 字节 `87 I / m`
+            0x43, 0x46, 0x57, 0x5f, // "CFW_"
+            0x47, 0x70, 0x72, 0x73, // "Gprs"
+            0x47, 0x65, 0x74, 0x73, // "Gets"
+            0x74, 0x61, 0x74, 0x75, // "tatu"
+            0x73, 0x00, 0x43, 0x46, // "s\0CF"
+            0x29, 0x01, 0x00, 0x00,
+        ];
+        let mut decoder = Rda8910LogDecoder::new();
+        let entries = decoder.feed(&frame);
+        assert!(entries.is_empty(), "fmtid 帧参数里的 `I/m` 不应被识别为日志行");
+    }
+
+    #[test]
+    fn rda8910_decoder_extracts_real_lua_wrapper_frame() {
+        // 真机抓包（2026-08-25）：Lua 侧 print 包装帧 `%.*s` + `>> ` + [ptr][size][content]。
+        // 内容 `D/user.adc adc0 -1` 应被完整提取；fmtid 过滤不得误伤真实日志。
+        let frame: Vec<u8> = vec![
+            0xad, 0x00, 0x28, 0x98, // 帧头 (len=40)
+            0x0f, 0x12, // sn
+            0x22, 0xee, // tick
+            0xc3, 0x20, 0x14, 0x3a, // tag = 0x3A1420C3, bit31=0（内联 fmt）
+            0x25, 0x2e, 0x2a, 0x73, 0x00, // "%.*s\0"
+            0x3e, 0x3e, 0x20, // ">> "
+            0x8c, 0x63, 0xd6, 0x80, // ptr
+            0x12, 0x00, // size = 18
+            b'D', b'/', b'u', b's', b'e', b'r', b'.', b'a', b'd', b'c', b' ', b'a', b'd', b'c', b'0', b' ', b'-', b'1',
+        ];
+        let mut decoder = Rda8910LogDecoder::new();
+        let entries = decoder.feed(&frame);
+        assert_eq!(entries.len(), 1, "真实 Lua 日志帧应被提取");
+        assert_eq!(entries[0].module.as_deref(), Some("user.adc"));
+        assert_eq!(entries[0].message, "adc0 -1");
     }
 
     #[test]
