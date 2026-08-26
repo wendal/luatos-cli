@@ -1,4 +1,4 @@
-use anyhow::Context;
+use anyhow::{bail, Context};
 
 use crate::{event, OutputFormat};
 
@@ -76,15 +76,14 @@ pub fn cmd_soc_files(path: &str, format: &OutputFormat) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn cmd_soc_combine(soc: &str, bin: &str, addr: &str, output: Option<&str>, format: &OutputFormat) -> anyhow::Result<()> {
+pub fn cmd_soc_combine(soc: &str, bin: &str, addr: Option<&str>, output: Option<&str>, format: &OutputFormat) -> anyhow::Result<()> {
     use std::fs;
-
-    let hex_addr = luatos_soc::parse_addr(addr.trim()).ok_or_else(|| anyhow::anyhow!("Invalid address '{addr}' — use hex like 0x00D00000"))? as u32;
 
     anyhow::ensure!(std::path::Path::new(soc).exists(), "SOC file not found: {soc}");
     anyhow::ensure!(std::path::Path::new(bin).exists(), "Binary file not found: {bin}");
 
     let user_data = fs::read(bin).with_context(|| format!("read {bin}"))?;
+    let info = luatos_soc::read_soc_info(soc).context("read soc info")?;
 
     // Default output: <basename>_combined.soc next to the source
     let out_path: String = output.map(|s| s.to_string()).unwrap_or_else(|| {
@@ -94,13 +93,40 @@ pub fn cmd_soc_combine(soc: &str, bin: &str, addr: &str, output: Option<&str>, f
         parent.join(format!("{stem}_combined.soc")).to_string_lossy().into_owned()
     });
 
-    luatos_soc::combine_ec7xx_soc(soc, &user_data, hex_addr, &out_path)?;
+    // 按芯片族分发：EC7xx/Air8000 注入到 flash 地址（需 --addr）；RDA8910 替换 PAC 内 LUA
+    // （无需 --addr，PAC 内 LUA 条目地址为权威值）
+    let (is_rda, ec_addr): (bool, Option<u32>) = match info.family() {
+        luatos_soc::ChipFamily::Ec718 => {
+            let addr_str = addr.ok_or_else(|| anyhow::anyhow!("EC7xx/Air8000 需要 --addr <flash 地址>（如 0x00D00000）"))?;
+            let hex_addr = luatos_soc::parse_addr(addr_str.trim()).ok_or_else(|| anyhow::anyhow!("Invalid address '{addr_str}' — use hex like 0x00D00000"))? as u32;
+            luatos_soc::combine_ec7xx_soc(soc, &user_data, hex_addr, &out_path)?;
+            (false, Some(hex_addr))
+        }
+        luatos_soc::ChipFamily::Rda8910 => {
+            let tmp = tempfile::tempdir().context("tempdir")?;
+            let up = luatos_soc::unpack_soc(soc, tmp.path()).context("unpack soc")?;
+            let pac_data = fs::read(&up.rom_path).with_context(|| format!("read PAC {}", up.rom_path.display()))?;
+            if let Some(a) = luatos_flash::rda8910::parse_pac(&pac_data)?.find("LUA").map(|e| e.addr) {
+                log::info!("PAC LUA 条目地址 0x{a:08X}");
+            }
+            let new_pac = luatos_flash::rda8910::rebuild_pac(&pac_data, "LUA", &user_data).context("rebuild PAC (替换 LUA 条目)")?;
+            fs::write(&up.rom_path, &new_pac).context("write rebuilt PAC")?;
+            luatos_soc::pack_soc(&up.dir, &out_path).context("repack soc")?;
+            (true, None)
+        }
+        other => bail!("soc combine 仅支持 EC7xx/Air8000 与 RDA8910/Air724UG，当前 chip: {}（族 {other}）", info.chip.chip_type),
+    };
 
     match format {
         OutputFormat::Text => {
-            println!("Combined: {} bytes at 0x{hex_addr:08X}", user_data.len());
+            if is_rda {
+                println!("Replaced PAC LUA entry in {soc}");
+                println!("  Script: {bin} ({} bytes)", user_data.len());
+            } else {
+                println!("Combined: {} bytes at 0x{:08X}", user_data.len(), ec_addr.unwrap());
+                println!("  Binary: {bin}");
+            }
             println!("  Input:  {soc}");
-            println!("  Binary: {bin}");
             println!("  Output: {out_path}");
         }
         OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(
@@ -110,8 +136,9 @@ pub fn cmd_soc_combine(soc: &str, bin: &str, addr: &str, output: Option<&str>, f
             serde_json::json!({
                 "soc": soc,
                 "bin": bin,
-                "addr": format!("0x{hex_addr:08X}"),
+                "addr": ec_addr.map(|a| format!("0x{a:08X}")).unwrap_or_default(),
                 "size": user_data.len(),
+                "mode": if is_rda { "replace_pac_lua" } else { "inject_flash_addr" },
                 "output": out_path,
             }),
         )?,

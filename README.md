@@ -7,7 +7,7 @@ LuatOS 命令行工具集（纯 Rust）——刷机、日志、项目管理、�
 ## 功能特性
 
 - **多芯片刷机**：Air8101(BK7258)、Air6208(XT804)、Air1601/Air1602(CCM4211)、Air8000(EC718)、SF32LB58、Air724UG(UIS8910DM/RDA8910)；`flash run --script` 在 EC718 / CCM4211 / RDA8910 上会覆盖 SOC 包内脚本
-- **FOTA 打包**：支持 EC7xx 差分/脚本、CCM4211 全量/脚本、Air8101(BK72XX) 新格式全量/脚本；EC7xx 差分时若底层固件相同自动回落到脚本更新包（`--force-par` 可强制走差分）
+- **FOTA 打包**：支持 EC7xx 差分/脚本、CCM4211 全量/脚本、Air8101(BK72XX) 新格式全量/脚本、Air724UG(RDA8910) 差分/脚本；EC7xx 差分时若底层固件相同自动回落到脚本更新包（`--force-par` 可强制走差分）
 - **二级帮助入口**：`--help` 提示型号入口，`guide models` / `guide model --model <型号>` 直接给推荐命令
 - **刷机后继续监听**：`flash run --tail-log-secs <N>` 刷机后自动按型号波特率续接日志，减少开机日志丢失；EC718 / RDA8910 会等待运行模式 log 口重新枚举
 - **trun 单点调试**：`trun <name> --soc base.soc --port COM6` 一站式完成 testcase 合成 → 刷机 → 抓日志 → 关键字校验，取代 luatos-autotest-v2 在开发期的临时合成
@@ -53,7 +53,7 @@ luatos-cli flash run --soc firmware.soc --port COM10
 # 刷机后继续监听启动日志（30 秒）
 luatos-cli flash run --soc firmware.soc --port COM10 --tail-log-secs 30
 
-# 文本日志（EC718/RDA8910 可用 --port auto 自动识别 log 口）
+# 文本日志（EC718 可用 --port auto 自动识别 log 口）
 luatos-cli log view --port auto --baud 921600
 
 # 二进制日志（Air1601/Air1602/EC718）
@@ -64,6 +64,15 @@ luatos-cli fota build --new air8101.soc --script-only -o air8101_script_fota.bin
 
 # Air780EPM / Air780EHM / Air8000 仅脚本 FOTA
 luatos-cli fota build --new firmware.soc --script-only
+
+# Air724UG(RDA8910) 差分 FOTA（需 dtools，自动发现或 --fota-toolkit 指定）
+luatos-cli fota build --new v2.soc --old v1.soc
+
+# Air724UG(RDA8910) 仅脚本热更新
+luatos-cli fota build --new v2.soc --script-only
+
+# 修改内置脚本后重打包 soc（soc combine 自动识别芯片，RDA8910 替换 PAC 内 LUA，无需 --addr）
+luatos-cli soc combine --soc base.soc --bin build/script.bin -o patched.soc
 
 # trun 单点调试（自动找 testcase，合成 script.bin + 刷机 + 抓日志 + 关键字）
 luatos-cli trun list --luatos-root D:/github/LuatOS
@@ -181,7 +190,7 @@ luatos-cli doctor --help
 | Air1601 / Air1602 | CCM4211 | ✅ | ✅ | ✅ | ✅ | ✅（全量/脚本） | 二进制 (`--probe`) | ✅ | ✅ |
 | Air8000 / Air780E | EC718 (ec7xx) | ✅ | ✅ | — | — | ✅（差分/脚本） | 二进制 (`--probe`) | ✅ | ✅ |
 | Air8101(SF32) | SF32LB58 | ✅ | ✅ | — | ✅ | — | 文本 | — | — |
-| Air724UG | UIS8910DM (rda8910) | ✅ | ✅ | — | — | — | 文本 (auto) | — | — |
+| Air724UG | UIS8910DM (rda8910) | ✅ | ✅ | — | — | ✅（差分/脚本） | 二进制 (`--probe`) | — | — |
 
 ## 结构化输出
 

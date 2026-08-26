@@ -221,6 +221,82 @@ pub fn parse_pac(data: &[u8]) -> Result<PacFile> {
     })
 }
 
+/// CRC16-ARC（poly `0x8005`，反射，初值 0）——PAC 头部/内容完整性校验。
+/// 已验证与真实 `luatos.pac`（V1009）的 crc1/crc2 完全一致。
+pub fn pac_crc16_arc(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0;
+    for &b in data {
+        crc ^= b as u16;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xA001 } else { crc >> 1 };
+        }
+    }
+    crc
+}
+
+/// 重建 PAC：替换指定 `szFileID` 条目的数据。
+///
+/// 重算：目标条目 `file_size`、全部条目的数据 `offset`、`pac_size`，以及头部
+/// `crc1`（头 [0..2120]）与 `crc2`（全部文件头 + 数据）。条目数、各文件头其余字段
+/// 保持不变。典型用途：替换 `LUA`（脚本）条目以生成带自定义脚本的 .soc。
+pub fn rebuild_pac(pac_data: &[u8], replace_id: &str, new_data: &[u8]) -> Result<Vec<u8>> {
+    anyhow::ensure!(pac_data.len() >= PAC_HEADER_SIZE, "PAC 数据过小: {} bytes", pac_data.len());
+    let file_count = u32::from_le_bytes(pac_data[1076..1080].try_into().unwrap()) as usize;
+    let file_offset = u32::from_le_bytes(pac_data[1080..1084].try_into().unwrap()) as usize;
+    anyhow::ensure!(file_offset == PAC_HEADER_SIZE, "PAC file_offset 异常: 0x{file_offset:x}");
+    anyhow::ensure!(file_offset + file_count * PAC_FILE_HEADER_SIZE <= pac_data.len(), "PAC 文件头越界");
+
+    // 逐条重建文件头 + 重排数据区
+    let mut new_headers: Vec<Vec<u8>> = Vec::with_capacity(file_count);
+    let mut data_area: Vec<u8> = Vec::new();
+    let mut data_off = file_offset + file_count * PAC_FILE_HEADER_SIZE;
+    let mut replaced = false;
+    for i in 0..file_count {
+        let fh = &pac_data[file_offset + i * PAC_FILE_HEADER_SIZE..file_offset + (i + 1) * PAC_FILE_HEADER_SIZE];
+        let id = dec_utf16le(&fh[4..516]);
+        let file_size = u32::from_le_bytes(fh[1540..1544].try_into().unwrap()) as usize;
+        let old_offset = u32::from_le_bytes(fh[1552..1556].try_into().unwrap()) as usize;
+
+        let mut new_fh = fh.to_vec();
+        new_fh[1552..1556].copy_from_slice(&(data_off as u32).to_le_bytes());
+        if id == replace_id {
+            new_fh[1540..1544].copy_from_slice(&(new_data.len() as u32).to_le_bytes());
+            data_area.extend_from_slice(new_data);
+            data_off += new_data.len();
+            replaced = true;
+        } else {
+            anyhow::ensure!(
+                old_offset + file_size <= pac_data.len(),
+                "PAC 条目 {id} 数据越界 (offset=0x{old_offset:x} size={file_size})"
+            );
+            data_area.extend_from_slice(&pac_data[old_offset..old_offset + file_size]);
+            data_off += file_size;
+        }
+        new_headers.push(new_fh);
+    }
+    anyhow::ensure!(replaced, "PAC 中无 {replace_id} 条目");
+
+    // 重建头：版本与固定字段原样保留，更新 pac_size 与 crc1/crc2
+    let new_pac_size = data_off as u32;
+    let mut out = vec![0u8; PAC_HEADER_SIZE];
+    out[..48].copy_from_slice(&pac_data[..48]); // szVersion
+    out[48..52].copy_from_slice(&new_pac_size.to_le_bytes()); // pac_size
+    out[52..2120].copy_from_slice(&pac_data[52..2120]); // 其余头字段（file_count/file_offset 不变）
+    let crc1 = pac_crc16_arc(&out[..2120]);
+    out[2120..2122].copy_from_slice(&crc1.to_le_bytes());
+
+    let mut body = Vec::with_capacity(file_count * PAC_FILE_HEADER_SIZE + data_area.len());
+    for fh in &new_headers {
+        body.extend_from_slice(fh);
+    }
+    body.extend_from_slice(&data_area);
+    let crc2 = pac_crc16_arc(&body);
+    out[2122..2124].copy_from_slice(&crc2.to_le_bytes());
+
+    out.extend_from_slice(&body);
+    Ok(out)
+}
+
 // ─── 校验算法 ───────────────────────────────────────────────────────────────
 
 /// 计算 FDL 阶段使用的 CheckSum：按 16 位小端字累加 + 折叠 + 取反。
@@ -1132,11 +1208,47 @@ mod tests {
         header[2116..2120].copy_from_slice(&PAC_MAGIC.to_le_bytes());
 
         data.extend_from_slice(&header);
-        for (fh, content) in bodies {
-            data.extend_from_slice(&fh);
-            data.extend_from_slice(&content);
+        // 真实 PAC：所有文件头连续在前，数据区随后（offset 已在上面按数据区计算）
+        for (fh, _) in &bodies {
+            data.extend_from_slice(fh);
+        }
+        for (_, content) in &bodies {
+            data.extend_from_slice(content);
         }
         data
+    }
+
+    /// 替换 PAC 内 LUA 条目：数据、pac_size、crc1/crc2、后续条目 offset 全部重算正确。
+    #[test]
+    fn rebuild_pac_replaces_lua_entry() {
+        let ap = vec![0xAA; 300];
+        let lua = vec![0xBB; 100];
+        let pac = build_minimal_pac(&[("AP", "csdk.img", 0x60010000, &ap), ("LUA", "script.bin", 0x60230000, &lua)]);
+
+        // 替换为不同大小的新脚本
+        let new_lua = vec![0xCC; 250];
+        let rebuilt = rebuild_pac(&pac, "LUA", &new_lua).unwrap();
+
+        // crc1/crc2 重算正确
+        assert_eq!(u16::from_le_bytes(rebuilt[2120..2122].try_into().unwrap()), pac_crc16_arc(&rebuilt[..2120]));
+        assert_eq!(u16::from_le_bytes(rebuilt[2122..2124].try_into().unwrap()), pac_crc16_arc(&rebuilt[2124..]));
+        // pac_size == 实际长度
+        assert_eq!(u32::from_le_bytes(rebuilt[48..52].try_into().unwrap()) as usize, rebuilt.len());
+
+        // 重新解析：LUA 被替换、AP 原样保留、offset 正确
+        let reparsed = parse_pac(&rebuilt).unwrap();
+        assert_eq!(reparsed.files.len(), 2);
+        assert_eq!(reparsed.find("AP").unwrap().data.as_deref().unwrap(), &ap[..]);
+        assert_eq!(reparsed.find("LUA").unwrap().data.as_deref().unwrap(), &new_lua[..]);
+    }
+
+    /// 替换不存在的条目 → 报错。
+    #[test]
+    fn rebuild_pac_missing_id_rejected() {
+        let ap = vec![0xAA; 100];
+        let pac = build_minimal_pac(&[("AP", "csdk.img", 0x60010000, &ap)]);
+        let err = rebuild_pac(&pac, "LUA", &[0xCC; 10]).unwrap_err().to_string();
+        assert!(err.contains("无 LUA 条目"), "expected missing-id error, got: {err}");
     }
 
     #[test]

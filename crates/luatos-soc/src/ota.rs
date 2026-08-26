@@ -569,6 +569,41 @@ pub fn assemble_ota_package(
     Ok(())
 }
 
+// ── RDA8910 sector block ────────────────────────────────────────────────────
+
+/// 组装 RDA8910 分区块：`CoreUpgrade_SectorCalMD5Struct`(36B) + RDA LZMA 载荷。
+///
+/// 布局对齐设备端 `bsp_common.h`（UIS8910 SDK）：
+/// ```c
+/// typedef struct {
+///   uint32_t MaigcNum;      // __APP_START_MAGIC__（fota.magic_num）
+///   uint32_t TotalLen;      // 压缩后载荷长度
+///   uint32_t DataLen;       // 解压后数据长度（原始镜像大小）
+///   uint8_t  MD5[16];       // 解压后数据的 MD5
+///   uint32_t BlockLen;      // 压缩分块大小（信息性，解压以载荷内 lzmaFileHeader 为准）
+///   uint32_t StartAddress;  // 烧写目标 Flash 偏移
+/// } CoreUpgrade_SectorCalMD5Struct;  // 36 字节
+/// ```
+/// `compressed` 为 `dtools lzmare2` 产物（`lzmaFileHeader_t` + `lzmaBlockHeader_t` 块，
+/// RDA 专用 LZMA，非标准格式）。一个分区块对应一个分区（AP / 脚本），多个分区直接拼接。
+pub fn build_rda_sector_block(raw: &[u8], compressed: &[u8], magic: u32, start_addr: u32, block_len: u32) -> Vec<u8> {
+    let md5_bytes: [u8; 16] = {
+        use md5::{Digest, Md5};
+        let mut hasher = Md5::new();
+        hasher.update(raw);
+        hasher.finalize().into()
+    };
+    let mut out = Vec::with_capacity(36 + compressed.len());
+    out.extend_from_slice(&magic.to_le_bytes());
+    out.extend_from_slice(&(compressed.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(raw.len() as u32).to_le_bytes());
+    out.extend_from_slice(&md5_bytes);
+    out.extend_from_slice(&block_len.to_le_bytes());
+    out.extend_from_slice(&start_addr.to_le_bytes());
+    out.extend_from_slice(compressed);
+    out
+}
+
 /// Decode a hex string (up to 32 chars) into the first 16 bytes of `dst[5]` (little-endian u32s).
 /// The C++ code: AsciiToHex(md5_hex_str, 32, (uint8_t *)Head.MainVersion)
 /// which converts 32 hex chars into 16 bytes, stored as 4 u32 LE values.
@@ -945,5 +980,23 @@ mod tests {
         assert!(data.len() > 96);
         assert_eq!(&data[0..4], b"RBL\0");
         assert_eq!(u32::from_le_bytes(data[92..96].try_into().unwrap()), crc32fast::hash(&data[..92]));
+    }
+
+    #[test]
+    fn test_build_rda_sector_block() {
+        let raw = b"rda8910 raw image payload";
+        let compressed = vec![0xAA; 64];
+        let magic = 0xDA18_8800u32;
+        let out = build_rda_sector_block(raw, &compressed, magic, 0x10000, 0x10000);
+
+        assert_eq!(out.len(), 36 + compressed.len());
+        assert_eq!(u32::from_le_bytes(out[0..4].try_into().unwrap()), magic);
+        assert_eq!(u32::from_le_bytes(out[4..8].try_into().unwrap()), compressed.len() as u32, "TotalLen");
+        assert_eq!(u32::from_le_bytes(out[8..12].try_into().unwrap()), raw.len() as u32, "DataLen");
+        assert_eq!(u32::from_le_bytes(out[28..32].try_into().unwrap()), 0x10000, "BlockLen");
+        assert_eq!(u32::from_le_bytes(out[32..36].try_into().unwrap()), 0x10000, "StartAddress");
+        assert_eq!(&out[36..], &compressed[..]);
+        let expect_md5 = md5::Md5::digest(raw);
+        assert_eq!(&out[12..28], expect_md5.as_slice(), "MD5 of raw data");
     }
 }

@@ -180,17 +180,17 @@ enum SocCommands {
         #[arg(short, long)]
         output: String,
     },
-    /// Inject a binary into an EC7xx .soc at a given flash address (EC7xx/Air8000 only)
+    /// Inject a binary into a .soc (EC7xx/Air8000: at a flash address; RDA8910: replace PAC LUA entry)
     Combine {
         /// Path to source .soc file
         #[arg(long)]
         soc: String,
-        /// Binary file to inject
+        /// Binary file to inject (EC7xx: binary to write at addr; RDA8910: new LuaDB script)
         #[arg(long)]
         bin: String,
-        /// Flash address (hex, e.g. 0x00D00000)
+        /// Flash address in hex (required for EC7xx/Air8000, ignored for RDA8910)
         #[arg(long)]
-        addr: String,
+        addr: Option<String>,
         /// Output .soc path (default: <source>_combined.soc)
         #[arg(short, long)]
         output: Option<String>,
@@ -713,7 +713,7 @@ fn main() {
             SocCommands::Unpack { path, output } => cmd_soc::cmd_soc_unpack(&path, output.as_deref(), &cli.format),
             SocCommands::Files { path } => cmd_soc::cmd_soc_files(&path, &cli.format),
             SocCommands::Pack { dir, output } => cmd_soc::cmd_soc_pack(&dir, &output, &cli.format),
-            SocCommands::Combine { soc, bin, addr, output } => cmd_soc::cmd_soc_combine(&soc, &bin, &addr, output.as_deref(), &cli.format),
+            SocCommands::Combine { soc, bin, addr, output } => cmd_soc::cmd_soc_combine(&soc, &bin, addr.as_deref(), output.as_deref(), &cli.format),
         },
         Commands::Flash { action, progress_step } => match action {
             FlashCommands::Run {

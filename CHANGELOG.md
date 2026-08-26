@@ -13,7 +13,7 @@ All notable changes to this project will be documented in this file.
 
 - 新增 `luatos_flash::rda8910` 模块：支持 Air724UG（UIS8910DM / RDA8910）分级下载刷机（ROM → FDL1 → FDL2 → Flash 分区），含 HDLC 帧/转义、ROM 阶段 CRC16 与 FDL 阶段 CheckSum 双校验算法、PAC 私有固件包解析（magic `0xFFFAFFFA`）
 - `luatos-soc` 新增 `ChipFamily::Rda8910` 族（`uis8910` / `rda8910` / `air724ug` / `8910dm`）
-- `flash run` / `flash script` 支持 rda8910 族；`flash run --script` 会覆盖 PAC 内 LUA 分区（与 EC718/CCM4211 一致）；`flash test` 与 FOTA 明确提示暂不支持
+- `flash run` / `flash script` 支持 rda8910 族；`flash run --script` 会覆盖 PAC 内 LUA 分区（与 EC718/CCM4211 一致）；`flash test` 明确提示暂不支持（FOTA 支持见下文）
 - 提供 `load_fdl2_only` 调试接口 + `#[ignore]` 硬件测试：仅加载 FDL1/FDL2 到 RAM 并复位（不写 Flash 分区），可安全反复验证下载链路而不触碰 modem/factory 等关键分区
 - `log view --port auto` 与 `flash run --tail-log-secs` 支持自动识别 RDA8910 运行模式 log 口（按 VID/PID + USB 接口号：0x4d11→x.6、0x4e00→x.2，对齐 luatools_py3 端口表；接口信息缺失时降级 AT 行为探测）；刷机后等待 log 口重新枚举再抓启动日志
 - 新增协议文档 `docs/rda-flash-protocol.md`
@@ -27,6 +27,9 @@ All notable changes to this project will be documented in this file.
 
 - `fota build` 新增 `--force-par`：EC7xx 差分时若底层固件相同，默认自动回落为脚本包；加 `--force-par` 强制走差分并拒绝回落（此前文档已描述该参数但代码缺失）
 - 移除已失效的 `--soc-tools` 参数（`soc_tools.exe` 已被纯 Rust OTA 实现替代）
+- **Air724UG(RDA8910) FOTA 支持**（`ChipFamily::Rda8910`，镜像 EC7xx）：差分（`--old`，AP 全量 + CP 差分）/ 仅脚本（`--script-only`），产物为 `.sota`，无 `--old` 且非脚本时报错提示提供 `--old`；依赖外部 `dtools`（`lzmare2`/`fotacreate2`，RDA 专用格式无法纯 Rust 复现），工具发现镜像 ec7xx
+- `luatos-soc` 新增 `build_rda_sector_block`（`CoreUpgrade_SectorCalMD5Struct` 分区块）；差分时 `STDVersion[4]` 取旧包 CP 版本；格式源自 UIS8910 SDK 源码，经真实 V1009/V1007 `.soc` + Linux `dtools` 端到端验证（Sector MD5 == csdk.img MD5）
+- `soc combine` 扩展支持 RDA8910：替换 PAC 内 `LUA`（脚本）条目并重打包（`luatos_flash::rda8910::rebuild_pac`，重算文件头 size/offset、pac_size、CRC16-ARC），EC7xx 仍为 flash 地址注入；`--addr` 改为可选（仅 EC7xx 需要）
 
 #### flash test 退出码
 
