@@ -80,7 +80,8 @@ static void DumpString (const TString *s, DumpState *D) {
       DumpByte(cast_int(size), D);
     else {
       DumpByte(0xFF, D);
-      DumpVar(size, D);
+      unsigned int size32 = (unsigned int)size;
+      DumpVar(size32, D);
     }
     DumpVector(str, size - 1, D);  /* no need to save '\0' */
   }

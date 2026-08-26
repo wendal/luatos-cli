@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### 变更
 
 - `flash run --script` / `flash test --script` 在 **EC718** 与 **CCM4211** 上会覆盖 SOC 包内的 `script.bin`（此前参数会被静默忽略，设备仍跑固件自带脚本）
+- **修复 luac 编译产物在 64 位宿主上不可加载**（`luatos-luadb`）：`ldump.c` 的长字符串 `size_t` 按宿主 `sizeof(size_t)`（x86-64=8 字节）写出，而字节码头声明 `size_t=4`（设备为 32 位 size_t），导致加载错位、报 `memory allocation error: block too big`（复杂含长字符串的脚本如 `libfota2.lua` 必现）。现固定按 4 字节写出并新增回归测试
 
 #### 新增芯片支持（RDA8910 / Air724UG）
 

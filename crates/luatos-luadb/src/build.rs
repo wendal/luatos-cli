@@ -330,6 +330,22 @@ mod tests {
         assert_eq!(bytecode[15], 8);
     }
 
+    /// 回归：长字符串（≥0xFF）的 size_t 必须按 4 字节写出。
+    /// 曾因 64 位宿主 sizeof(size_t)=8 写出 8 字节、而 header 声称 size_t=4，
+    /// 导致设备加载错位（"memory allocation error: block too big"）。
+    #[test]
+    fn long_string_size_is_4_bytes() {
+        let src = format!("local s = \"{}\"\nreturn s", "a".repeat(300));
+        let bytecode = super::compile_lua_bytes(src.as_bytes(), "@long.lua", crate::LUAC_DEBUG_ALL, 64).unwrap();
+        // header offset 13 = sizeof(size_t)，必须为 4（设备兼容）
+        assert_eq!(bytecode[13], 4, "header size_t 应为 4");
+        // 301 (0x12D) 长字符串：0xFF 标记 + 4 字节小端长度
+        let needle: [u8; 5] = [0xFF, 0x2D, 0x01, 0x00, 0x00];
+        let pos = bytecode.windows(5).position(|w| w == needle).expect("长字符串大小应按 4 字节小端写出");
+        // 4 字节长度之后紧跟字符串内容 'a'（而非 8 字节 size_t 的多余 0x00）
+        assert_eq!(bytecode[pos + 5], b'a', "size 后应紧跟字符串，而非 8 字节 size_t 的 0 填充");
+    }
+
     #[test]
     fn compile_lua_bytes_debug_modes() {
         use crate::{LUAC_DEBUG_ALL, LUAC_DEBUG_LINE, LUAC_DEBUG_NONE, LUAC_DEBUG_VAR};
