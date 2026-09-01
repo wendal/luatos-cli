@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### 修复
+
+- **Air1601 / Air1602（CCM4211）Linux 刷机**：CH343（`1a86:55d3`）在 ISP 波特率切换后关闭并重开串口会导致二次同步超时。现 ISP 的 115200→1Mbps 与 ramrun 后的 SOC 下载波特率切换均复用同一串口句柄，并在切换后清空驱动缓冲，覆盖全量刷机、仅刷脚本和分区擦除路径。
+
 ## [1.10.0] - 2026-08-31
 
 ### 变更

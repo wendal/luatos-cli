@@ -144,8 +144,9 @@ port.reset_input_buffer()
 port.reset_output_buffer()
 ```
 
-这可能与 CH343 驱动的 COM 端口生命周期管理有关。Rust `serialport` crate
-的 `drop + new` 模式不受此影响（可能是因为底层 Win32 API 调用时序不同）。
+这与 CH343 驱动的端口生命周期管理有关。Rust 实现也必须复用已打开的
+`serialport` 句柄，通过 `set_baud_rate()` 原地切换并清空缓冲；关闭/重开会让
+Linux 下的 `/dev/ttyACM*` 在设备端已切换波特率后无法继续同步。
 
 ### 高波特率可靠性
 
@@ -185,7 +186,8 @@ ROM bootloader 的 WRITE_RAM ACK 只表示"写入操作完成"，
 
 ### 5. CH343 的串口生命周期管理与常规不同
 
-关闭/重开串口在 CH343 上可能导致通信失败。优先使用就地参数修改。
+关闭/重开串口在 CH343 上会导致通信失败。ISP 的 115200→1Mbps 与 ramrun 后
+的 1Mbps→SOC 下载波特率都必须使用同一句柄原地修改参数并清空缓冲。
 
 ## 相关文件
 

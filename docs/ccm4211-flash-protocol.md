@@ -149,7 +149,7 @@ ISP (In-System Programming) 通过芯片内置 ROM bootloader 实现。
 ### 1.5 波特率切换注意事项
 
 在 CH343 USB 转串口芯片上，**不能关闭/重新打开串口来切换波特率**。
-必须在已打开的串口上就地修改波特率：
+必须在已打开的串口上就地修改波特率，并清空旧配置下的收发缓冲：
 
 ```python
 # ✅ 正确做法：就地切换
@@ -160,7 +160,7 @@ port.close()
 port = serial.Serial(port_name, 1000000, ...)
 ```
 
-Rust 中 `serialport` crate 的 `drop + new` 模式可以正常工作。
+Rust 中使用已打开的 `serialport::SerialPort` 依次调用 `set_baud_rate()`、`set_parity()`、`set_timeout()` 与 `clear(ClearBuffer::All)`；ISP 的 1Mbps 切换和 ramrun 后的 SOC 下载波特率切换都不得关闭句柄。
 
 ---
 

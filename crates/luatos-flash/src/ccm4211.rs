@@ -348,8 +348,55 @@ fn isp_handshake(port: &mut Box<dyn SerialPort>, timeout: Duration) -> Result<Ve
     bail!("ISP handshake timeout after {:?}", timeout)
 }
 
+/// 仅抽象波特率切换所需的串口设置，便于在不打开真实串口时覆盖回归测试。
+trait SerialPortConfig {
+    fn set_baud_rate(&mut self, baud: u32) -> serialport::Result<()>;
+    fn set_parity(&mut self, parity: Parity) -> serialport::Result<()>;
+    fn set_timeout(&mut self, timeout: Duration) -> serialport::Result<()>;
+    fn clear(&self, buffer: serialport::ClearBuffer) -> serialport::Result<()>;
+}
+
+impl<T: SerialPort + ?Sized> SerialPortConfig for T {
+    fn set_baud_rate(&mut self, baud: u32) -> serialport::Result<()> {
+        SerialPort::set_baud_rate(self, baud)
+    }
+
+    fn set_parity(&mut self, parity: Parity) -> serialport::Result<()> {
+        SerialPort::set_parity(self, parity)
+    }
+
+    fn set_timeout(&mut self, timeout: Duration) -> serialport::Result<()> {
+        SerialPort::set_timeout(self, timeout)
+    }
+
+    fn clear(&self, buffer: serialport::ClearBuffer) -> serialport::Result<()> {
+        SerialPort::clear(self, buffer)
+    }
+}
+
+/// 在不关闭串口的前提下切换主机端串口配置。
+///
+/// CH343 在关闭/重开后可能丢失正在进行的设备端波特率切换状态，因此 ISP 和
+/// SOC 两个阶段都必须复用同一个句柄。切换后清空驱动缓冲，避免旧波特率下的
+/// 残留字节被下一阶段解析。
+fn reconfigure_serial_port<T: SerialPortConfig + ?Sized>(port: &mut T, baud: u32, parity: Parity, timeout: Duration, stage: &str) -> Result<()> {
+    port.set_baud_rate(baud).with_context(|| format!("{stage}: failed to change host baud rate to {baud}"))?;
+    port.set_parity(parity).with_context(|| format!("{stage}: failed to set host parity to {parity:?}"))?;
+    port.set_timeout(timeout).with_context(|| format!("{stage}: failed to set serial timeout"))?;
+    port.clear(serialport::ClearBuffer::All)
+        .with_context(|| format!("{stage}: failed to clear serial buffers"))?;
+    Ok(())
+}
+
+/// 将已执行的 ramrun 串口切换到 SOC 下载协议配置。
+fn switch_to_soc_protocol(port: &mut dyn SerialPort, baud: u32) -> Result<()> {
+    // ramrun 接管 UART 并切换设备端波特率需要短暂稳定时间。
+    std::thread::sleep(Duration::from_millis(10));
+    reconfigure_serial_port(port, baud, Parity::None, Duration::from_millis(50), "SOC protocol transition")
+}
+
 /// Load ramrun binary into device RAM via ISP.
-fn isp_load_ramrun(port_name: &str, ramrun_data: &[u8], on_progress: &ProgressCallback) -> Result<()> {
+fn isp_load_ramrun(port_name: &str, ramrun_data: &[u8], on_progress: &ProgressCallback) -> Result<Box<dyn SerialPort>> {
     on_progress(&FlashProgress::info("Connect", 0.0, "Opening serial port (ISP)"));
 
     let mut port: Box<dyn SerialPort> = serialport::new(port_name, ISP_INITIAL_BAUD)
@@ -367,13 +414,8 @@ fn isp_load_ramrun(port_name: &str, ramrun_data: &[u8], on_progress: &ProgressCa
     // Switch baud rate to 1Mbps: cmd 0x10, data = [0x00, 0x01, 0x24]
     isp_send_cmd(&mut port, ISP_CMD_SET_BAUD, 0, 0, 3, Some(&[0x00, 0x01, 0x24]), Duration::from_millis(50)).context("ISP baud rate change failed")?;
 
-    // Reopen at 1Mbps
-    drop(port);
-    let mut port: Box<dyn SerialPort> = serialport::new(port_name, ISP_FAST_BAUD)
-        .parity(Parity::Even)
-        .timeout(Duration::from_millis(100))
-        .open()
-        .with_context(|| format!("Cannot reopen {port_name} at 1Mbps"))?;
+    // CH343 在关闭/重开串口后会丢失本次设备端波特率切换状态，必须原地切换。
+    reconfigure_serial_port(&mut *port, ISP_FAST_BAUD, Parity::Even, Duration::from_millis(100), "ISP baud transition")?;
 
     // Verify sync at new baud rate
     isp_send_cmd(&mut port, ISP_CMD_SYNC, 0, 0, 0x10, None, Duration::from_millis(50)).context("ISP sync at 1Mbps failed")?;
@@ -414,8 +456,7 @@ fn isp_load_ramrun(port_name: &str, ramrun_data: &[u8], on_progress: &ProgressCa
     // Execute may not ACK (ramrun starts and takes over UART)
     let _ = isp_send_cmd(&mut port, ISP_CMD_EXECUTE, go_addr1, go_addr2, 0, None, Duration::from_millis(100));
 
-    drop(port);
-    Ok(())
+    Ok(port)
 }
 
 // ─── SOC Protocol Operations ────────────────────────────────────────────────
@@ -596,23 +637,17 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
         bail!("Cancelled");
     }
 
-    // Stage 1: ISP — load ramrun
-    isp_load_ramrun(port_name, &ramrun_data, on_progress)?;
+    // Stage 1: ISP — load ramrun，并保留串口句柄供 SOC 阶段继续使用。
+    let mut port = isp_load_ramrun(port_name, &ramrun_data, on_progress)?;
 
     if cancel.load(Ordering::Relaxed) {
         bail!("Cancelled");
     }
 
-    // Stage 2: SOC protocol — open at download baud rate
+    // Stage 2: SOC protocol — 原地切换到下载波特率，不能关闭/重开 CH343。
     let dl_baud = info.flash_baud_rate();
     on_progress(&FlashProgress::info("Connect", 16.0, &format!("Connecting SOC protocol at {dl_baud}")));
-
-    std::thread::sleep(Duration::from_millis(10));
-    let mut port: Box<dyn SerialPort> = serialport::new(port_name, dl_baud)
-        .parity(Parity::None)
-        .timeout(Duration::from_millis(50))
-        .open()
-        .with_context(|| format!("Cannot open {port_name} at {dl_baud}"))?;
+    switch_to_soc_protocol(&mut *port, dl_baud)?;
 
     let mut parser = SocFrameParser::new();
     let mut sn: u16 = 0;
@@ -722,15 +757,14 @@ pub fn flash_script_ccm4211(soc_path: &str, port_name: &str, script_data: &[u8],
         bail!("Cancelled");
     }
 
-    isp_load_ramrun(port_name, &ramrun_data, on_progress)?;
+    let mut port = isp_load_ramrun(port_name, &ramrun_data, on_progress)?;
 
     if cancel.load(Ordering::Relaxed) {
         bail!("Cancelled");
     }
 
     let dl_baud = info.flash_baud_rate();
-    std::thread::sleep(Duration::from_millis(10));
-    let mut port: Box<dyn SerialPort> = serialport::new(port_name, dl_baud).parity(Parity::None).timeout(Duration::from_millis(50)).open()?;
+    switch_to_soc_protocol(&mut *port, dl_baud)?;
 
     let mut parser = SocFrameParser::new();
     let mut sn: u16 = 0;
@@ -790,15 +824,14 @@ pub fn erase_partition_ccm4211(soc_path: &str, port_name: &str, partition_addr: 
         bail!("Cancelled");
     }
 
-    isp_load_ramrun(port_name, &ramrun_data, on_progress)?;
+    let mut port = isp_load_ramrun(port_name, &ramrun_data, on_progress)?;
 
     if cancel.load(Ordering::Relaxed) {
         bail!("Cancelled");
     }
 
     let dl_baud = info.flash_baud_rate();
-    std::thread::sleep(Duration::from_millis(10));
-    let mut port: Box<dyn SerialPort> = serialport::new(port_name, dl_baud).parity(Parity::None).timeout(Duration::from_millis(50)).open()?;
+    switch_to_soc_protocol(&mut *port, dl_baud)?;
 
     let mut parser = SocFrameParser::new();
     let mut sn: u16 = 0;
@@ -843,6 +876,57 @@ pub fn clear_fskv(soc_path: &str, port_name: &str, on_progress: &ProgressCallbac
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+
+    /// 只记录串口配置调用的假串口，用于确保波特率切换不依赖关闭/重开句柄。
+    #[derive(Default)]
+    struct FakeSerialPortConfig {
+        calls: RefCell<Vec<String>>,
+    }
+
+    impl SerialPortConfig for FakeSerialPortConfig {
+        fn set_baud_rate(&mut self, baud: u32) -> serialport::Result<()> {
+            self.calls.borrow_mut().push(format!("baud:{baud}"));
+            Ok(())
+        }
+
+        fn set_parity(&mut self, parity: Parity) -> serialport::Result<()> {
+            self.calls.borrow_mut().push(format!("parity:{parity:?}"));
+            Ok(())
+        }
+
+        fn set_timeout(&mut self, timeout: Duration) -> serialport::Result<()> {
+            self.calls.borrow_mut().push(format!("timeout:{}", timeout.as_millis()));
+            Ok(())
+        }
+
+        fn clear(&self, buffer: serialport::ClearBuffer) -> serialport::Result<()> {
+            self.calls.borrow_mut().push(format!("clear:{buffer:?}"));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn reconfigure_serial_port_reuses_the_open_port_for_isp_and_soc() {
+        let mut port = FakeSerialPortConfig::default();
+
+        reconfigure_serial_port(&mut port, ISP_FAST_BAUD, Parity::Even, Duration::from_millis(100), "ISP").unwrap();
+        reconfigure_serial_port(&mut port, 6_000_000, Parity::None, Duration::from_millis(50), "SOC").unwrap();
+
+        assert_eq!(
+            *port.calls.borrow(),
+            vec![
+                "baud:1000000",
+                "parity:Even",
+                "timeout:100",
+                "clear:All",
+                "baud:6000000",
+                "parity:None",
+                "timeout:50",
+                "clear:All",
+            ]
+        );
+    }
 
     #[test]
     fn test_crc16_modbus() {

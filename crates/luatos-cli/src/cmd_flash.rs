@@ -692,6 +692,14 @@ pub fn cmd_flash_test(
     if let Ok(mut serial) = serial {
         use std::io::{Read, Write};
 
+        // CCM4211/CH343 的 DTR/RTS 连接到复位和下载控制线；重新打开日志口时
+        // 必须释放它们，避免控制线状态阻止设备启动或输出日志。EC718 则需要高电平，
+        // 保持其下方既有配置。
+        if !is_ec718 {
+            let _ = serial.write_data_terminal_ready(false);
+            let _ = serial.write_request_to_send(false);
+        }
+
         // Send probe to trigger log output on binary-log chips
         if use_binary_log {
             let probe = if is_ec718 {
