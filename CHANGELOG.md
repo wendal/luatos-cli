@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### 变更
+
+#### Air8101 / BK7258 刷机
+
+- 全量 / 脚本 / 文件系统操作一律走原生 ISP，**不再**在 `.soc` 含 `air602_flash.exe`（实为 SDK 打包的 `bk_loader.exe`）时优先拉子进程；该 exe 在 Electron 无控制台环境下会挂起且无进度
+- 写完后按 LuaTools `_reboot_and_close` 做 RTS+DTR 拉高 500ms 再关口；只关串口会让 Air8101 停在 ROM 下载模式（黑屏）
+- `--script` 目录改为递归收集（跳过 `.git/.svn/.hg`）；LuaDB 仍按文件名（basename）入包，同名后者覆盖前者
+- `flash run` 对 BK 的 `boot_log` 字段现为空数组（原生 ISP 不再抓文本启动关键字；SOC UART 为 0xA5 二进制）
+
+#### 设备重启与日志口选路
+
+- 通用 UART 重启由短 DTR 脉冲改为 RTS+DTR 同时拉 500ms（对齐 LuaTools；许多 CH340 板 RESET 接 RTS#）
+- `--port auto` / 空字符串在 `device reboot` / `device boot` 视为未指定
+- EC718 运行时重启优先对 USB SOC 日志口（x.2）发 DIAG：`7E 00 00 7E` 握手 + `7E 00 01 7E` 重启（921600，DTR/RTS HIGH）；找不到日志口才回退用户口（x.6）`AT+RESET` / `AT+ECRST`
+- `log view-binary` 按**实际打开的口**选协议：仅当打开的是 EC718 USB CDC 日志口才 2M→921600 并走 0x7E HDLC；同机插着 4G USB 时 CH340 调试口仍保持用户波特率 + 0xA5
+- USB CDC `--probe` 改为 `7E 00 00 7E`（打开打印通道）；CH340 / 非 CDC 仍发 0xA5 SOC 探测帧
+
+#### 日志解码与 Windows 串口
+
+- SOC 帧 `cmd != 0`（探测/读写应答）不再当日志行；去掉格式串尾随 `\r\n`，空消息丢弃
+- Windows 日志口 `SetupComm` 收发队列提到 100KB、读缓冲 64KB，减轻 2Mbps RX overrun
+
 ## [1.10.0] - 2026-08-31
 
 ### 变更

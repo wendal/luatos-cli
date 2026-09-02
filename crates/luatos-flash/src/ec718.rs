@@ -1134,10 +1134,32 @@ pub fn find_ec718_ap_log_port() -> Option<String> {
     find_ec718_port_by_interface(4)
 }
 
-/// Find the EC718 command port (running mode, USB interface 2 = x.2).
+/// Find the EC718 user AT port (running mode, USB interface 6 = x.6).
 ///
-/// This is the same physical port as the SOC log port. It handles both
-/// AT commands (AT+ECRST for reboot) and binary log output (0x7E frames).
+/// LuaTools 称之为「用户虚拟串口」。4G AT 命令（含 AT+RESET）走这里，
+/// 与 SOC 日志口 x.2 不是同一个 CDC。
+pub fn find_ec718_user_port() -> Option<String> {
+    if let Some(port) = find_ec718_port_by_interface(6) {
+        return Some(port);
+    }
+    let log = find_ec718_log_port();
+    let ap = find_ec718_ap_log_port();
+    let ports = serialport::available_ports().ok()?;
+    for port in ports {
+        if let serialport::SerialPortType::UsbPort(usb_info) = &port.port_type {
+            if usb_info.vid == LOG_VID && usb_info.pid == LOG_PID {
+                let name = &port.port_name;
+                if log.as_ref() != Some(name) && ap.as_ref() != Some(name) {
+                    log::info!("EC718 user AT port fallback to {name} (interface 6 not reported)");
+                    return Some(name.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Find the EC718 command / SOC log port (running mode, USB interface 2 = x.2).
 pub fn find_ec718_cmd_port() -> Option<String> {
     find_ec718_port_by_interface(2)
 }
@@ -1285,6 +1307,11 @@ pub fn auto_enter_boot_mode(user_port: Option<&str>, on_progress: &ProgressCallb
 pub fn build_log_probe() -> Vec<u8> {
     // Reuse the CCM4211 SOC probe frame
     crate::ccm4211::build_log_probe()
+}
+
+/// USB CDC SOC 日志口（x.2）探测帧：LuaTools `aio_soc_usb_trace` 的 `7E 00 00 7E`。
+pub fn build_usb_log_probe() -> Vec<u8> {
+    vec![0x7e, 0x00, 0x00, 0x7e]
 }
 
 /// Replace the SOC-packaged `script.bin` with caller-built LuaDB bytes.

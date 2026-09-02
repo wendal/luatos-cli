@@ -89,6 +89,33 @@ impl SerialBuffer {
 
 /// 单行日志的最大字节数：超过该长度仍无换行符时丢弃该行（内存保护）。
 const MAX_LINE_BYTES: usize = 16 * 1024;
+/// 对齐 LuaTools：2Mbps 下 Windows 默认 ~4KB 驱动缓冲会 RX overrun。
+const WIN_COMM_QUEUE_BYTES: u32 = 102400;
+const READ_BUF_BYTES: usize = 64 * 1024;
+
+fn open_log_port(port_name: &str, baud_rate: u32) -> anyhow::Result<Box<dyn serialport::SerialPort>> {
+    let builder = serialport::new(port_name, baud_rate).timeout(Duration::from_millis(100));
+    #[cfg(windows)]
+    {
+        let port = builder.open_native().map_err(|e| anyhow::anyhow!("Cannot open {port_name}: {e}"))?;
+        enlarge_win_comm_queue(&port);
+        return Ok(Box::new(port));
+    }
+    #[cfg(not(windows))]
+    {
+        builder.open().map_err(|e| anyhow::anyhow!("Cannot open {port_name}: {e}"))
+    }
+}
+
+#[cfg(windows)]
+fn enlarge_win_comm_queue(port: &serialport::COMPort) {
+    use std::os::windows::io::AsRawHandle;
+    let handle = port.as_raw_handle();
+    let ok = unsafe { windows_sys::Win32::Devices::Communication::SetupComm(handle, WIN_COMM_QUEUE_BYTES, WIN_COMM_QUEUE_BYTES) };
+    if ok == 0 {
+        log::warn!("SetupComm({WIN_COMM_QUEUE_BYTES}) failed; high baud capture may overrun");
+    }
+}
 
 /// Callback invoked for each complete log line read from serial.
 pub type LineCallback = Box<dyn Fn(&str) + Send>;
@@ -124,16 +151,13 @@ fn feed_log_bytes(data: &[u8], line_buf: &mut Vec<u8>, overflow_warned: &mut boo
 /// Reads bytes from the port, splits on `\n`, trims `\r`, and calls
 /// `on_line` for each complete line. Blocks the calling thread.
 pub fn stream_log_lines(port_name: &str, baud_rate: u32, stop: Arc<AtomicBool>, on_line: LineCallback) -> anyhow::Result<()> {
-    let mut serial = serialport::new(port_name, baud_rate)
-        .timeout(Duration::from_millis(100))
-        .open()
-        .map_err(|e| anyhow::anyhow!("Cannot open {port_name}: {e}"))?;
+    let mut serial = open_log_port(port_name, baud_rate)?;
 
     // Release DTR/RTS so the device runs normally
     let _ = serial.write_data_terminal_ready(false);
     let _ = serial.write_request_to_send(false);
 
-    let mut buf = vec![0u8; 4096];
+    let mut buf = vec![0u8; READ_BUF_BYTES];
     let mut line_buf: Vec<u8> = Vec::with_capacity(256);
     let mut overflow_warned = false;
 
@@ -177,10 +201,7 @@ pub type BinaryCallback = Box<dyn Fn(&[u8]) + Send>;
 /// When `dtr_rts_high` is true, DTR and RTS are set HIGH after opening
 /// (required for EC718 log port).
 pub fn stream_binary(port_name: &str, baud_rate: u32, stop: Arc<AtomicBool>, on_data: BinaryCallback, init_data: Option<&[u8]>, dtr_rts_high: bool) -> anyhow::Result<()> {
-    let mut serial = serialport::new(port_name, baud_rate)
-        .timeout(Duration::from_millis(100))
-        .open()
-        .map_err(|e| anyhow::anyhow!("Cannot open {port_name}: {e}"))?;
+    let mut serial = open_log_port(port_name, baud_rate)?;
 
     if dtr_rts_high {
         let _ = serial.write_data_terminal_ready(true);
@@ -198,7 +219,7 @@ pub fn stream_binary(port_name: &str, baud_rate: u32, stop: Arc<AtomicBool>, on_
         serial.flush()?;
     }
 
-    let mut buf = vec![0u8; 4096];
+    let mut buf = vec![0u8; READ_BUF_BYTES];
 
     while !stop.load(Ordering::Relaxed) {
         match serial.read(&mut buf) {

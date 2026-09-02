@@ -29,7 +29,9 @@ luatos-cli fota build --new firmware.soc -o air8101_full_fota.bin
 
 ## 说明
 
-- BK72xx 默认文本日志流程
-- `flash test` 会自动抓启动日志并验证关键字
+- 刷机走原生 ISP，不调用 `.soc` 内的 `air602_flash.exe`（那是 SDK 打包的 `bk_loader.exe`）
+- 写完后 RTS+DTR 拉高 500ms 再关口，避免停在 ROM 下载模式（黑屏）
+- `--script` 会递归收集子目录（跳过 `.git/.svn/.hg`），按文件名入 LuaDB
+- BK72xx SOC UART 默认二进制 0xA5 流程；验证启动请用 `--tail-log-secs` 或 `log view-binary`
 - `fota build` 已支持 BK72XX 新格式全量/脚本包
 - 当前仅支持 `rom.fs.script.bkcrc=true` 的新格式，旧 `LFTA` 不在 luatos-cli 支持范围内

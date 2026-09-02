@@ -475,20 +475,15 @@ fn collect_script_files(folders: &[String]) -> anyhow::Result<Vec<String>> {
         let dir = std::path::Path::new(folder);
         anyhow::ensure!(dir.exists(), "脚本目录不存在: {}", folder);
         anyhow::ensure!(dir.is_dir(), "指定路径不是目录: {}", folder);
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            // 跳过版本控制目录
-            if path.is_dir() {
-                if let Some(name) = path.file_name() {
-                    let s = name.to_string_lossy();
-                    if VCS_DIRS.iter().any(|d| s.eq_ignore_ascii_case(d)) {
-                        continue;
-                    }
-                }
+        for entry in walkdir::WalkDir::new(dir).into_iter().filter_entry(|e| {
+            !e.file_type().is_dir() || {
+                let s = e.file_name().to_string_lossy();
+                !VCS_DIRS.iter().any(|d| s.eq_ignore_ascii_case(d))
             }
-            if path.is_file() {
-                files.push(path.to_string_lossy().to_string());
+        }) {
+            let entry = entry?;
+            if entry.file_type().is_file() {
+                files.push(entry.path().to_string_lossy().to_string());
             }
         }
     }

@@ -11,7 +11,8 @@
 //   6. Read Flash MID; unprotect (clear BP/CMP bits in SR).
 //   7. Erase sectors (4K or 64K blocks), write 4K sectors.
 //   8. Optionally flash script partition.
-//   9. Close port → device auto-reboots.
+//   9. RTS+DTR 500ms reboot then close (LuaTools `_reboot_and_close`).
+//      Closing the port alone leaves Air8101 in ROM bootloader (black screen).
 
 use anyhow::{bail, Context, Result};
 use luatos_soc::{parse_addr, SocInfo};
@@ -464,8 +465,22 @@ fn flash_data(
 /// Boot log capture duration after flashing.
 const LOG_CAPTURE_SECS: u64 = 20;
 
-/// Flash via air602_flash.exe subprocess (BK7258 preferred path).
-/// Returns captured boot log lines when `capture_boot_log` is true.
+/// LuaTools `_reboot_and_close`: RTS+DTR high 500ms, then release, then close.
+/// Air8101 stays in ROM bootloader (black LCD) if the port is only dropped.
+fn reboot_and_close(mut serial: Box<dyn serialport::SerialPort>) {
+    let _ = serial.set_baud_rate(115_200);
+    let _ = serial.write_data_terminal_ready(true);
+    let _ = serial.write_request_to_send(true);
+    std::thread::sleep(Duration::from_millis(500));
+    let _ = serial.write_data_terminal_ready(false);
+    let _ = serial.write_request_to_send(false);
+    std::thread::sleep(Duration::from_millis(100));
+    drop(serial);
+}
+
+/// Flash via air602_flash.exe subprocess.
+/// Unused as the primary path (hangs under Electron); kept for manual CLI experiments.
+#[allow(dead_code)]
 fn flash_via_subprocess(
     exe_path: &Path,
     rom_path: &Path,
@@ -483,68 +498,70 @@ fn flash_via_subprocess(
 
     on_progress(&FlashProgress::info("Flashing", 5.0, &format!("Starting air602_flash.exe on {port} (~37s)…")));
 
-    let mut child = std::process::Command::new(exe_path)
-        .args(["download", "-p", &port_num, "-b", "2000000", "-s", "0", "-i"])
+    let mut cmd = std::process::Command::new(exe_path);
+    cmd.args(["download", "-p", &port_num, "-b", "2000000", "-s", "0", "-i"])
         .arg(rom_path)
         .current_dir(exe_path.parent().unwrap_or(Path::new(".")))
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .context("Failed to launch air602_flash.exe")?;
+        .stderr(std::process::Stdio::null());
+    // airMaster/Electron spawn CLI with CREATE_NO_WINDOW; give the child the same
+    // so it does not depend on an inherited console.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
 
-    // Background thread: drain subprocess stdout
+    let mut child = cmd.spawn().context("Failed to launch air602_flash.exe")?;
+
     let stdout = child.stdout.take().expect("stdout piped");
-    let on_progress_clone: Box<dyn Fn(&FlashProgress) + Send> = {
-        // We need to share the callback; use a channel instead
-        let (tx, rx) = std::sync::mpsc::channel::<String>();
-        let progress_thread = std::thread::spawn(move || {
-            use std::io::{BufRead, BufReader};
-            for line in BufReader::new(stdout).lines().map_while(|l| l.ok()) {
-                let t = line.trim().to_string();
-                if !t.is_empty() {
-                    let _ = tx.send(t);
-                }
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let progress_thread = std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader};
+        for line in BufReader::new(stdout).lines().map_while(|l| l.ok()) {
+            let t = line.trim().to_string();
+            if !t.is_empty() {
+                let _ = tx.send(t);
             }
-        });
-
-        // Wait for subprocess to exit
-        let _status = child.wait().context("air602_flash.exe wait() failed")?;
-
-        // Drain remaining messages
-        let mut pct = 5.0f32;
-        while let Ok(t) = rx.try_recv() {
-            if t.contains("Gotten Bus") || t.contains("Gotten bus") {
-                pct = 15.0;
-            } else if t.contains("baudrate") {
-                pct = 22.0;
-            } else if t.contains("Boot_Reboot") {
-                pct = 90.0;
-            } else if t.contains("All Finished") {
-                pct = 93.0;
-            } else if t.contains("Writing") {
-                pct = (pct + 0.4).min(88.0);
-            }
-            on_progress(&FlashProgress::info("Flashing", pct, &format!("[exe] {t}")));
         }
-        let _ = progress_thread.join();
+    });
 
-        // This is a dummy to satisfy the type; actual progress was already emitted
-        Box::new(|_: &FlashProgress| {})
-    };
-    let _ = on_progress_clone; // silence unused warning
+    let status = child.wait().context("air602_flash.exe wait() failed")?;
+
+    let mut pct = 5.0f32;
+    while let Ok(t) = rx.try_recv() {
+        if t.contains("Gotten Bus") || t.contains("Gotten bus") {
+            pct = 15.0;
+        } else if t.contains("baudrate") {
+            pct = 22.0;
+        } else if t.contains("Boot_Reboot") {
+            pct = 90.0;
+        } else if t.contains("All Finished") {
+            pct = 93.0;
+        } else if t.contains("Writing") {
+            pct = (pct + 0.4).min(88.0);
+        }
+        on_progress(&FlashProgress::info("Flashing", pct, &format!("[exe] {t}")));
+    }
+    let _ = progress_thread.join();
+
+    if !status.success() {
+        bail!("air602_flash.exe failed (exit {:?})", status.code());
+    }
 
     if !capture_boot_log {
-        on_progress(&FlashProgress::done_ok("Flash complete! (boot log capture skipped)"));
+        on_progress(&FlashProgress::info("Flashing", 93.0, "Firmware written (boot log capture skipped)"));
         return Ok(Vec::new());
     }
 
     on_progress(&FlashProgress::info("Booting", 94.0, &format!("Firmware sent! Opening {port} @ {log_br} for boot log…")));
 
-    // Open log port immediately
+    // Open log port; failure here must not fail a successful firmware write.
     let mut log_port = {
         let mut last_err = String::new();
         let mut port_opt = None;
-        for _ in 0..10 {
+        for _ in 0..20 {
             match serialport::new(port, log_br).timeout(Duration::from_millis(200)).open() {
                 Ok(p) => {
                     port_opt = Some(p);
@@ -552,15 +569,19 @@ fn flash_via_subprocess(
                 }
                 Err(e) => {
                     last_err = e.to_string();
-                    std::thread::sleep(Duration::from_millis(10));
+                    std::thread::sleep(Duration::from_millis(50));
                 }
             }
         }
         match port_opt {
             Some(p) => p,
             None => {
-                on_progress(&FlashProgress::done_err(&format!("Cannot open log port {port}: {last_err}")));
-                bail!("Cannot open log port {port}: {last_err}");
+                on_progress(&FlashProgress::info(
+                    "Booting",
+                    94.0,
+                    &format!("[WARN] Cannot open log port {port}: {last_err} — firmware write already finished"),
+                ));
+                return Ok(Vec::new());
             }
         }
     };
@@ -588,24 +609,27 @@ fn flash_via_subprocess(
     let passed = boot_kw.iter().any(|kw| log_text.contains(kw));
 
     if passed {
-        on_progress(&FlashProgress::done_ok(&format!(
-            "PASS — firmware booted ({} log lines, {} bytes)",
-            lines.len(),
-            log_bytes.len()
-        )));
+        on_progress(&FlashProgress::info(
+            "Booting",
+            99.0,
+            &format!("Firmware booted ({} log lines, {} bytes)", lines.len(), log_bytes.len()),
+        ));
     } else {
-        on_progress(&FlashProgress::done_err(&format!("FAIL — no boot keywords in {} bytes of log", log_bytes.len())));
+        // Air8101 SOC UART is 0xA5 binary — text keywords like "LuatOS" will not match.
+        on_progress(&FlashProgress::info(
+            "Booting",
+            99.0,
+            &format!("No text boot keywords in {} bytes (binary log is OK)", log_bytes.len()),
+        ));
     }
 
     Ok(lines)
 }
 
-/// Full BK7258 (Air8101) flash routine.
+/// Full BK7258 (Air8101) flash routine via native ISP (firmware + optional script).
 ///
-/// If `air602_flash.exe` is found in the .soc archive, uses subprocess mode.
-/// Otherwise uses native Rust serial protocol.
-///
-/// Returns captured boot log lines when `capture_boot_log` is true.
+/// Does not spawn `air602_flash.exe` — that child hangs under Electron with no
+/// progress. `capture_boot_log` is accepted for API compatibility but unused.
 pub fn flash_bk7258(
     soc_path: &str,
     script_folders: Option<&[&str]>,
@@ -636,28 +660,12 @@ pub fn flash_bk7258(
         bail!("ROM file '{}' not found in .soc", info.rom.file);
     }
 
-    // 3. Subprocess path (preferred): use bundled air602_flash.exe
-    let exe_path = tempdir.path().join("air602_flash.exe");
-    if exe_path.exists() {
-        on_progress(&FlashProgress::info("Preparing", 3.0, &format!("Firmware: {} (subprocess mode)", info.rom.file)));
-        let boot_log = flash_via_subprocess(&exe_path, &rom_path, port, log_br, &cancel, &on_progress, capture_boot_log)?;
+    // .soc 里的 air602_flash.exe 是独立 Windows 工具。从 airMaster/Electron
+    //（无控制台）拉起时经常没有任何 stdout，UI 会一直停在
+    // “Starting air602_flash.exe…”。全量改走 native ISP：进度连续，写完 RTS+DTR 复位。
+    let _ = (log_br, capture_boot_log);
 
-        // air602_flash.exe only writes firmware; flash the script partition separately
-        // via native ISP when the caller supplied script folders.
-        if let Some(folders) = script_folders {
-            if cancel.load(Ordering::Relaxed) {
-                bail!("Flash cancelled by user");
-            }
-            on_progress(&FlashProgress::info("Preparing", 1.0, "Firmware done; flashing script partition…"));
-            // Brief pause so the OS releases the serial port after the subprocess exits.
-            std::thread::sleep(Duration::from_millis(500));
-            flash_script_only(soc_path, folders, port, cancel.clone(), &on_progress)?;
-        }
-
-        return Ok(boot_log);
-    }
-
-    // 4. Native Rust path (fallback)
+    // 3. Native ISP: handshake @ 115200, switch baud, write ROM then script.
     let flash_br = info.flash_baud_rate();
     let flash_br = baud_rate.unwrap_or(flash_br);
 
@@ -763,48 +771,81 @@ pub fn flash_bk7258(
         flash_data(&mut *serial, &script_data, script_addr, 80.0, 98.0, "Script", &cancel, &on_progress)?;
     }
 
-    drop(serial);
+    reboot_and_close(serial);
     on_progress(&FlashProgress::done_ok("Flash complete! Device is rebooting."));
     Ok(vec![])
 }
 
 // ─── Script synthesis ─────────────────────────────────────────────────────────
 
+const SCRIPT_VCS_DIRS: &[&str] = &[".git", ".svn", ".hg"];
+
+/// Recursively collect files under script folders. VCS directories are skipped.
+fn collect_script_files_recursive(folders: &[&Path]) -> Result<Vec<std::path::PathBuf>> {
+    use walkdir::WalkDir;
+    let mut files = Vec::new();
+    for folder in folders {
+        anyhow::ensure!(folder.exists(), "Cannot read script folder: {}", folder.display());
+        for entry in WalkDir::new(folder).into_iter().filter_entry(|e| {
+            !e.file_type().is_dir() || {
+                let name = e.file_name().to_string_lossy();
+                !SCRIPT_VCS_DIRS.iter().any(|d| name.eq_ignore_ascii_case(d))
+            }
+        }) {
+            let entry = entry.with_context(|| format!("Cannot walk script folder: {}", folder.display()))?;
+            if entry.file_type().is_file() {
+                files.push(entry.into_path());
+            }
+        }
+    }
+    Ok(files)
+}
+
 /// Build a LuaDB script.bin from Lua files in `folder`.
+///
+/// Subdirectories are included. LuaDB 按文件名查找（`require("lcd_drv")`），
+/// 因此入口名用 basename；同名文件后者覆盖前者。
 fn build_script_bin(folders: &[&Path], info: &SocInfo) -> Result<Vec<u8>> {
     let use_bkcrc = info.use_bkcrc();
     let use_luac = info.script_use_luac();
     let bitw = info.script_bitw();
     let debug_mode = info.script_debug_mode();
 
+    let mut by_name: std::collections::BTreeMap<String, std::path::PathBuf> = std::collections::BTreeMap::new();
+    for path in collect_script_files_recursive(folders)? {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if name.is_empty() {
+            continue;
+        }
+        if let Some(prev) = by_name.insert(name.clone(), path.clone()) {
+            log::warn!("script name collision: {name} ({} overwritten by {})", prev.display(), path.display());
+        }
+    }
+
     let mut entries: Vec<luatos_luadb::LuadbEntry> = Vec::new();
 
-    for folder in folders {
-        for entry in std::fs::read_dir(folder).with_context(|| format!("Cannot read script folder: {}", folder.display()))? {
-            let entry = entry?;
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            let data = std::fs::read(&path).with_context(|| format!("Cannot read {}", path.display()))?;
+    for (name, path) in by_name {
+        let data = std::fs::read(&path).with_context(|| format!("Cannot read {}", path.display()))?;
 
-            // Compile .lua files if use_luac is enabled
-            let (final_name, final_data) = if use_luac && name.ends_with(".lua") && !name.ends_with(".luac") {
-                let chunk_name = format!("@{}", name);
-                let bytecode = luatos_luadb::build::compile_lua_bytes(&data, &chunk_name, debug_mode, bitw).with_context(|| format!("Failed to compile {}", path.display()))?;
-                let luac_name = format!("{}c", name); // .lua → .luac
-                log::info!("compiled {} (bitw={}, debug_mode={})", name, bitw, debug_mode);
-                (luac_name, bytecode)
-            } else {
-                (name, data)
-            };
+        // Compile .lua files if use_luac is enabled
+        let (final_name, final_data) = if use_luac && name.ends_with(".lua") && !name.ends_with(".luac") {
+            let chunk_name = format!("@{}", name);
+            let bytecode = luatos_luadb::build::compile_lua_bytes(&data, &chunk_name, debug_mode, bitw)
+                .with_context(|| format!("Failed to compile {}", path.display()))?;
+            let luac_name = format!("{}c", name); // .lua → .luac
+            log::info!("compiled {} (bitw={}, debug_mode={})", name, bitw, debug_mode);
+            (luac_name, bytecode)
+        } else {
+            (name, data)
+        };
 
-            entries.push(luatos_luadb::LuadbEntry {
-                filename: final_name,
-                data: final_data,
-            });
-        }
+        entries.push(luatos_luadb::LuadbEntry {
+            filename: final_name,
+            data: final_data,
+        });
     }
 
     if entries.is_empty() {
@@ -915,7 +956,7 @@ pub fn flash_script_only(soc_path: &str, script_folders: &[&str], port: &str, ca
     // Flash script
     flash_data(&mut *serial, &script_data, script_addr, 30.0, 95.0, "Script", &cancel, on_progress)?;
 
-    drop(serial);
+    reboot_and_close(serial);
     on_progress(&FlashProgress::done_ok("Script flash complete! Device is rebooting."));
     Ok(())
 }
@@ -955,7 +996,7 @@ pub fn clear_filesystem(soc_path: &str, port: &str, cancel: Arc<AtomicBool>, on_
         true
     })?;
 
-    drop(serial);
+    reboot_and_close(serial);
     on_progress(&FlashProgress::done_ok("Filesystem cleared! Device is rebooting."));
     Ok(())
 }
@@ -992,7 +1033,7 @@ pub fn flash_filesystem(soc_path: &str, script_folders: &[&str], port: &str, can
 
     flash_data(&mut *serial, &fs_data, fs_addr, 30.0, 95.0, "Filesystem", &cancel, &on_progress)?;
 
-    drop(serial);
+    reboot_and_close(serial);
     on_progress(&FlashProgress::done_ok("Filesystem flash complete! Device is rebooting."));
     Ok(())
 }
@@ -1032,13 +1073,32 @@ pub fn clear_fskv(soc_path: &str, port: &str, cancel: Arc<AtomicBool>, on_progre
         true
     })?;
 
-    drop(serial);
+    reboot_and_close(serial);
     on_progress(&FlashProgress::done_ok("FSKV cleared! Device is rebooting."));
     Ok(())
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collect_script_files_includes_nested() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.lua"), b"--main").unwrap();
+        std::fs::create_dir_all(dir.path().join("drv")).unwrap();
+        std::fs::write(dir.path().join("drv").join("lcd_drv.lua"), b"--lcd").unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        std::fs::write(dir.path().join(".git").join("config"), b"skip").unwrap();
+
+        let files = collect_script_files_recursive(&[dir.path()]).unwrap();
+        let names: Vec<String> = files
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
+        assert!(names.contains(&"main.lua".into()), "{names:?}");
+        assert!(names.contains(&"lcd_drv.lua".into()), "{names:?}");
+        assert!(!names.contains(&"config".into()), "{names:?}");
+    }
 
     #[test]
     fn test_flash_sr_params_known_chips() {

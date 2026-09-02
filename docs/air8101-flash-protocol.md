@@ -10,7 +10,7 @@ Air8101 模组使用 BK7258 芯片（博通集成），刷机流程如下：
 4. **Flash 去保护**：读取 Flash MID，清除写保护位
 5. **扇区擦除**：自适应 4K/64K 擦除
 6. **扇区写入**：以 4K 扇区为单位写入数据
-7. **设备重启**：关闭串口后设备自动重启
+7. **设备重启**：RTS+DTR 拉高 500ms 再释放、关口（对齐 LuaTools `_reboot_and_close`）。只关串口会让模组停在 ROM 下载模式（黑屏）
 
 协议参考：BK7231GUIFlashTool
 
@@ -34,9 +34,11 @@ LuatOS-SoC_V2013_Air8101.soc (ZIP archive)
 ├── info.json              # 芯片信息、地址配置
 ├── luatos.bin             # 固件 ROM
 ├── script.bin             # Lua 脚本字节码
-├── air602_flash.exe       # 备用刷机工具 (Windows)
+├── air602_flash.exe       # SDK 把 luat_envs/bk_loader.exe 改名打入（Windows 博通下载器）
 └── [可选] 文档
 ```
+
+> **CLI 不走 `air602_flash.exe`。** 该文件是 SDK `build.py` 把 `bk_loader.exe`（如 2.1.11.17）改名打进 zip，给 LuaTools 老固件（`bkcrc=false`）降级用。luatos-cli 一律走下文原生 ISP；exe 在 Electron / 无控制台环境下会挂起且无进度。
 
 ### info.json 关键字段
 
@@ -439,26 +441,9 @@ SECTORS_PER_BLOCK = 16 (64 KiB / 4 KiB)
 
 ## 完整刷机流程
 
-### 固件刷机（子进程模式，优先路径）
+### 固件刷机（原生 ISP，唯一路径）
 
-如果 .soc 中包含 `air602_flash.exe`，优先使用子进程方式：
-
-```
-Step 1: 解压 .soc (ZIP), 解析 info.json
-Step 2: 启动子进程
-  └─ air602_flash.exe download -p <COM#> -b 2000000 -s 0 -i <rom.bin>
-Step 3: 等待子进程完成
-Step 4: 捕获启动日志
-  ├─ 打开日志端口 @ log_baud_rate (921600)
-  ├─ 捕获 20 秒
-  ├─ 搜索关键词: "luat:", "ap0:", "LuatOS", "EasyFlash"
-  ├─ 关键词命中 → PASS
-  └─ 未命中 → FAIL
-```
-
-### 固件刷机（原生模式，备用路径）
-
-当 .soc 中不含 `air602_flash.exe` 时使用原生 Rust 协议：
+`.soc` 里即使有 `air602_flash.exe` 也不再拉起。流程：
 
 ```
 Step 1: 解压 .soc (ZIP) 并解析 info.json
@@ -504,25 +489,31 @@ Step 8: 写入固件
   └─ 报告进度
 
 Step 9: [可选] 构建并刷写脚本
-  ├─ 从 Lua 文件构建 LuaDB
+  ├─ 递归收集 --script 目录中的文件（跳过 .git/.svn/.hg）
+  ├─ 按 basename 入 LuaDB（同名后者覆盖前者）
   ├─ 可选: 添加 BK CRC16 封装
   ├─ 擦除脚本分区
   └─ 写入脚本数据
 
-Step 10: 关闭串口
-  └─ 设备自动重启
+Step 10: 重启并关口（LuaTools `_reboot_and_close`）
+  ├─ 波特率改回 115200
+  ├─ RTS=1、DTR=1，等待 500ms
+  ├─ RTS=0、DTR=0，等待 100ms
+  └─ drop 串口
 ```
+
+> 原生 ISP **不**在刷机流程内抓文本启动日志。Air8101 SOC UART 是 0xA5 二进制，用 `"LuatOS"` 等文本关键字判定会误报 FAIL。验证请用 `flash run --tail-log-secs` 或 `log view-binary`。
 
 ### 仅刷脚本
 
 ```
 1. 从 .soc 中解析 info.json 获取 script_addr, flash_br, 编译配置
-2. 从 Lua 文件构建 LuaDB 脚本镜像
+2. 递归收集 Lua 文件并构建 LuaDB 脚本镜像
 3. 如果 bkcrc=true，添加 BK CRC16 封装
 4. 检查脚本大小不超过分区限制
 5. 连接 bootloader (get_bus → set_baud → unprotect)
 6. 擦除脚本分区 + 写入数据
-7. 关闭串口，设备自动重启
+7. RTS+DTR 500ms 重启后关口
 ```
 
 ### 清除文件系统/FSKV
@@ -531,7 +522,7 @@ Step 10: 关闭串口
 1. 连接 bootloader
 2. 计算分区的扇区数
 3. 使用自适应策略擦除所有扇区
-4. 关闭串口
+4. RTS+DTR 500ms 重启后关口
 ```
 
 ---
@@ -546,7 +537,6 @@ Step 10: 关闭串口
 | Flash MID 读取 | 1 次 | 3s | — |
 | 扇区擦除 (4K/64K) | 5 次 | 3s/8s | 50ms |
 | 扇区写入 (4K) | 3 次 | 5s | 100ms |
-| 启动日志捕获 | — | 20s 总计 | — |
 
 ---
 
@@ -559,13 +549,13 @@ Step 10: 关闭串口
 
 ## 启动日志验证
 
-刷机完成后，可通过捕获设备启动日志来验证固件是否正常运行：
+`flash_bk7258` 原生路径不再内嵌 20 秒文本关键字抓取（`flash run` JSON 的 `boot_log` 为空数组）。
+
+推荐：
 
 ```
-1. 关闭刷机串口
-2. 重新打开串口 @ log_baud_rate (默认 921600)
-3. 持续读取 20 秒
-4. 搜索关键词: "luat:", "ap0:", "ap1:", "LuatOS", "EasyFlash"
-5. 如果命中任一关键词 → 验证通过 (PASS)
-6. 未命中 → 验证失败 (FAIL)
+luatos-cli flash run --soc firmware.soc --port COM6 --tail-log-secs 20
+luatos-cli log view-binary --port COM6 --baud 2000000 --probe
 ```
+
+SOC UART 为 0xA5 二进制帧，不要用纯文本 `"LuatOS"` 关键字判断是否起来。

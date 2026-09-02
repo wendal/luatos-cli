@@ -31,9 +31,9 @@
 - **VID:** `0x19D1` (Eigencomm)
 - **PID:** `0x0001`
 - 端口分布 (通过USB interface编号识别, **不能**按COM端口号排序!):
-  - `x.2` (interface=2) → SOC Log / 命令端口 (AT+ECRST, 0x7E日志帧)
+  - `x.2` (interface=2) → SOC 日志 / DIAG 口（0x7E 帧；运行时重启走这里）
   - `x.4` (interface=4) → AP Log
-  - `x.6` (interface=6) → 用户COM口
+  - `x.6` (interface=6) → 用户 AT 口（`AT+RESET` / `AT+ECRST` 兜底；LuatOS 上常无 modem AT 解析）
 - **重要**: COM端口号与USB接口号的映射在不同PC上可能不同!
   例如: COM3=x.6, COM4=x.2, COM5=x.4 (非按COM号顺序)
 - 代码中使用 `serialport` crate 的 `usb_info.interface` 字段匹配
@@ -49,45 +49,65 @@
 下载模式: VID=0x17D1, PID=0x0001, 单端口
 ```
 
+## DIAG 短帧（SOC 日志口 x.2）
+
+打开 USB CDC 后先拉 DTR/RTS HIGH。短帧格式：`7E <len> <cmd> 7E`。
+
+| 字节序列 | cmd | 用途 |
+|----------|-----|------|
+| `7E 00 00 7E` | 0x00 | 握手 / 打开打印通道（`log view-binary --probe`） |
+| `7E 00 01 7E` | 0x01 | **运行时重启**（`device reboot`；USB 会重枚举） |
+| `7E 00 02 7E` | 0x02 | **进入下载模式**（`device boot` / 刷机前 `auto_enter_boot_mode`） |
+
+cmd=0x01 与 cmd=0x02 不能混用：只想复位跑固件时发 0x01，不要发 0x02。
+
+## 运行时重启（`device reboot --chip ec718`）
+
+对齐 LuaTools `aio_soc_usb_trace`。`--port auto` 或省略视为未指定，自动找日志口。
+
+```
+1. 找 USB SOC 日志口 x.2（VID=0x19D1, interface=2）
+2. 921600 打开，DTR/RTS HIGH，等待 80ms
+3. 发送 7E 00 00 7E，最多等 300ms 读到 ≥64 字节
+4. 发送 7E 00 01 7E，保持句柄约 1500ms
+```
+
+找不到 x.2 时回退用户口 x.6：115200 发 `AT` → `AT+RESET` → `AT+ECRST`。真机上只对 x.6 写 AT 常常不会复位。
+
+指定 `--port COMx` 时，当前实现对**该口**发上述 DIAG（按日志口处理）。混插 CH340 时应指定 USB 日志口，或省略 `--port` 让其自动探测。
+
 ## 重启进入Boot模式 (关键!)
 
 **仅适用于移芯(Eigencomm)模组**, 其他模组(如BK7258)通常由CH340/CH343控制重启过程.
 
 ### 自动进入Boot模式流程
 
-当模组处于正常运行状态 (运行LuatOS固件), 需要通过以下两步命令序列使其重启进入下载模式:
+当模组处于正常运行状态 (运行LuatOS固件), 需要通过以下序列使其重启进入下载模式:
 
-#### 步骤1: AT复位命令
+#### 步骤1: 打开命令口并拉高 DTR/RTS
+- 端口: x.2（或调用方指定的口）
+- 波特率 115200，DTR=HIGH，RTS=HIGH，等待 80ms
+
+#### 步骤2: AT复位命令
 ```
 AT+ECRST=delay,799\r\n
 ```
 - 字节序列: `41 54 2B 45 43 52 53 54 3D 64 65 6C 61 79 2C 37 39 39 0D 0A`
-- 通过命令端口 (x.2) 发送, 波特率 115200
 - 含义: 触发模组延迟799ms后复位
 - 发送后等待 **200ms**
 
-#### 步骤2: DIAG帧 — 强制进入下载模式
+#### 步骤3: DIAG帧 — 强制进入下载模式
 ```
 0x7E 0x00 0x02 0x7E
 ```
-- `0x7E` = JTT帧定界符 (起始/结束)
-- `0x00` = 长度字节
-- `0x02` = 命令类型 (进入boot模式)
+- `0x02` = 进入 boot / 下载模式（不是运行时重启的 0x01）
 - 发送后等待 **800ms**
-
-#### DIAG帧相关常量
-```
-JTT_PACK_FLAG       = 0x7E  // 帧定界符
-JTT_PACK_CODE       = 0x7D  // 转义符
-DIAG_REBOOT_MS      = 0x41  // 普通重启
-DIAG_REBOOT_DOWNLOAD_MS = 0x42  // 重启到下载模式
-```
 
 ### 完整流程
 
 ```
 1. 枚举USB设备, 查找 VID=0x19D1, PID=0x0001
-2. 找到命令端口 (x.2), 以 115200 baud 打开
+2. 找到命令端口 (x.2), 以 115200 baud 打开，DTR/RTS HIGH
 3. 发送: AT+ECRST=delay,799\r\n
 4. 等待 200ms
 5. 发送: 0x7E 0x00 0x02 0x7E
@@ -241,11 +261,16 @@ DIAG_REBOOT_DOWNLOAD_MS = 0x42  // 重启到下载模式
 
 ## 日志输出
 
-- 协议: 0x7E HDLC帧 (与Air1601/CCM4211的0xA5帧不同!)
-- 波特率: **921600** (info.json中标注2000000, 但Windows USB CDC不支持, 实际使用921600)
-- 需要发送探测命令才开始输出 (探测帧格式与ccm4211相同, 0xA5帧)
-- 日志端口: USB interface 2 (x.2), 与AT命令端口相同
-- DTR/RTS: 打开端口后需设为 HIGH
+协议与波特率必须跟**实际打开的口**走，不能「机器上有 EC718 USB 就把任意 COM 当 CDC」。
+
+| 打开的口 | 协议 | 波特率 | `--probe` |
+|----------|------|--------|-----------|
+| USB CDC SOC 日志口 x.2（VID=0x19D1, interface=2） | 0x7E HDLC | `2000000` 在 Windows 上改成 **921600** | `7E 00 00 7E`（打开打印通道） |
+| CH340 / 其它 UART（即使同机插着 4G USB） | 0xA5 SOC 帧 | 保持用户指定（常见 2M） | `build_soc_frame(cmd=1, ...)` 与 CCM4211 相同 |
+| 用户 AT 口 x.6 | 不是 SOC 日志口 | — | 不要当日志口 `--probe` |
+
+- USB CDC 打开后 DTR/RTS 设为 HIGH
+- SOC 解码：`cmd != 0` 的帧是探测/读写应答，不当日志行
 
 ### USB端口分配
 
@@ -253,9 +278,9 @@ DIAG_REBOOT_DOWNLOAD_MS = 0x42  // 重启到下载模式
 
 | USB接口 (interface) | 功能 | 说明 |
 |---------|------|------|
-| interface=2 (x.2) | SOC日志 + AT命令 | 0x7E帧日志, AT+ECRST重启命令 |
+| interface=2 (x.2) | SOC日志 + DIAG | 0x7E 日志；`7E 00 00 7E` 开打印；`7E 00 01 7E` 运行时重启 |
 | interface=4 (x.4) | AP日志 | AP子系统日志 |
-| interface=6 (x.6) | 用户串口 | 用户自定义通信 |
+| interface=6 (x.6) | 用户 AT 口 | `AT+RESET` / `AT+ECRST` 兜底；LuatOS 上常常没有 modem AT 解析 |
 
 示例: COM3=x.6, COM4=x.2, COM5=x.4 (非按COM号递增!)
 
@@ -308,12 +333,19 @@ EC718使用 **0x7E HDLC帧格式**, 与Air1601/CCM4211的0xA5帧完全不同.
 
 #### 探测命令 (Probe)
 
-固件缓冲日志输出, 需发送探测帧触发日志开始. 探测帧使用0xA5格式:
+固件缓冲日志，需先探测才会往外吐。
+
+**USB CDC 日志口 x.2**（LuaTools `aio_soc_usb_trace`）：
+```
+7E 00 00 7E
+```
+打开打印通道后再收 0x7E HDLC 流。0xA5 探测帧在这条口上无效。
+
+**CH340 / 非 CDC SOC UART**：
 ```
 build_soc_frame(cmd=1, address=0, payload=[], sn=1)
 ```
-即发送 SOC_CMD_GET_BASE_INFO (cmd=1) 帧, 与CCM4211完全相同.
-设备收到后以0x7E帧格式输出日志.
+即 SOC_CMD_GET_BASE_INFO，与 CCM4211 相同。设备以 0xA5 帧回日志。
 
 #### DTR/RTS 控制
 
@@ -328,20 +360,26 @@ RTS = HIGH (True)
 
 EC718刷机后模组复位, USB重新枚举:
 1. 刷机使用下载端口: VID=0x17D1 (boot模式)
-2. 复位后变为运行模式: VID=0x19D1 (3个端口)
-3. 日志端口为 **第二个COM号** (x.4接口, 非最低COM号!)
+2. 复位后变为运行模式: VID=0x19D1 (多端口)
+3. SOC 日志口是 **interface=2 (x.2)**，不要按 COM 号排序去猜「第二个口」
 4. 需要等待USB重新枚举 (约5-15秒)
 5. 设置 DTR=HIGH, RTS=HIGH
-6. 发送探测命令后才开始接收日志
+6. 发送 `7E 00 00 7E` 后才开始接收 0x7E 日志
 
 ### CLI 使用
 
 ```bash
-# 自动检测EC718日志端口 (自动找到第二个COM口)
+# 自动检测 EC718 USB 日志口 (interface=2)，921600 + 7E 探测
 luatos-cli log view-binary --port auto --probe
 
-# 指定端口 (COM4 = 日志口, 非COM3)
+# 指定 USB CDC 日志口：2M 会改成 921600，probe 发 7E 00 00 7E
 luatos-cli log view-binary --port COM4 --baud 2000000 --probe
+
+# 指定 CH340 调试口：即使同机有 4G USB，仍保持 2M + 0xA5
+luatos-cli log view-binary --port COM3 --baud 2000000 --probe
+
+# 运行时重启（DIAG 0x01，不是进下载模式）
+luatos-cli device reboot --chip air8000
 
 # 刷机+日志测试 (自动处理端口变化)
 luatos-cli flash test --soc firmware.soc --port COM3 --keyword "LuatOS@"

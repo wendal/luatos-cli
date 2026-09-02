@@ -36,6 +36,8 @@ luatos-cli log view-binary --port auto --baud 921600 --probe
 
 ## 说明
 
-- EC718 USB CDC 在 Windows 下 2000000 常不稳定，建议 `921600`
+- EC718 USB CDC 在 Windows 下 2000000 常被改成 `921600`；**仅当打开的口就是 USB 日志口 x.2** 才 remap。CH340 调试口保持用户波特率 + 0xA5
+- USB CDC `--probe` 发 `7E 00 00 7E`；CH340 仍发 0xA5 探测帧
+- 运行时重启：`luatos-cli device reboot --chip air8000`（优先 x.2 DIAG `7E 00 01 7E`，不是进下载模式）
 - 刷机与日志端口可能重枚举，`auto` 更稳妥
-- `flash run --script` 会在全量刷机时用所选目录生成 script.bin，覆盖 SOC 包内自带脚本
+- `flash run --script` 会递归收集所选目录并生成 script.bin，覆盖 SOC 包内自带脚本

@@ -6,12 +6,12 @@ LuatOS 命令行工具集（纯 Rust）——刷机、日志、项目管理、�
 
 ## 功能特性
 
-- **多芯片刷机**：Air8101(BK7258)、Air6208(XT804)、Air1601/Air1602(CCM4211)、Air8000(EC718)、SF32LB58、Air724UG(UIS8910DM/RDA8910)；`flash run --script` 在 EC718 / CCM4211 / RDA8910 上会覆盖 SOC 包内脚本
+- **多芯片刷机**：Air8101(BK7258)、Air6208(XT804)、Air1601/Air1602(CCM4211)、Air8000(EC718)、SF32LB58、Air724UG(UIS8910DM/RDA8910)；Air8101 走原生 ISP（不调用 `.soc` 内 `air602_flash.exe`），写完 RTS+DTR 复位；`flash run --script` 递归收集子目录，并在 EC718 / CCM4211 / RDA8910 上覆盖 SOC 包内脚本
 - **FOTA 打包**：支持 EC7xx 差分/脚本、CCM4211 全量/脚本、Air8101(BK72XX) 新格式全量/脚本、Air724UG(RDA8910) 差分/脚本；EC7xx 差分时若底层固件相同自动回落到脚本更新包（`--force-par` 可强制走差分）
 - **二级帮助入口**：`--help` 提示型号入口，`guide models` / `guide model --model <型号>` 直接给推荐命令
 - **刷机后继续监听**：`flash run --tail-log-secs <N>` 刷机后自动按型号波特率续接日志，减少开机日志丢失；EC718 / RDA8910 会等待运行模式 log 口重新枚举
 - **trun 单点调试**：`trun <name> --soc base.soc --port COM6` 一站式完成 testcase 合成 → 刷机 → 抓日志 → 关键字校验，取代 luatos-autotest-v2 在开发期的临时合成
-- **日志系统**：文本 / 二进制日志查看、录制、解析，支持智能诊断；`--port auto` 按 USB 接口号自动识别 EC718 / RDA8910 的 log 口
+- **日志系统**：文本 / 二进制日志查看、录制、解析，支持智能诊断；`--port auto` 按 USB 接口号自动识别 EC718 / RDA8910 的 log 口；`log view-binary` 按实际打开的口选 0x7E（EC718 USB CDC）或 0xA5（CH340 / SOC UART），不因同机插着 4G USB 而误切协议
 - **项目与构建**：项目向导、配置管理、Lua 依赖分析、luac/LuaDB 构建
 - **AI 友好输出**：全局 `--format text|json|jsonl`
 
