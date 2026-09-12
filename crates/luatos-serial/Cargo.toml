@@ -11,3 +11,9 @@ serde.workspace = true
 serialport.workspace = true
 log.workspace = true
 chrono.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Devices_Communication",
+] }

@@ -491,7 +491,10 @@ fn extract_zip_to_stem_dir(zip_path: &Path) -> Result<std::path::PathBuf> {
             continue;
         }
         // zip-slip 防护：拒绝绝对路径条目，防止写出解压目录
-        if Path::new(&entry_name).is_absolute() {
+        // 注意 Windows 上 `Path::is_absolute` 对 `/x`、`\x`（无盘符）返回 false，会经 join 写到盘符根目录，需额外识别
+        let bytes = entry_name.as_bytes();
+        let is_abs_entry = entry_name.starts_with('/') || entry_name.starts_with('\\') || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':');
+        if is_abs_entry {
             let _ = std::fs::remove_dir_all(&dest_dir);
             bail!("zip 条目包含绝对路径，已拒绝解压: {entry_name}");
         }

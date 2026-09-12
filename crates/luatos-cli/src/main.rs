@@ -656,7 +656,7 @@ enum DeviceCommands {
         #[arg(long)]
         port: Option<String>,
         /// Chip type (bk72xx, air8101, xt804, air6208, air101, ec718, air8000, air1601, air1602, ccm4211, ...)
-        /// If omitted, generic DTR pulse is used.
+        /// If omitted, UART RTS+DTR pulse is used. `--port auto` is treated as omitted.
         #[arg(long)]
         chip: Option<String>,
     },
@@ -666,7 +666,7 @@ enum DeviceCommands {
         #[arg(long)]
         port: Option<String>,
         /// Chip type (bk72xx, air8101, xt804, air6208, air101, ec718, air8000, air1601, air1602, ccm4211, ...)
-        /// If omitted, generic DTR+RTS pulse is used.
+        /// If omitted, UART RTS+DTR pulse is used. `--port auto` is treated as omitted.
         #[arg(long)]
         chip: Option<String>,
     },

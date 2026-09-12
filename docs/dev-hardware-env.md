@@ -199,12 +199,14 @@ luatos-cli device boot --port COM6 --chip air1602
 # BK7258 / XT804 / CCM4211 (Air1601/Air1602)
 luatos-cli device reboot --port COM6 --chip bk72xx
 
-# EC718（自动检测 USB 命令口）
+# EC718（自动检测 USB SOC 日志口，DIAG 重启）
 luatos-cli device reboot --chip ec718
 
-# 通用（未知芯片，使用 DTR 脉冲）
+# 通用（未知芯片，UART 上 RTS+DTR 拉 500ms）
 luatos-cli device reboot --port COM6
 ```
+
+`--port auto` 视为省略。EC718 优先对 x.2 发 `7E 00 00 7E` + `7E 00 01 7E`；找不到日志口再回退 x.6 的 AT。通用 UART 不再只打 DTR。
 
 ---
 

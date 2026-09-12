@@ -467,7 +467,11 @@ impl SocLogDecoder {
         // Parse 24-byte header
         let ms = u64::from_le_bytes(payload[0..8].try_into().ok()?);
         let tag_raw = u64::from_le_bytes(payload[8..16].try_into().ok()?);
-        let _cmd = u32::from_le_bytes(payload[16..20].try_into().ok()?);
+        let cmd = u32::from_le_bytes(payload[16..20].try_into().ok()?);
+        // cmd != 0 是探测/读写应答，不是日志。LuaTools 只在 trace_event==0 时进打印窗。
+        if cmd != 0 {
+            return None;
+        }
         let _sn = u16::from_le_bytes(payload[20..22].try_into().ok()?);
         let msg_type = payload[22];
         let _cpu = payload[23];
@@ -489,17 +493,24 @@ impl SocLogDecoder {
         let body = &payload[24..];
 
         // Decode format string and arguments
-        let message = match msg_type {
+        let mut message = match msg_type {
             0 => decode_printf_message(body),
             _ => {
                 // Raw or unknown type
                 if body.is_empty() {
-                    "(empty)".to_string()
+                    String::new()
                 } else {
                     String::from_utf8_lossy(body).to_string()
                 }
             }
         };
+        // 固件格式串常带尾随 `\n`；再交给 UI `join("\n")` 会多出空行。
+        while message.ends_with('\n') || message.ends_with('\r') {
+            message.pop();
+        }
+        if message.trim().is_empty() {
+            return None;
+        }
 
         let now = cached_local_timestamp();
         let device_time = format!("{}.{:03}", ms / 1000, ms % 1000);
@@ -1778,6 +1789,7 @@ mod tests {
         payload[22] = 0;
         // cpu = 0
         payload[23] = 0;
+        payload.extend_from_slice(b"hello\0");
 
         let crc = crc16_modbus(&payload);
 
@@ -1806,6 +1818,7 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].level, LogLevel::Info);
         assert_eq!(entries[0].device_time.as_deref(), Some("1.000"));
+        assert_eq!(entries[0].message, "hello");
     }
 
     #[test]
@@ -1861,6 +1874,7 @@ mod tests {
         payload[0..8].copy_from_slice(&500u64.to_le_bytes());
         payload[8..16].copy_from_slice(&1u64.to_le_bytes()); // Debug level
         payload[20..22].copy_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(b"dbg\0");
 
         let crc = crc16_modbus(&payload);
 
@@ -2360,6 +2374,45 @@ mod tests {
             }
             SocFrame::Log(_, _) => panic!("expected Cmd, got Log"),
         }
+    }
+
+    #[test]
+    fn feed_skips_command_frames() {
+        let mut payload = vec![0u8; 24];
+        payload[0..8].copy_from_slice(&1000u64.to_le_bytes());
+        payload[8..16].copy_from_slice(&2u64.to_le_bytes());
+        payload[16..20].copy_from_slice(&0x01u32.to_le_bytes()); // probe cmd
+        payload[20..22].copy_from_slice(&1u16.to_le_bytes());
+        payload[22] = 0;
+        payload[23] = 0;
+
+        let mut decoder = SocLogDecoder::new();
+        let entries = decoder.feed(&build_soc_frame(&payload));
+        assert!(entries.is_empty(), "cmd!=0 frames must not become log lines");
+    }
+
+    #[test]
+    fn feed_strips_trailing_newlines_and_skips_blank() {
+        let mut hello = vec![0u8; 24];
+        hello[0..8].copy_from_slice(&1000u64.to_le_bytes());
+        hello[8..16].copy_from_slice(&2u64.to_le_bytes());
+        hello[16..20].copy_from_slice(&0u32.to_le_bytes());
+        hello[20..22].copy_from_slice(&1u16.to_le_bytes());
+        hello.extend_from_slice(b"hello\n\0");
+
+        let mut blank = vec![0u8; 24];
+        blank[0..8].copy_from_slice(&2000u64.to_le_bytes());
+        blank[8..16].copy_from_slice(&2u64.to_le_bytes());
+        blank[16..20].copy_from_slice(&0u32.to_le_bytes());
+        blank[20..22].copy_from_slice(&2u16.to_le_bytes());
+        blank.extend_from_slice(b"\n\0");
+
+        let mut decoder = SocLogDecoder::new();
+        let mut data = build_soc_frame(&hello);
+        data.extend_from_slice(&build_soc_frame(&blank));
+        let entries = decoder.feed(&data);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].message, "hello");
     }
 
     #[test]

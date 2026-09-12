@@ -152,6 +152,7 @@ fn alias_py_soclog_analyze_works() {
     payload[8..16].copy_from_slice(&2u64.to_le_bytes());
     payload[16..20].copy_from_slice(&0u32.to_le_bytes());
     payload[20..22].copy_from_slice(&1u16.to_le_bytes());
+    payload.extend_from_slice(b"alias\0");
     let frame = build_soc_frame(&payload);
 
     let mut out = [0u8; 64 * 1024];

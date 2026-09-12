@@ -18,6 +18,14 @@ pub fn resolve_log_mode(chip: &str, requested_baud: u32) -> (bool, bool, u32) {
     (use_binary_log, is_ec718, baud)
 }
 
+/// USB CDC 日志口才走 EC718 HDLC 与 2M→921600。
+/// CH340 等通用串口即使同机插着 4G USB，也保持用户波特率 + 0xA5 SOC 帧。
+pub fn resolve_ec718_usb_log(actual_port: &str, requested_baud: u32, ec718_log_port: Option<&str>) -> (u32, bool) {
+    let use_ec718_usb = ec718_log_port.is_some_and(|p| p.eq_ignore_ascii_case(actual_port));
+    let baud = if use_ec718_usb && requested_baud == 2_000_000 { 921_600 } else { requested_baud };
+    (baud, use_ec718_usb)
+}
+
 pub fn cmd_log_view(port: &str, baud: u32, smart: bool, reset: &ResetArgs, format: &OutputFormat) -> anyhow::Result<()> {
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_clone = stop.clone();
@@ -231,14 +239,17 @@ pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, save_dir: Option<
     // RTS 复位脉冲：先复位模组再开始采集，以捕获开机日志
     reset.execute(port)?;
 
-    // Detect whether an EC718 module is connected (VID=0x19D1)
-    let is_ec718 = luatos_flash::ec718::find_ec718_cmd_port().is_some();
+    // Detect whether an EC718 USB composite device is connected (VID=0x19D1).
+    // Protocol/baud must follow the *opened* port: CH340 debug UART is 0xA5 at 2M,
+    // even if the 4G USB CDC log port is also present.
+    let ec718_log_port = luatos_flash::ec718::find_ec718_log_port();
+    let is_ec718_present = luatos_flash::ec718::find_ec718_cmd_port().is_some() || ec718_log_port.is_some();
 
     // Auto-detect log port if "auto" specified
     let actual_port = if port == "auto" {
-        if is_ec718 {
+        if is_ec718_present {
             event::emit_message(format, "log.view_binary", MessageLevel::Info, "Auto-detecting EC718 log port (VID=0x19D1)...")?;
-            match luatos_flash::ec718::find_ec718_log_port() {
+            match ec718_log_port.clone().or_else(luatos_flash::ec718::find_ec718_log_port) {
                 Some(p) => {
                     event::emit_message(format, "log.view_binary", MessageLevel::Info, format!("Found EC718 log port: {p}"))?;
                     p
@@ -259,12 +270,17 @@ pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, save_dir: Option<
 
     // For EC718 USB CDC, 921600 is the supported baud rate.
     // The info.json may specify 2000000 but Windows USB CDC rejects it.
-    let baud = if is_ec718 && baud == 2000000 { 921600 } else { baud };
+    // Do not remap when the user opened a non-CDC COM (CH340 SOC UART at 2M).
+    let (baud, use_ec718_usb) = resolve_ec718_usb_log(&actual_port, baud, ec718_log_port.as_deref());
 
-    // Build probe data — same 0xA5 probe works for both chip types
+    // USB CDC 日志口要先发 `7E 00 00 7E` 才会出 0x7E 流；0xA5 探测帧在这条口上无效。
     let init_data = if probe {
         event::emit_message(format, "log.view_binary", MessageLevel::Info, "Sending probe to trigger log output ...")?;
-        Some(luatos_flash::ec718::build_log_probe())
+        if use_ec718_usb {
+            Some(luatos_flash::ec718::build_usb_log_probe())
+        } else {
+            Some(luatos_flash::ec718::build_log_probe())
+        }
     } else {
         None
     };
@@ -275,7 +291,7 @@ pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, save_dir: Option<
         MessageLevel::Info,
         format!(
             "Viewing {} binary log on {actual_port} @ {baud} bps (Ctrl+C to stop)",
-            if is_ec718 { "EC718" } else { "SOC" }
+            if use_ec718_usb { "EC718" } else { "SOC" }
         ),
     )?;
 
@@ -295,8 +311,8 @@ pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, save_dir: Option<
         None
     };
 
-    if is_ec718 {
-        // EC718: 0x7E HDLC framing, DTR/RTS HIGH
+    if use_ec718_usb {
+        // EC718 USB CDC: 0x7E HDLC framing, DTR/RTS HIGH
         let decoder = std::sync::Mutex::new(luatos_log::Ec718LogDecoder::new());
         let bin_writer_clone = bin_writer.clone();
         let analyzer_clone = smart_analyzer.clone();
@@ -703,6 +719,27 @@ mod tests {
         assert!(!binary);
         assert!(!ec718);
         assert_eq!(baud, 921_600);
+    }
+
+    #[test]
+    fn resolve_ec718_usb_log_keeps_ch340_2m() {
+        let (baud, usb) = super::resolve_ec718_usb_log("COM3", 2_000_000, Some("COM15"));
+        assert!(!usb);
+        assert_eq!(baud, 2_000_000);
+    }
+
+    #[test]
+    fn resolve_ec718_usb_log_remaps_cdc_2m() {
+        let (baud, usb) = super::resolve_ec718_usb_log("COM15", 2_000_000, Some("com15"));
+        assert!(usb);
+        assert_eq!(baud, 921_600);
+    }
+
+    #[test]
+    fn resolve_ec718_usb_log_no_usb_keeps_baud() {
+        let (baud, usb) = super::resolve_ec718_usb_log("COM3", 2_000_000, None);
+        assert!(!usb);
+        assert_eq!(baud, 2_000_000);
     }
 
     /// spawn_cancel_timer 必须把 cancel 立即传导到 stop,
