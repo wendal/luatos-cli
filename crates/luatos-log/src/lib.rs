@@ -8,6 +8,7 @@
 // modifying existing code.
 
 pub mod smart;
+mod printf;
 
 use serde::{Deserialize, Serialize};
 
@@ -774,153 +775,192 @@ fn decode_printf_message(body: &[u8]) -> String {
         return String::new();
     }
 
-    // Find the null-terminated format string
+    // 格式串以 NUL 结尾
     let fmt_end = body.iter().position(|&b| b == 0).unwrap_or(body.len());
     let fmt_str = String::from_utf8_lossy(&body[..fmt_end]).to_string();
 
-    // Arguments start after the format string, 4-byte aligned
-    let args_offset = (fmt_end + 4) & !3; // Align to 4 bytes
+    // 参数紧跟格式串之后、按 4 字节对齐
+    let args_offset = (fmt_end + 4) & !3;
     if args_offset >= body.len() {
-        // No arguments — return format string as-is
+        // 无参数 —— 原样返回格式串
         return fmt_str;
     }
 
-    let args_data = &body[args_offset..];
+    decode_soc_printf(&fmt_str, &body[args_offset..])
+}
 
-    // Simple format string argument substitution
-    let mut result = String::new();
-    let mut arg_pos = 0;
-    let mut chars = fmt_str.chars().peekable();
+/// 按 C 标准 varargs 布局为 SOC 日志做 printf 替换（含宽度/精度修饰符）。
+///
+/// 参数槽：整数与 `%c`/`%p` 占 4 字节、`ll`/`L` 占 8 字节，浮点占 8 字节；
+/// `%s` 为 NUL 结尾字符串，其后按 4 字节对齐。`*` 宽度/精度同样是 4 字节整数槽，
+/// 并按 C 规定**先于**主参数消费。参数不足时停止输出（保持原有截断行为）。
+fn decode_soc_printf(fmt: &str, args: &[u8]) -> String {
+    let mut out = String::with_capacity(fmt.len() + 32);
+    let mut pos = 0usize;
+    let mut chars = fmt.chars().peekable();
 
     while let Some(c) = chars.next() {
         if c != '%' {
-            result.push(c);
+            out.push(c);
             continue;
         }
 
-        // Read format specifier
-        let mut spec = String::new();
-        let mut is_short = false;
-        let mut is_short_short = false;
-        let mut is_long = false;
-        let mut is_long_long = false;
+        let mut spec = match printf::parse(&mut chars) {
+            Some(printf::Parsed::Percent) => {
+                out.push('%');
+                continue;
+            }
+            Some(printf::Parsed::Spec(s)) => s,
+            None => {
+                // 未知转换：保留 `%`，其余字符由主循环继续原样输出
+                out.push('%');
+                continue;
+            }
+        };
 
-        while let Some(&next) = chars.peek() {
-            match next {
-                '0'..='9' | '-' | '+' | ' ' | '#' | '.' => {
-                    spec.push(next);
-                    chars.next();
-                }
-                'h' => {
-                    if is_short {
-                        is_short_short = true;
-                    }
-                    is_short = true;
-                    chars.next();
-                }
-                'l' => {
-                    if is_long {
-                        is_long_long = true;
-                    }
-                    is_long = true;
-                    chars.next();
-                }
-                'd' | 'i' | 'u' | 'x' | 'X' | 'o' => {
-                    chars.next();
-                    if is_long_long {
-                        // 8-byte integer
-                        if arg_pos + 8 <= args_data.len() {
-                            let val = i64::from_le_bytes(args_data[arg_pos..arg_pos + 8].try_into().unwrap_or([0; 8]));
-                            match next {
-                                'x' => result.push_str(&format!("{val:x}")),
-                                'X' => result.push_str(&format!("{val:X}")),
-                                _ => result.push_str(&format!("{val}")),
-                            }
-                            arg_pos += 8;
-                        }
-                    } else {
-                        // `short` and `char` integer arguments are promoted to
-                        // `int`/`unsigned int` in C varargs, so they still occupy
-                        // a 4-byte argument slot. Narrow only for presentation.
-                        if arg_pos + 4 <= args_data.len() {
-                            let raw = u32::from_le_bytes(args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4]));
-                            match next {
-                                'd' | 'i' if is_short_short => result.push_str(&(raw as u8 as i8).to_string()),
-                                'd' | 'i' if is_short => result.push_str(&(raw as u16 as i16).to_string()),
-                                'd' | 'i' => result.push_str(&(raw as i32).to_string()),
-                                'u' if is_short_short => result.push_str(&(raw as u8).to_string()),
-                                'u' if is_short => result.push_str(&(raw as u16).to_string()),
-                                'u' => result.push_str(&raw.to_string()),
-                                'x' if is_short_short => result.push_str(&format!("{:x}", raw as u8)),
-                                'x' if is_short => result.push_str(&format!("{:x}", raw as u16)),
-                                'x' => result.push_str(&format!("{raw:x}")),
-                                'X' if is_short_short => result.push_str(&format!("{:X}", raw as u8)),
-                                'X' if is_short => result.push_str(&format!("{:X}", raw as u16)),
-                                'X' => result.push_str(&format!("{raw:X}")),
-                                'o' if is_short_short => result.push_str(&format!("{:o}", raw as u8)),
-                                'o' if is_short => result.push_str(&format!("{:o}", raw as u16)),
-                                'o' => result.push_str(&format!("{raw:o}")),
-                                _ => unreachable!(),
-                            }
-                            arg_pos += 4;
-                        }
-                    }
-                    break;
-                }
-                'f' | 'g' | 'e' => {
-                    chars.next();
-                    // 8-byte double
-                    if arg_pos + 8 <= args_data.len() {
-                        let val = f64::from_le_bytes(args_data[arg_pos..arg_pos + 8].try_into().unwrap_or([0; 8]));
-                        result.push_str(&format!("{val}"));
-                        arg_pos += 8;
-                    }
-                    break;
-                }
-                's' => {
-                    chars.next();
-                    // String: null-terminated, 4-byte aligned length
-                    let str_start = arg_pos;
-                    let str_end = args_data[str_start..].iter().position(|&b| b == 0).map(|p| str_start + p).unwrap_or(args_data.len());
-                    let s = String::from_utf8_lossy(&args_data[str_start..str_end]);
-                    result.push_str(&s);
-                    arg_pos = (str_end + 4) & !3; // Align
-                    break;
-                }
-                'c' => {
-                    chars.next();
-                    if arg_pos + 4 <= args_data.len() {
-                        let val = args_data[arg_pos];
-                        result.push(val as char);
-                        arg_pos += 4;
-                    }
-                    break;
-                }
-                'p' => {
-                    chars.next();
-                    if arg_pos + 4 <= args_data.len() {
-                        let val = u32::from_le_bytes(args_data[arg_pos..arg_pos + 4].try_into().unwrap_or([0; 4]));
-                        result.push_str(&format!("0x{val:08x}"));
-                        arg_pos += 4;
-                    }
-                    break;
-                }
-                '%' => {
-                    chars.next();
-                    result.push('%');
-                    break;
-                }
-                _ => {
-                    result.push('%');
-                    result.push(next);
-                    chars.next();
-                    break;
+        // ── SOC 日志特例：`%*s` / `%.*s` 的实参不是标准 C 的"宽度/精度" ──
+        //
+        // 设备侧 `am_log.c` 的 `prv_set_param` 里，`%*s` 与 `%.*s` 走**同一个分支**
+        // `PUT_PARAMM`（判据是 `fmt[-2] == '*'`），把 `(size, ptr)` 两个实参打包成
+        // 一个 8 字节描述符 + 数据区：
+        //     [4B 原指针][4B 长度 size][size 字节数据（补齐到 4B）]
+        // 这与标准 C 完全不同 —— 标准 C 里 `*` 只是"宽度/精度由实参给出"，指针仍是普通
+        // `%s`。所以这里**不能**各取一个 4B 宽度/精度槽，否则整条日志的参数全部错位。
+        //
+        // 主机侧参考实现 `common_log.cpp:prvSocLogPrint` 按同一布局解出后，再按 `*`
+        // 前面有没有 `.` 分**两种渲染**（两者的字节消费量相同，都是 `align_up(8+size,4)`）：
+        //     `%*s`  → **dump 十六进制**：`dump (0x%08x/%u) ` + 每字节两位大写十六进制 + 空格
+        //     `%.*s` → **字符串**：从数据区读出，截到第一个 NUL —— **不走 dump**
+        if matches!(spec.conv, 's' | 'S') && (spec.width_star || spec.prec_star) {
+            let Some((addr, payload)) = read_dump_desc(args, &mut pos) else {
+                break;
+            };
+            if spec.prec_star {
+                // `%.*s` —— 字符串语义（`common_log.cpp:854`）：**不 dump**，
+                // 从数据区起截到第一个 NUL，原样输出
+                let end = payload.iter().position(|&b| b == 0).unwrap_or(payload.len());
+                out.push_str(&String::from_utf8_lossy(&payload[..end]));
+            } else {
+                // `%*s` —— dump 十六进制（`common_log.cpp:868`）：
+                // `dump (0x地址/长度) ` + `BytesToHexString`（大写、每字节 2 位 + 1 个空格，
+                // 末尾同样带空格）
+                out.push_str(&format!("dump (0x{addr:08x}/{}) ", payload.len()));
+                for b in payload {
+                    out.push_str(&format!("{b:02X} "));
                 }
             }
+            continue;
+        }
+
+        // 非 `s` 转换的 `*`：设备侧**不**为它单独分配参数槽（`am_log.c:714` 只在 `s`
+        // 分支把 `*` 计入参数个数，其余转换一律按 1 个槽计），所以这里既不取值也不
+        // 补宽度，只清掉标记 —— 多消费一个槽会让后续所有参数错位。
+        spec.width_star = false;
+        spec.prec_star = false;
+
+        let wide = printf::needs_wide_slot(spec.length);
+        match spec.conv {
+            'd' | 'i' | 'u' | 'x' | 'X' | 'o' => {
+                let signed = matches!(spec.conv, 'd' | 'i');
+                let Some(raw) = read_int_slot(args, &mut pos, wide) else { break };
+                let v = printf::narrow(raw, spec.length, signed);
+                out.push_str(&printf::render_int(&spec, v));
+            }
+            'f' | 'F' | 'e' | 'E' | 'g' | 'G' | 'a' | 'A' => {
+                let Some(v) = read_f64(args, &mut pos) else { break };
+                out.push_str(&printf::render_float(&spec, v));
+            }
+            'c' => {
+                let Some(v) = read_i32(args, &mut pos) else { break };
+                out.push_str(&printf::render_char(&spec, (v as u8) as char));
+            }
+            'p' => {
+                let Some(v) = read_int_slot(args, &mut pos, false) else { break };
+                out.push_str(&printf::render_ptr(&spec, v));
+            }
+            // `%S` 在设备侧与 `%s` 同分支（`am_log.c` 的 `cc == 's' || cc == 'S'`），
+            // 打包与渲染都相同，这里合并处理
+            's' | 'S' => {
+                if pos >= args.len() {
+                    break;
+                }
+                let end = args[pos..]
+                    .iter()
+                    .position(|&b| b == 0)
+                    .map(|p| pos + p)
+                    .unwrap_or(args.len());
+                let s = String::from_utf8_lossy(&args[pos..end]).into_owned();
+                pos = (end + 4) & !3; // 字符串后按 4 字节对齐
+                out.push_str(&printf::render_str(&spec, &s));
+            }
+            // `%n` 无输出，但仍消费一个指针参数
+            'n' => match read_int_slot(args, &mut pos, false) {
+                Some(_) => {}
+                None => break,
+            },
+            _ => {}
         }
     }
 
-    result
+    out
+}
+
+/// 读一个 4 字节整数槽（`*` 的宽度/精度、`%c`、`%p` 都是这个宽度）。
+fn read_i32(args: &[u8], pos: &mut usize) -> Option<i32> {
+    if *pos + 4 > args.len() {
+        return None;
+    }
+    let v = i32::from_le_bytes(args[*pos..*pos + 4].try_into().ok()?);
+    *pos += 4;
+    Some(v)
+}
+
+/// 读一个整数槽：`wide` 为真时取 8 字节（`ll`/`L`），否则 4 字节。
+fn read_int_slot(args: &[u8], pos: &mut usize, wide: bool) -> Option<u64> {
+    if wide {
+        if *pos + 8 > args.len() {
+            return None;
+        }
+        let v = u64::from_le_bytes(args[*pos..*pos + 8].try_into().ok()?);
+        *pos += 8;
+        Some(v)
+    } else {
+        read_i32(args, pos).map(|v| v as u32 as u64)
+    }
+}
+
+/// 读一个 8 字节 double 槽。
+fn read_f64(args: &[u8], pos: &mut usize) -> Option<f64> {
+    if *pos + 8 > args.len() {
+        return None;
+    }
+    let v = f64::from_le_bytes(args[*pos..*pos + 8].try_into().ok()?);
+    *pos += 8;
+    Some(v)
+}
+
+/// 解出 SOC 日志的 dump 描述符：`[4B 原指针][4B 长度][长度字节数据]`（数据补齐到 4B）。
+///
+/// 对应设备侧 `am_log.c` 的 `PUT_PARAMM`（`%*s`/`%.*s` 的打包）与主机侧
+/// `common_log.cpp:prvSocLogPrint` 的解析（同一布局）。长度字段超过 `0xFFFF`、
+/// 或数据区越过帧尾时，参考实现直接结束该帧 —— 这里同样返回 `None` 让调用方停止输出。
+fn read_dump_desc<'a>(args: &'a [u8], pos: &mut usize) -> Option<(u32, &'a [u8])> {
+    if *pos + 8 > args.len() {
+        return None;
+    }
+    let addr = u32::from_le_bytes(args[*pos..*pos + 4].try_into().ok()?);
+    let len32 = u32::from_le_bytes(args[*pos + 4..*pos + 8].try_into().ok()?);
+    if len32 > 0xFFFF {
+        return None;
+    }
+    let size = (len32 & 0xFFFF) as usize;
+    let start = *pos + 8;
+    if start + size > args.len() {
+        return None;
+    }
+    // 设备侧是 `SOC_ALIGN_UP(size, 4)`，描述符头 8B 本身已 4 对齐，故等价于整体对齐
+    *pos = (start + size + 3) & !3;
+    Some((addr, &args[start..start + size]))
 }
 
 // ─── EC718 binary log decoder (0x7E HDLC framing) ───────────────────────────
@@ -1865,6 +1905,120 @@ mod tests {
 
         let msg = decode_printf_message(&body);
         assert_eq!(msg, "hd=-2 hu=65535 hx=abcd hX=BEEF hhd=-2 hhu=255 next=77");
+    }
+
+    /// printf 宽度/精度/标志修饰符，以及 `*` 参数化宽度/精度（2026-09-16 补全）。
+    ///
+    /// 背景：解码器原先把修饰符解析后直接丢弃，导致设备侧 `%08x` 不补零、
+    /// `%.2f` 不截精度、`%*d`/`%.*s` 更是被原样吐成字面文本。本测试固化
+    /// 补全后的 C 语义。
+    #[test]
+    fn decode_printf_modifiers_and_star() {
+        fn body_of(fmt: &str, args: &[u8]) -> Vec<u8> {
+            let mut b = fmt.as_bytes().to_vec();
+            b.push(0);
+            while b.len() % 4 != 0 {
+                b.push(0);
+            }
+            b.extend_from_slice(args);
+            b
+        }
+        let f = |fmt: &str, args: &[u8]| decode_printf_message(&body_of(fmt, args));
+        let d = |x: f64| x.to_le_bytes();
+        let u = |x: u32| x.to_le_bytes();
+        let s = |t: &str| {
+            let mut v = t.as_bytes().to_vec();
+            v.push(0);
+            while v.len() % 4 != 0 {
+                v.push(0);
+            }
+            v
+        };
+
+        // 精度：浮点默认 6 位小数；`.N` 指定小数位
+        assert_eq!(f("a=%.2f", &d(0.6666666666666666)), "a=0.67");
+        assert_eq!(f("b=%f", &d(0.6666666666666666)), "b=0.666667");
+        // 宽度（空格填充、右/左对齐）
+        assert_eq!(f("c=%8.3f", &d(3.14159265358979)), "c=   3.142");
+        let mut a = Vec::new();
+        a.extend_from_slice(&u(42));
+        a.extend_from_slice(&u(42));
+        assert_eq!(f("e=[%5d] f=[%-5d]", &a), "e=[   42] f=[42   ]");
+        // 零填充：整数补前导零（原本 `%08x` 是不补零的）
+        assert_eq!(f("d=%08x", &u(0x0abc)), "d=00000abc");
+        assert_eq!(f("d=%08x", &u(0)), "d=00000000");
+        // 零填充插在符号/进制前缀之后；浮点的零填充不受精度影响
+        assert_eq!(f("d=%08x", &u(0xffff_ffd6)), "d=ffffffd6");
+        assert_eq!(f("c=%08.3f", &d(3.14159265358979)), "c=0003.142");
+        assert_eq!(f("c=%+08.3f", &d(3.14159265358979)), "c=+003.142");
+        // 标志：+ / 空格 / #
+        assert_eq!(f("g=%+d", &u(42)), "g=+42");
+        assert_eq!(f("g=%+d", &u(0xffff_ffd6)), "g=-42");
+        assert_eq!(f("h=% d", &u(42)), "h= 42");
+        assert_eq!(f("h=%#x", &u(255)), "h=0xff");
+        assert_eq!(f("h=%#X", &u(255)), "h=0XFF");
+        assert_eq!(f("h=%#o", &u(8)), "h=010");
+        // 精度对整数是最小位数；`.0` + 0 ⇒ 空
+        assert_eq!(f("i=%.5d", &u(42)), "i=00042");
+        assert_eq!(f("i=%.0d", &u(0)), "i=");
+        // 科学计数法 / %g
+        assert_eq!(f("j=%e", &d(1234.5)), "j=1.234500e+03");
+        assert_eq!(f("j=%.2e", &d(1234.5)), "j=1.23e+03");
+        assert_eq!(f("j=%E", &d(1234.5)), "j=1.234500E+03");
+        assert_eq!(f("k=%g", &d(1234.5)), "k=1234.5");
+        assert_eq!(f("k=%g", &d(0.000123456)), "k=0.000123456");
+        // 长度修饰符：h / hh 收窄，ll 取 8 字节槽
+        assert_eq!(f("l=%hd", &u(0xffff_fffe)), "l=-2");
+        assert_eq!(f("l=%hhu", &u(255)), "l=255");
+        let mut a = Vec::new();
+        a.extend_from_slice(&(-5i64).to_le_bytes());
+        assert_eq!(f("l=%lld", &a), "l=-5");
+        // ── SOC 特例：`s` 转换的 `*` **不是**标准 C 的"宽度/精度" ──
+        //
+        // 设备侧 `am_log.c:PUT_PARAMM`（`prv_set_param` 的 `fmt[-2] == '*'` 分支）
+        // 把 `(size, ptr)` 打包成 `[4B 地址][4B 长度][长度字节数据(4B 对齐)]`；
+        // 主机侧 `common_log.cpp:prvSocLogPrint` 按同一布局解出，再按 `*` 前有没有
+        // `.` 决定渲染方式。下面这个构造器复现该线上布局。
+        let dump = |addr: u32, data: &[u8]| {
+            let mut v = Vec::new();
+            v.extend_from_slice(&addr.to_le_bytes());
+            v.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            v.extend_from_slice(data);
+            while v.len() % 4 != 0 {
+                v.push(0);
+            }
+            v
+        };
+        // `%.*s` ⇒ 字符串语义（**不 dump**），截到第一个 NUL
+        assert_eq!(
+            f("Manufacturer: %.*s", &dump(0x1c1eb200, b"SanDisk")),
+            "Manufacturer: SanDisk"
+        );
+        // 数据区含 NUL 时在该处截断（对应 `common_log.cpp:856` 的 NUL 扫描）
+        assert_eq!(f("v=%.*s", &dump(0x1000, b"abc\x00def")), "v=abc");
+        // `%*s` ⇒ dump 十六进制：`dump (0x地址/长度) ` + 大写、每字节 2 位 + 1 个空格（末尾也带）
+        assert_eq!(
+            f("raw=%*s", &dump(0x1420c300, &[0xde, 0xad, 0xbe, 0xef])),
+            "raw=dump (0x1420c300/4) DE AD BE EF "
+        );
+        // `%*.*s` 含 `.` ⇒ 与 `%.*s` 同样走字符串
+        assert_eq!(f("w=%*.*s", &dump(0x2000, b"hi")), "w=hi");
+        // `%S` 与 `%s` 同分支（`am_log.c`：`cc == 's' || cc == 'S'`）
+        assert_eq!(f("x=%.*S", &dump(0x3000, b"ok")), "x=ok");
+        // 非 `s` 转换的 `*`：设备侧不为它单独分配参数槽（`prv_check_param_cnt` 只在
+        // `s`/`S` 分支把 `*` 计入 2 个参数），故只消费 1 个 4B 槽
+        assert_eq!(f("m=[%*d]", &u(42)), "m=[42]");
+        // 无 `*` 的字面精度仍走普通 `%s` 路径
+        assert_eq!(f("n=[%.3s]", &s("hello")), "n=[hel]");
+        // `0` 标志对 `%s` 无效（C 未定义；与 glibc 一致按空格填充）
+        assert_eq!(f("r=[%05s]", &s("hi")), "r=[   hi]");
+        // 字符、指针、%%
+        assert_eq!(f("p=%c", &u('Z' as u32)), "p=Z");
+        assert_eq!(f("p=%p", &u(0x1c1eb200)), "p=0x1c1eb200");
+        assert_eq!(f("p=%10p", &u(0xabc)), "p=     0xabc");
+        assert_eq!(f("p=100%%", &u(0)), "p=100%");
+        // 对照：无修饰符
+        assert_eq!(f("q=[%s]", &s("hello")), "q=[hello]");
     }
 
     #[test]
