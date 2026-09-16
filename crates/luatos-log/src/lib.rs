@@ -494,7 +494,11 @@ impl SocLogDecoder {
 
         // Decode format string and arguments
         let mut message = match msg_type {
-            0 => decode_printf_message(body),
+            // SOC_LOG_TYPE_COMMON(0) 与 SOC_LOG_TYPE_V2(3) 的 payload 布局完全相同
+            // (24 字节 header + fmt(4 字节对齐) + 参数), 仅传输层不同(日志口不可靠时
+            // V2 走缓存/重发), 因此二者都要走 printf 参数还原。
+            // CCM4211/Air1601 正常应用打的就是 V2, 漏掉它会导致格式串不被替换.
+            0 | 3 => decode_printf_message(body),
             _ => {
                 // Raw or unknown type
                 if body.is_empty() {
