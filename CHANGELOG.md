@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ### 变更
 
+#### 资源清单
+
+- 资源清单首选地址切换为 `https://cdn18.luatos.com/files/files.json`（`cdn18.air32.cn` 清单滞后，会导致 `soc_script` 等资源 404）；保留旧域名与内网地址作为回退
+
 #### Air8101 / BK7258 刷机
 
 - 全量 / 脚本 / 文件系统操作一律走原生 ISP，**不再**在 `.soc` 含 `air602_flash.exe`（实为 SDK 打包的 `bk_loader.exe`）时优先拉子进程；该 exe 在 Electron 无控制台环境下会挂起且无进度
