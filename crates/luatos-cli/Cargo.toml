@@ -10,7 +10,9 @@ name = "luatos-cli"
 path = "src/main.rs"
 
 [features]
-default = ["sf32lb52", "sf32lb55", "sf32lb56", "sf32lb57", "sf32lb58"]
+# SF32LB 系列默认全部关闭（可裁剪约 2.4MB 内嵌 RAM stub 数据与协议代码）。
+# 刷机功能只需：--features sf32lb58
+default = []
 sf32lb52 = ["luatos-flash/sf32lb52"]
 sf32lb55 = ["luatos-flash/sf32lb55"]
 sf32lb56 = ["luatos-flash/sf32lb56"]

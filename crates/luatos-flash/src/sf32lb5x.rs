@@ -10,25 +10,37 @@
 //
 // 详细协议说明见 docs/sf32lb58-flash-protocol.md。
 
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
+
+#[cfg(sf32lb)]
+use std::fs::File;
+#[cfg(sf32lb)]
+use std::io::{Read, Seek, SeekFrom};
+#[cfg(sf32lb)]
+use std::path::Path;
+#[cfg(sf32lb)]
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(sf32lb)]
+use std::sync::{Arc, Mutex};
+
+#[cfg(sf32lb)]
+use anyhow::bail;
+#[cfg(sf32lb)]
 use sftool_lib::{
     create_sifli_tool,
     progress::{ProgressEvent, ProgressOperation, ProgressSink, ProgressStatus, ProgressType},
     BeforeOperation, ChipType, EraseRegionFile, EraseRegionParams, SifliToolBase, WriteFlashFile, WriteFlashParams,
 };
 
+#[cfg(sf32lb)]
 use crate::{FlashProgress, ProgressCallback};
 
-// ─── 进度适配器 ──────────────────────────────────────────────────────────────
+// ─── 进度适配器（仅 SF32LB feature 开启时编译）──────────────────────────────
 
 /// 将 sftool-lib 的结构化进度事件适配到 LuatOS 的 FlashProgress 回调。
+#[cfg(sf32lb)]
 struct SifliProgressSink {
     callback: Mutex<ProgressCallback>,
     total_bytes: AtomicU64,
@@ -39,6 +51,7 @@ struct SifliProgressSink {
     address_regions: Vec<(u32, String)>,
 }
 
+#[cfg(sf32lb)]
 impl SifliProgressSink {
     fn new(callback: ProgressCallback, address_regions: Vec<(u32, String)>) -> Self {
         Self {
@@ -64,6 +77,7 @@ impl SifliProgressSink {
     }
 }
 
+#[cfg(sf32lb)]
 impl ProgressSink for SifliProgressSink {
     fn on_event(&self, event: ProgressEvent) {
         match event {
@@ -207,6 +221,7 @@ pub fn enter_boot_mode_dtr(port_name: &str, cfg: &Sf32ResetConfig) -> Result<()>
 /// 通过 CH340X 增强 DTR 模式将 SF32 恢复正常运行。
 ///
 /// 失败时静默忽略（刷机已完成，复位失败不影响结果）。
+#[cfg(sf32lb)]
 fn exit_boot_mode_dtr(port_name: &str, cfg: &Sf32ResetConfig) {
     if let Ok(mut port) = serialport::new(port_name, 115200).timeout(Duration::from_millis(200)).open() {
         let _ = port.write_data_terminal_ready(!cfg.dtr_boot); // BOOT0 恢复
@@ -218,6 +233,7 @@ fn exit_boot_mode_dtr(port_name: &str, cfg: &Sf32ResetConfig) {
 }
 
 /// 打开文件、计算 CRC32，文件指针保持在开头以供 sftool-lib 读取。
+#[cfg(sf32lb)]
 fn make_flash_file(path: &Path, address: u32) -> Result<WriteFlashFile> {
     let mut file = File::open(path).with_context(|| format!("打开刷机文件失败: {}", path.display()))?;
     let mut data = Vec::new();
@@ -228,6 +244,7 @@ fn make_flash_file(path: &Path, address: u32) -> Result<WriteFlashFile> {
 }
 
 /// 构建 SF32LB58 的 SifliToolBase（NAND 模式，手动进入 ROM BL）。
+#[cfg(sf32lb)]
 fn make_sifli_base(port: &str, progress_sink: Arc<dyn ProgressSink>) -> SifliToolBase {
     SifliToolBase::new_with_progress(
         port.to_string(),
@@ -240,7 +257,7 @@ fn make_sifli_base(port: &str, progress_sink: Arc<dyn ProgressSink>) -> SifliToo
     )
 }
 
-// ─── 公共 API ────────────────────────────────────────────────────────────────
+// ─── 公共 API（仅 SF32LB feature 开启时编译）────────────────────────────────
 
 /// SF32LB58 全量刷机：bootloader（NOR）+ ftab（NOR）+ app（NAND）+ script（NAND）。
 ///
@@ -249,6 +266,7 @@ fn make_sifli_base(port: &str, progress_sink: Arc<dyn ProgressSink>) -> SifliToo
 ///   - 自动操作：传入 `Some(&config)`，通过 CH340X 增强 DTR 自动控制
 ///
 /// `baud` 为 stub 加载后的协商波特率（None 保持默认 1M）。CH342K 支持最高 3M。
+#[cfg(sf32lb)]
 pub fn flash_sf32lb5x(
     soc: &str,
     port: &str,
@@ -371,6 +389,7 @@ pub fn flash_sf32lb5x(
 ///   - 自动操作：传入 `Some(&config)`，通过 CH340X 增强 DTR 自动控制
 ///
 /// `baud` 为 stub 加载后的协商波特率（None 保持默认 1M）。CH342K 支持最高 3M。
+#[cfg(sf32lb)]
 pub fn flash_script_sf32lb5x(
     soc: &str,
     port: &str,
@@ -442,6 +461,7 @@ pub fn flash_script_sf32lb5x(
 /// 刷机前需进入 ROM BL 模式：
 ///   - 手动操作：短接 MODE 引脚 + 按 RESET 键（reset_config = None）
 ///   - 自动操作：传入 `Some(&config)`，通过 CH340X 增强 DTR 自动控制
+#[cfg(sf32lb)]
 pub fn clear_kv_sf32lb5x(soc: &str, port: &str, on_progress: ProgressCallback, _cancel: Arc<AtomicBool>, reset_config: Option<&Sf32ResetConfig>, baud: Option<u32>) -> Result<()> {
     let info = luatos_soc::read_soc_info(soc).context("读取 SOC 信息失败")?;
     let (kv_addr, kv_size) = info

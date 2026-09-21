@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### 变更
+
+#### SF32LB 系列改为默认关闭（feature 裁剪）
+
+- `luatos-cli` / `luatos-flash` 的 `sf32lb52`~`sf32lb58` feature **默认全部关闭**，默认构建不再编译 SF32LB 刷机代码，`sftool-lib` 依赖变为 optional；release exe 由 9.60 MiB 降至 7.00 MiB（省约 2.6 MiB）
+- 需要 SF32LB 刷机时显式开启：`cargo build --release --features sf32lb58`（8.27 MiB）
+- `sf32lb52/55/56/57` 为纯 stub 数据 feature（供外部工具使用），刷机代码仅随 `sf32lb58` 编译（luatos-soc 把 sf32lb52~58 全部映射到 Sf32lb58 族，刷机实现固定使用 SF32LB58）
+- feature 未启用时：`flash run/script/clear-kv` 遇到 SF32LB SOC 给出明确错误提示；`guide models` 不列出 SF32LB 条目
+- `luatos-mcp` 改为 `luatos-flash` 的 `default-features = false`，避免 workspace 构建时 feature 统一导致 SF32LB 被隐式拉入
+
 ## [1.12.0] - 2026-09-21
 
 ### 变更

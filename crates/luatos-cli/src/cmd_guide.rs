@@ -42,6 +42,11 @@ const GUIDES: &[ModelGuide] = &[
         log_example: "luatos-cli log view-binary --port COM7 --baud 2000000",
         docs_path: "docs\\models\\air6208-xt804.md",
     },
+];
+
+// SF32LB 条目单独存放，仅在编译启用 SF32LB feature 时出现在指南列表中
+#[cfg(sf32lb)]
+const SF32_GUIDES: &[ModelGuide] = &[
     ModelGuide {
         key: "sf32",
         aliases: &["sf32", "sf32lb58", "air8101-sf32"],
@@ -50,6 +55,11 @@ const GUIDES: &[ModelGuide] = &[
         log_example: "luatos-cli log view --port COM13 --baud 1000000",
         docs_path: "docs\\models\\sf32lb58.md",
     },
+];
+#[cfg(not(sf32lb))]
+const SF32_GUIDES: &[ModelGuide] = &[];
+
+const GUIDES_TAIL: &[ModelGuide] = &[
     ModelGuide {
         key: "air724ug",
         aliases: &["air724ug", "uis8910", "rda8910"],
@@ -60,20 +70,24 @@ const GUIDES: &[ModelGuide] = &[
     },
 ];
 
+fn all_guides() -> impl Iterator<Item = &'static ModelGuide> {
+    GUIDES.iter().chain(SF32_GUIDES).chain(GUIDES_TAIL)
+}
+
 fn normalize(input: &str) -> String {
     input.trim().to_ascii_lowercase().replace('_', "-")
 }
 
 pub fn find_model_guide(model: &str) -> Option<&'static ModelGuide> {
     let normalized = normalize(model);
-    GUIDES.iter().find(|g| g.aliases.iter().any(|alias| normalize(alias) == normalized))
+    all_guides().find(|g| g.aliases.iter().any(|alias| normalize(alias) == normalized))
 }
 
 pub fn cmd_guide_models(format: &OutputFormat) -> anyhow::Result<()> {
     match format {
         OutputFormat::Text => {
             println!("型号二级帮助入口：");
-            for guide in GUIDES {
+            for guide in all_guides() {
                 println!("- {}: {}", guide.key, guide.description);
                 println!("  flash: {}", guide.flash_example);
                 println!("  log:   {}", guide.log_example);
@@ -82,8 +96,7 @@ pub fn cmd_guide_models(format: &OutputFormat) -> anyhow::Result<()> {
             Ok(())
         }
         OutputFormat::Json | OutputFormat::Jsonl => {
-            let data: Vec<serde_json::Value> = GUIDES
-                .iter()
+            let data: Vec<serde_json::Value> = all_guides()
                 .map(|g| {
                     serde_json::json!({
                         "model": g.key,

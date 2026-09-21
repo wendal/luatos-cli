@@ -21,6 +21,12 @@ LuatOS 命令行工具集（纯 Rust）——刷机、日志、项目管理、�
 cargo build --release -p luatos-cli
 ```
 
+SF32LB 系列刷机功能默认不编译（可省约 2.6MB），需要时显式开启：
+
+```bash
+cargo build --release -p luatos-cli --features sf32lb58
+```
+
 ## C 共享库 (luatos-log-ffi)
 
 SOC 日志解码同样以 C ABI 形式发布, 方便 Python (`ctypes`)、C/C++、Go (`cgo`)、C# (P/Invoke) 等语言直接消费. 与第三方 `pySoclogAnalyze` DLL 签名完全兼容 (含日志帧/命令帧双模式), 现有用户可**无感替换** DLL.

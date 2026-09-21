@@ -6,6 +6,9 @@
 //   - CCM4211 (Air1601/Air1602): ISP + SOC framed download protocol
 //   - RDA8910 (Air724UG/UIS8910DM): FDL1/FDL2 staged download protocol
 //   - Air6201: external SPI flash UART protocol
+//   - SF32LB58 (Air8101 SF32): sftool-lib based protocol, requires a sf32lbXX
+//     cargo feature (code is compiled only when sf32lb58 is enabled; the
+//     sf32lb52/55/56/57 features only embed stub data for external tools)
 
 pub mod air6201;
 pub mod bk7258;

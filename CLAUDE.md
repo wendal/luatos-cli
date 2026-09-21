@@ -34,7 +34,7 @@ Linux 上 `serialport` 需要系统依赖：`libudev-dev` 与 `pkg-config`（CI 
 Cargo workspace（`Cargo.toml`）包含 12 个 crate（`luatos-gui` 注释禁用，不参与构建）：
 
 - **crates/luatos-cli** — 二进制入口。`main.rs` 用 clap 派生宏定义子命令树（`serial` / `soc` / `flash` / `log` / `pipeline` / `project` / `build` / `resource` / `device` / `doctor` / `fota` / `guide` / `trun` / `version`）。各 `cmd_*.rs` 模块实现业务逻辑，全局 `--format text|json|jsonl` 决定输出形式；关键模块：`cmd_pipeline.rs`（刷机+日志流水线）、`cmd_trun.rs`（testcase 单点调试）、`cmd_doctor.rs`（环境诊断）、`cmd_guide.rs`（型号二级帮助）。
-- **crates/luatos-flash** — 刷机协议：BK7258（Air8101）、XT804（Air6208/Air101/Air103）、CCM4211（Air1601/Air1602）、EC718（Air8000/Air780）、SF32LB5x、Air6201 外置 SPI。每个芯片一个模块，公共类型为 `FlashProgress` 与 `ProgressCallback = Box<dyn Fn(&FlashProgress) + Send>`。`sf32lb5x` 通过本地 `sftool-lib` crate（`[patch]` 覆盖 git 依赖）实现。
+- **crates/luatos-flash** — 刷机协议：BK7258（Air8101）、XT804（Air6208/Air101/Air103）、CCM4211（Air1601/Air1602）、EC718（Air8000/Air780）、SF32LB5x、Air6201 外置 SPI。每个芯片一个模块，公共类型为 `FlashProgress` 与 `ProgressCallback = Box<dyn Fn(&FlashProgress) + Send>`。`sf32lb5x` 通过本地 `sftool-lib` crate（`[patch]` 覆盖 git 依赖）实现。**SF32LB 系列默认关闭**（feature `sf32lb52`~`sf32lb58`，默认全关可裁剪约 2.4MB），刷机功能用 `--features sf32lb58` 开启（luatos-soc 把 sf32lb52~58 全部映射到 Sf32lb58 族，刷机实现固定使用 SF32LB58）；`sf32lb5x` 模块内的刷机函数与 sftool-lib 依赖均按 cfg `sf32lb` 门控，`Sf32ResetConfig`/DTR 复位助手始终可用。luatos-cli 用同名 feature 转发，并自带 build.rs 定义同一 cfg `sf32lb`。
 - **crates/luatos-soc** — SOC 固件包（ZIP+7z）解析、解包、打包、注入（`combine.rs`）、OTA 包生成。`ota.rs` 含 LZMA SDK 的 FFI 绑定（`lzma_sdk_compress`），`pack.rs` 为纯 Rust ZIP/7z 打包。
 - **crates/luatos-luadb** — LuaDB 文件系统镜像打包，含内置 Lua 5.3 编译器（`build.rs` 走 `cc` 编译 `embedded_helpers.rs`）与 BK CRC16 framing。
 - **crates/luatos-serial** — 串口枚举、文本/二进制日志流。
