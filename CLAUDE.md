@@ -42,7 +42,6 @@ Cargo workspace（`Cargo.toml`）包含 12 个 crate（`luatos-gui` 注释禁用
 - **crates/luatos-resource** — 从 LuatOS CDN 拉取固件清单、下载固件资源（带 SHA256 校验）。
 - **crates/luatos-log** — 日志解析框架。核心 trait 是 `LogParser`（`name()` + `parse_line()`），内置 `LuatosParser` / `BootLogParser` / `SocLogDecoder`，`LogDispatcher` 按注册顺序尝试解析。`smart.rs` 提供智能诊断。
 - **crates/luatos-log-ffi** — C ABI 动态库（cdylib），导出 `luatos_soclog_analyze()` 与 `pySoclogAnalyze()` 别名，供 Python/C/Go 等语言直接消费 SOC 日志解码。
-- **crates/luatos-mcp** — MCP 服务端（独立二进制 `main.rs`），供 AI 工具调用。
 - **crates/luatos-testcase** — testcase 解析与发现（metas / discovery / ctx.json 合并 / script.bin 构建），承载 `trun` 的独立可测逻辑（path crate, lib only）。
 - **crates/sftool-lib** — 本地 fork 路径补丁，覆盖 `sftool` git 依赖，去掉 `probe-rs` 依赖。
 
