@@ -41,6 +41,22 @@ LuatOS-SoC_V1013_Air1602.soc (7z archive)
 
 > **ramrun 选择逻辑：** 若 SOC 包内含有 `ramrun.bin`（如 V1013），优先使用；否则使用同目录下的 `ccm4211_ramrun_default.bin` 作为后备。
 
+### 外置 Flash 资源（102 号及后续布局）
+
+近期 Air1601/Air1602 固件可能额外包含下列文件：
+
+```
+include.txt                 # 编译器导出的宏，声明外置资源地址
+hzfont_builtin_ttf.bin      # 外置中文 TrueType 字库
+16k.bin                     # 外置 16 kHz TTS 资源
+fs.bin                      # 可选 LittleFS 文件系统镜像
+```
+
+全量 `flash run` 会遵循 LuaTools 的顺序：`bootloader → 字库 → core → TTS → fs.bin → script`。
+其中字库地址由 `include.txt` 的 `LUAT_FONT_ADDRESS` 读取，TTS 地址由 `__TTS_ADDRESS__` 读取，`fs.bin` 地址由 `info.json` 的 `download.fs_addr` 读取。`flash script` 仍只写脚本分区。
+
+旧 SOC 不带 `include.txt` 或资源文件时保持原来的 `bootloader → core → script` 流程；若 `include.txt` 已声明字库/TTS 地址但对应文件遗漏，CLI 会显示警告并继续，方便识别不完整的固件包。
+
 ### info.json 关键字段（V1013 示例）
 
 ```json
