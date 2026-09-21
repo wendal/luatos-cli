@@ -11,6 +11,7 @@
 //   CRC16: Modbus polynomial 0x8005, reversed, init=0
 
 use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -72,6 +73,119 @@ const SOC_CMD_CHECK_CODE: u32 = 13;
 const SOC_CMD_FORCE_DOWNLOAD: u32 = 14;
 #[allow(dead_code)]
 const SOC_CMD_FORCE_RESET: u32 = 15;
+
+// ─── Optional SOC Flash Resources ───────────────────────────────────────────
+
+/// Fixed flash addresses exported by the firmware build in the optional
+/// `include.txt` packaged in recent CCM4211 SOC archives.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct CcmResourceAddresses {
+    font: Option<u32>,
+    tts: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CcmFlashResource {
+    label: &'static str,
+    region: &'static str,
+    path: PathBuf,
+    address: u32,
+}
+
+#[derive(Debug, Default)]
+struct CcmFlashResourcePlan {
+    downloads: Vec<CcmFlashResource>,
+    warnings: Vec<String>,
+}
+
+impl CcmFlashResourcePlan {
+    fn resource(&self, region: &str) -> Option<&CcmFlashResource> {
+        self.downloads.iter().find(|resource| resource.region == region)
+    }
+}
+
+/// Parse a hexadecimal object-like C macro from compiler `-dM` output.
+fn parse_hex_define(source: &str, macro_name: &str) -> Option<u32> {
+    for line in source.lines() {
+        let line = line.trim_start();
+        let Some(after_define) = line.strip_prefix("#define") else {
+            continue;
+        };
+        let after_define = after_define.trim_start();
+        let Some(after_name) = after_define.strip_prefix(macro_name) else {
+            continue;
+        };
+        // Do not accept prefixes such as LUAT_FONT_ADDRESS_EXTRA.
+        if after_name.chars().next().map(|ch| ch.is_ascii_alphanumeric() || ch == '_').unwrap_or(false) {
+            continue;
+        }
+
+        let value = after_name.trim_start();
+        let Some(hex_start) = value.find("0x").or_else(|| value.find("0X")) else {
+            continue;
+        };
+        let digits: String = value[hex_start + 2..].chars().take_while(|ch| ch.is_ascii_hexdigit()).collect();
+        if let Ok(address) = u32::from_str_radix(&digits, 16) {
+            return Some(address);
+        }
+    }
+    None
+}
+
+fn parse_ccm_resource_addresses(source: &str) -> CcmResourceAddresses {
+    CcmResourceAddresses {
+        font: parse_hex_define(source, "LUAT_FONT_ADDRESS"),
+        tts: parse_hex_define(source, "__TTS_ADDRESS__"),
+    }
+}
+
+/// Build the optional-resource download plan in the same order as LuaTools:
+/// font before core, TTS after core, and filesystem before scripts.
+fn build_ccm_resource_plan(soc_dir: &Path, info: &luatos_soc::SocInfo, addresses: CcmResourceAddresses) -> CcmFlashResourcePlan {
+    let mut plan = CcmFlashResourcePlan::default();
+
+    let font_path = soc_dir.join("hzfont_builtin_ttf.bin");
+    if let Some(address) = addresses.font {
+        if font_path.exists() {
+            plan.downloads.push(CcmFlashResource {
+                label: "Font",
+                region: "font",
+                path: font_path,
+                address,
+            });
+        } else {
+            plan.warnings
+                .push(format!("SOC declares font address 0x{address:08X}, but hzfont_builtin_ttf.bin is missing; skipping font"));
+        }
+    }
+
+    let tts_path = soc_dir.join("16k.bin");
+    if let Some(address) = addresses.tts {
+        if tts_path.exists() {
+            plan.downloads.push(CcmFlashResource {
+                label: "TTS",
+                region: "tts",
+                path: tts_path,
+                address,
+            });
+        } else {
+            plan.warnings
+                .push(format!("SOC declares TTS address 0x{address:08X}, but 16k.bin is missing; skipping TTS"));
+        }
+    }
+
+    let fs_path = soc_dir.join("fs.bin");
+    if let (true, Some(address)) = (fs_path.exists(), info.fs_addr()) {
+        plan.downloads.push(CcmFlashResource {
+            label: "Filesystem",
+            region: "fs",
+            path: fs_path,
+            address,
+        });
+    }
+
+    plan
+}
 
 // CRC16 Modbus lookup table (polynomial 0x8005 reversed = 0xA001, init=0)
 const CRC16_TABLE: [u16; 256] = {
@@ -601,7 +715,8 @@ fn soc_reset_device(port: &mut Box<dyn SerialPort>) -> Result<()> {
 
 /// Flash full firmware for CCM4211/Air1601.
 ///
-/// Downloads bootloader + core + script (if present) via ISP+SOC protocol.
+/// Downloads bootloader + optional flash resources + core + script (if present)
+/// via ISP+SOC protocol.
 /// `script_overlay` replaces the `script.bin` packaged in the SOC when `flash run --script` is used.
 pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCallback, cancel: Arc<AtomicBool>, script_overlay: Option<&[u8]>) -> Result<()> {
     // Extract .soc
@@ -610,6 +725,22 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
     let unpacked = luatos_soc::unpack_soc(soc_path, tmpdir.path())?;
     let info = &unpacked.info;
     let soc_dir = tmpdir.path();
+
+    let include_path = soc_dir.join("include.txt");
+    let mut resource_plan = if include_path.exists() {
+        match std::fs::read_to_string(&include_path) {
+            Ok(contents) => build_ccm_resource_plan(soc_dir, info, parse_ccm_resource_addresses(&contents)),
+            Err(error) => {
+                let mut plan = build_ccm_resource_plan(soc_dir, info, CcmResourceAddresses::default());
+                plan.warnings.push(format!("Cannot read optional include.txt ({error}); skipping font and TTS resources"));
+                plan
+            }
+        }
+    } else {
+        // Older CCM4211 SOC files do not carry the build-time resource map.
+        // They may still carry fs.bin, which is addressed from info.json.
+        build_ccm_resource_plan(soc_dir, info, CcmResourceAddresses::default())
+    };
 
     // Load ramrun from SOC or use default
     let ramrun_path = soc_dir.join("ramrun.bin");
@@ -672,6 +803,11 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
     log::info!("Download block size: {} (0x{:X})", block_len, block_len);
     on_progress(&FlashProgress::info("Connect", 18.0, &format!("Block size: {block_len} bytes")));
 
+    for warning in resource_plan.warnings.drain(..) {
+        log::warn!("{warning}");
+        on_progress(&FlashProgress::info("Warning", 18.0, &warning));
+    }
+
     // Load files from SOC directory
     let bl_path = soc_dir.join("bootloader.bin");
     let core_path = soc_dir.join(&info.rom.file);
@@ -685,24 +821,47 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
     if bl_path.exists() {
         let bl_data = std::fs::read(&bl_path).context("Failed to read bootloader.bin")?;
         on_progress(&FlashProgress::info("Bootloader", 20.0, "Downloading bootloader").with_region("bootloader"));
-        soc_download_file(&mut port, &mut parser, &mut sn, bl_addr, &bl_data, block_len, on_progress, "Bootloader", 20.0, 40.0)?;
-        on_progress(&FlashProgress::info("Bootloader", 40.0, "Bootloader OK").with_region("bootloader"));
+        soc_download_file(&mut port, &mut parser, &mut sn, bl_addr, &bl_data, block_len, on_progress, "Bootloader", 20.0, 35.0)?;
+        on_progress(&FlashProgress::info("Bootloader", 35.0, "Bootloader OK").with_region("bootloader"));
     }
 
     if cancel.load(Ordering::Relaxed) {
         bail!("Cancelled");
+    }
+
+    // LuaTools writes the optional external font before the application core.
+    if let Some(resource) = resource_plan.resource("font") {
+        let data = std::fs::read(&resource.path).with_context(|| format!("Failed to read {}", resource.path.display()))?;
+        on_progress(&FlashProgress::info(resource.label, 35.0, "Downloading font resource").with_region(resource.region));
+        soc_download_file(&mut port, &mut parser, &mut sn, resource.address, &data, block_len, on_progress, resource.label, 35.0, 45.0)?;
+        on_progress(&FlashProgress::info(resource.label, 45.0, "Font resource OK").with_region(resource.region));
     }
 
     // Download core firmware
     if core_path.exists() {
         let core_data = std::fs::read(&core_path).with_context(|| format!("Failed to read {}", info.rom.file))?;
-        on_progress(&FlashProgress::info("Core", 40.0, "Downloading core firmware").with_region("core"));
-        soc_download_file(&mut port, &mut parser, &mut sn, core_addr, &core_data, block_len, on_progress, "Core", 40.0, 80.0)?;
-        on_progress(&FlashProgress::info("Core", 80.0, "Core firmware OK").with_region("core"));
+        on_progress(&FlashProgress::info("Core", 45.0, "Downloading core firmware").with_region("core"));
+        soc_download_file(&mut port, &mut parser, &mut sn, core_addr, &core_data, block_len, on_progress, "Core", 45.0, 70.0)?;
+        on_progress(&FlashProgress::info("Core", 70.0, "Core firmware OK").with_region("core"));
     }
 
     if cancel.load(Ordering::Relaxed) {
         bail!("Cancelled");
+    }
+
+    // LuaTools writes TTS after core, then an optional filesystem image.
+    if let Some(resource) = resource_plan.resource("tts") {
+        let data = std::fs::read(&resource.path).with_context(|| format!("Failed to read {}", resource.path.display()))?;
+        on_progress(&FlashProgress::info(resource.label, 70.0, "Downloading TTS resource").with_region(resource.region));
+        soc_download_file(&mut port, &mut parser, &mut sn, resource.address, &data, block_len, on_progress, resource.label, 70.0, 78.0)?;
+        on_progress(&FlashProgress::info(resource.label, 78.0, "TTS resource OK").with_region(resource.region));
+    }
+
+    if let Some(resource) = resource_plan.resource("fs") {
+        let data = std::fs::read(&resource.path).with_context(|| format!("Failed to read {}", resource.path.display()))?;
+        on_progress(&FlashProgress::info(resource.label, 78.0, "Downloading filesystem resource").with_region(resource.region));
+        soc_download_file(&mut port, &mut parser, &mut sn, resource.address, &data, block_len, on_progress, resource.label, 78.0, 88.0)?;
+        on_progress(&FlashProgress::info(resource.label, 88.0, "Filesystem resource OK").with_region(resource.region));
     }
 
     // Download script: --script overlay wins over the SOC-packaged script.bin.
@@ -714,8 +873,8 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
         None
     };
     if let Some(script_data) = script_data {
-        on_progress(&FlashProgress::info("Script", 80.0, "Downloading script").with_region("script"));
-        soc_download_file(&mut port, &mut parser, &mut sn, script_addr, &script_data, block_len, on_progress, "Script", 80.0, 95.0)?;
+        on_progress(&FlashProgress::info("Script", 88.0, "Downloading script").with_region("script"));
+        soc_download_file(&mut port, &mut parser, &mut sn, script_addr, &script_data, block_len, on_progress, "Script", 88.0, 95.0)?;
         on_progress(&FlashProgress::info("Script", 95.0, "Script OK").with_region("script"));
     }
 
@@ -877,6 +1036,93 @@ pub fn clear_fskv(soc_path: &str, port_name: &str, on_progress: &ProgressCallbac
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use std::fs;
+
+    fn resource_test_info(fs_addr: Option<&str>) -> luatos_soc::SocInfo {
+        let fs_addr = fs_addr.map(|address| format!(r#""fs_addr":"{address}""#));
+        let download = fs_addr.map(|entry| format!("{{{entry}}}")).unwrap_or_else(|| "{}".to_string());
+        serde_json::from_str(&format!(
+            r#"{{"chip":{{"type":"air1602"}},"rom":{{"file":"luatos.bin"}},"script":{{"file":"script.bin"}},"download":{download}}}"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn parse_ccm_resource_addresses_reads_hex_defines() {
+        let addresses = parse_ccm_resource_addresses("#define LUAT_FONT_ADDRESS (0x10040000)\n#define __TTS_ADDRESS__ (0X14880000)\n");
+        assert_eq!(addresses.font, Some(0x1004_0000));
+        assert_eq!(addresses.tts, Some(0x1488_0000));
+    }
+
+    #[test]
+    fn parse_ccm_resource_addresses_ignores_missing_and_invalid_defines() {
+        assert_eq!(parse_ccm_resource_addresses(""), CcmResourceAddresses::default());
+        let addresses = parse_ccm_resource_addresses("#define LUAT_FONT_ADDRESS_EXTRA (0x12345678)\n#define LUAT_FONT_ADDRESS invalid\n#define __TTS_ADDRESS__ (0xnothex)\n");
+        assert_eq!(addresses, CcmResourceAddresses::default());
+    }
+
+    #[test]
+    fn ccm_resource_plan_orders_font_tts_fs_for_complete_soc() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let dir = tempdir.path();
+        fs::write(dir.join("hzfont_builtin_ttf.bin"), b"font").unwrap();
+        fs::write(dir.join("16k.bin"), b"tts").unwrap();
+        fs::write(dir.join("fs.bin"), b"fs").unwrap();
+
+        let info = resource_test_info(Some("14e80000"));
+        let plan = build_ccm_resource_plan(
+            dir,
+            &info,
+            CcmResourceAddresses {
+                font: Some(0x1004_0000),
+                tts: Some(0x1488_0000),
+            },
+        );
+
+        assert!(plan.warnings.is_empty());
+        assert_eq!(plan.downloads.iter().map(|resource| resource.region).collect::<Vec<_>>(), vec!["font", "tts", "fs"]);
+        assert_eq!(plan.resource("font").unwrap().address, 0x1004_0000);
+        assert_eq!(plan.resource("tts").unwrap().address, 0x1488_0000);
+        assert_eq!(plan.resource("fs").unwrap().address, 0x14e8_0000);
+    }
+
+    #[test]
+    fn ccm_resource_plan_keeps_old_soc_without_include_addresses_unchanged() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let plan = build_ccm_resource_plan(tempdir.path(), &resource_test_info(None), CcmResourceAddresses::default());
+        assert!(plan.downloads.is_empty());
+        assert!(plan.warnings.is_empty());
+    }
+
+    #[test]
+    fn ccm_resource_plan_warns_when_declared_resources_are_missing() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let plan = build_ccm_resource_plan(
+            tempdir.path(),
+            &resource_test_info(None),
+            CcmResourceAddresses {
+                font: Some(0x1004_0000),
+                tts: Some(0x1488_0000),
+            },
+        );
+        assert!(plan.downloads.is_empty());
+        assert_eq!(plan.warnings.len(), 2);
+        assert!(plan.warnings.iter().any(|warning| warning.contains("hzfont_builtin_ttf.bin")));
+        assert!(plan.warnings.iter().any(|warning| warning.contains("16k.bin")));
+    }
+
+    #[test]
+    fn ccm_resource_plan_skips_fs_without_image_or_address() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let dir = tempdir.path();
+        fs::write(dir.join("fs.bin"), b"fs").unwrap();
+        let no_address_plan = build_ccm_resource_plan(dir, &resource_test_info(None), CcmResourceAddresses::default());
+        assert!(no_address_plan.resource("fs").is_none());
+
+        fs::remove_file(dir.join("fs.bin")).unwrap();
+        let no_image_plan = build_ccm_resource_plan(dir, &resource_test_info(Some("14e80000")), CcmResourceAddresses::default());
+        assert!(no_image_plan.resource("fs").is_none());
+    }
 
     /// 只记录串口配置调用的假串口，用于确保波特率切换不依赖关闭/重开句柄。
     #[derive(Default)]
