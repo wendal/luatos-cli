@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.12.0] - 2026-09-21
 
 ### 变更
 
@@ -30,7 +30,12 @@ All notable changes to this project will be documented in this file.
 - SOC 帧 `cmd != 0`（探测/读写应答）不再当日志行；去掉格式串尾随 `\r\n`，空消息丢弃
 - Windows 日志口 `SetupComm` 收发队列提到 100KB、读缓冲 64KB，减轻 2Mbps RX overrun
 
-## [1.11.0] - 2026-09-01
+### 修复
+
+- **SOC 日志 V2（type 3）格式串不被替换**：CCM4211 / Air1601 正常应用打印走 `SOC_LOG_TYPE_V2`，此前只有 type 0 走 printf 参数还原，导致这类日志只显示格式串字面量。现 type 0/3 共用同一解码路径（二者 payload 布局相同，仅传输层不同）
+- **SOC 日志 printf 宽度/精度修饰符静默失效**：`%08x` 不补零、`%.2f` 不截精度、`%5d` 不居右，且 `*` 宽度未被消费导致后续参数全部错位。现完整解析 `%[flags][width][.prec][length]conv`（含 h/hh/ll 收窄、`0` 标志对整数带精度时忽略、对浮点始终有效）；`%*s` / `%.*s` 按设备侧 dump 描述符（am_log.c `PUT_PARAMM` / `soc_dump()`，[4B 地址][4B 长度][数据]）扩展解析，`%.*s` 出字符串、`%*s` 出 hex dump；新增 `crates/luatos-log/src/printf.rs`，范围仅 SOC 链路（Air1601/CCM4211），EC718 / RDA8910 解码器未改动
+
+## [1.12.0] - 2026-09-21
 
 ### 修复
 
