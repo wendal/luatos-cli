@@ -24,8 +24,23 @@ const LUADB_MAGIC: &[u8] = &[0x01, 0x04, 0x5A, 0xA5, 0x5A, 0xA5];
 ///   MAGIC[6] | name TLV[2+N] | size TLV[6] | CRC TLV[4] | data[N]
 /// ```
 pub fn pack_luadb(entries: &[LuadbEntry]) -> Result<Vec<u8>> {
+    pack_luadb_with_name_limit(entries, 27)
+}
+
+/// Pack raw resources with the firmware's 31-byte filename limit.
+pub fn pack_resource_luadb(entries: &[LuadbEntry]) -> Result<Vec<u8>> {
+    ensure!(!entries.is_empty() && entries.len() <= 1024, "Resource image requires 1–1024 files");
+    let mut names = std::collections::HashSet::new();
+    for entry in entries {
+        ensure!(!entry.filename.is_empty() && !entry.filename.contains('\0'), "Invalid resource filename");
+        ensure!(names.insert(&entry.filename), "Duplicate resource filename: {}", entry.filename);
+    }
+    pack_luadb_with_name_limit(entries, 31)
+}
+
+fn pack_luadb_with_name_limit(entries: &[LuadbEntry], name_limit: usize) -> Result<Vec<u8>> {
     let mut out = Vec::new();
-    let count = entries.len() as u16;
+    let count = u16::try_from(entries.len())?;
 
     // Global header
     out.extend_from_slice(LUADB_MAGIC);
@@ -37,11 +52,17 @@ pub fn pack_luadb(entries: &[LuadbEntry]) -> Result<Vec<u8>> {
     // Per-file entries
     for e in entries {
         out.extend_from_slice(LUADB_MAGIC);
-        ensure!(e.filename.len() <= 27, "LuaDB 文件名过长 (最大27字节，实际{}字节): {}", e.filename.len(), e.filename);
+        ensure!(
+            e.filename.len() <= name_limit,
+            "LuaDB 文件名过长 (最大{}字节，实际{}字节): {}",
+            name_limit,
+            e.filename.len(),
+            e.filename
+        );
         out.push(0x02);
         out.push(e.filename.len() as u8);
         out.extend_from_slice(e.filename.as_bytes());
-        let sz = e.data.len() as u32;
+        let sz = u32::try_from(e.data.len())?;
         out.extend_from_slice(&[0x03, 0x04, sz as u8, (sz >> 8) as u8, (sz >> 16) as u8, (sz >> 24) as u8]);
         out.extend_from_slice(&[0xFE, 0x02, 0xFF, 0xFF]); // CRC (unused)
         out.extend_from_slice(&e.data);

@@ -197,6 +197,19 @@ pub fn build_script_image(script_dirs: &[&Path], use_luac: bool, bitw: u32, use_
     Ok(result)
 }
 
+/// Build a raw resource image; no compilation, renaming or BK CRC framing.
+/// Later directories override earlier ones at the same relative path.
+pub fn build_resource_image(dirs: &[&Path], capacity: usize) -> Result<Vec<u8>> {
+    anyhow::ensure!(!dirs.is_empty(), "At least one resource directory is required");
+    for dir in dirs {
+        anyhow::ensure!(dir.is_dir(), "Resource directory does not exist or is not a directory: {}", dir.display());
+    }
+    let entries = collect_script_entries(dirs)?;
+    let image = crate::pack_resource_luadb(&entries)?;
+    anyhow::ensure!(image.len() <= capacity, "Resource image ({} bytes) exceeds partition ({} bytes)", image.len(), capacity);
+    Ok(image)
+}
+
 /// Build a LittleFS image from a directory using the embedded mklfs helper.
 ///
 /// * `source_dir` — directory of files to pack into the LFS image.
