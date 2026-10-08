@@ -289,6 +289,18 @@ enum FlashCommands {
         #[command(flatten)]
         reset: reset_args::ResetArgs,
     },
+    /// Pack raw directory files and flash to the resource partition (BK72xx)
+    FlashRes {
+        #[arg(long)]
+        soc: String,
+        #[arg(long)]
+        port: String,
+        /// Resource directories; later directories override matching relative paths
+        #[arg(long, required = true)]
+        resource: Vec<String>,
+        #[command(flatten)]
+        reset: reset_args::ResetArgs,
+    },
     /// Clear FSKV (key-value store) partition
     ClearKv {
         /// Path to .soc file
@@ -750,6 +762,9 @@ fn main() {
             FlashCommands::ClearFs { soc, port, reset } => cmd_flash::cmd_flash_partition("clear-fs", &soc, &port, None, progress_step, &cli.format, &reset, None, None),
             FlashCommands::FlashFs { soc, port, script, reset } => {
                 cmd_flash::cmd_flash_partition("flash-fs", &soc, &port, Some(&script), progress_step, &cli.format, &reset, None, None)
+            }
+            FlashCommands::FlashRes { soc, port, resource, reset } => {
+                cmd_flash::cmd_flash_partition("flash-res", &soc, &port, Some(&resource), progress_step, &cli.format, &reset, None, None)
             }
             FlashCommands::ClearKv {
                 soc,

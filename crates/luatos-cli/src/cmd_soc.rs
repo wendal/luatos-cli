@@ -24,6 +24,10 @@ pub fn cmd_soc_info(path: &str, format: &OutputFormat) -> anyhow::Result<()> {
             if let Some((fs_addr, fs_size)) = info.filesystem_partition() {
                 println!("  FS Addr:    0x{fs_addr:08X}  ({} KB)", fs_size / 1024);
             }
+            if info.rom.fs.as_ref().is_some_and(|fs| fs.res.is_some()) {
+                let (addr, size) = info.resource_partition()?;
+                println!("  Res Addr:   0x{addr:08X}  ({} KB, luadb, bkcrc=false)", size / 1024);
+            }
             if let Some((kv_addr, kv_size)) = info.kv_partition() {
                 println!("  KV Addr:    0x{kv_addr:08X}  ({} KB)", kv_size / 1024);
             }

@@ -368,6 +368,9 @@ pub fn cmd_flash_partition(
     let info = luatos_soc::read_soc_info(soc)?;
     let family = info.family();
 
+    if op == "flash-res" && family != ChipFamily::Bk72xx {
+        anyhow::bail!("Resource download currently supports BK72xx only (chip: {})", info.chip.chip_type);
+    }
     match family {
         ChipFamily::Bk72xx => match op {
             "script" => {
@@ -382,6 +385,11 @@ pub fn cmd_flash_partition(
                 let folders = script_folders.expect("script folder required");
                 let refs: Vec<&str> = folders.iter().map(|s| s.as_str()).collect();
                 luatos_flash::bk7258::flash_filesystem(soc, &refs, port, cancel, on_progress)?;
+            }
+            "flash-res" => {
+                let folders = script_folders.context("resource directory required")?;
+                let refs: Vec<&str> = folders.iter().map(String::as_str).collect();
+                luatos_flash::bk7258::flash_resources(soc, &refs, port, cancel, on_progress)?;
             }
             "clear-kv" => {
                 luatos_flash::bk7258::clear_fskv(soc, port, cancel, on_progress)?;
