@@ -1211,3 +1211,21 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod resource_cli_tests {
+    use super::*;
+    #[test]
+    fn flash_res_requires_directory_and_accepts_multiple() {
+        assert!(Cli::try_parse_from(["cli", "flash", "flash-res", "--soc", "a.soc", "--port", "COM6"]).is_err());
+        let cli = Cli::try_parse_from(["cli", "flash", "flash-res", "--soc", "a.soc", "--port", "COM6", "--resource", "a", "--resource", "b"]).unwrap();
+        let Commands::Flash {
+            action: FlashCommands::FlashRes { resource, .. },
+            ..
+        } = cli.command
+        else {
+            panic!("wrong command")
+        };
+        assert_eq!(resource, vec!["a", "b"]);
+    }
+}
