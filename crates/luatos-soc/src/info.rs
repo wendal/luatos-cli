@@ -411,3 +411,54 @@ mod tests {
         assert!(info.kv_partition().is_none());
     }
 }
+
+#[cfg(test)]
+mod resource_tests {
+    use super::*;
+    use serde_json::json;
+    fn metadata() -> serde_json::Value {
+        json!({"chip":{"type":"bk72xx"},"rom":{"file":"rom.bin","fs":{"res":{"offset":"0xcb0000","size":3072,"type":"luadb","bkcrc":false}}},"script":{"file":"script.bin"},"download":{"res_addr":"0xcb0000"}})
+    }
+    fn validate(v: serde_json::Value) -> anyhow::Result<(u32, usize)> {
+        serde_json::from_value::<SocInfo>(v)?.resource_partition()
+    }
+    #[test]
+    fn valid_optional_address_and_legacy() {
+        let mut v = metadata();
+        assert_eq!(validate(v.clone()).unwrap(), (0xcb0000, 3145728));
+        v["download"].as_object_mut().unwrap().remove("res_addr");
+        assert!(validate(v.clone()).is_ok());
+        v["rom"]["fs"].as_object_mut().unwrap().remove("res");
+        let info: SocInfo = serde_json::from_value(v).unwrap();
+        assert!(info.resource_partition().is_err());
+        assert!(serde_json::to_value(info).unwrap()["rom"]["fs"].get("res").is_none());
+    }
+    #[test]
+    fn rejects_bad_resource_metadata() {
+        for (field, value) in [
+            ("offset", json!("bad address")),
+            ("offset", json!("0xcb0001")),
+            ("offset", json!("0x100000000")),
+            ("offset", json!("0xfffff000")),
+            ("size", json!(0)),
+            ("size", json!(1)),
+            ("size", json!(u64::MAX)),
+            ("size", json!(-1)),
+            ("type", json!("lfs")),
+            ("bkcrc", json!(true)),
+            ("bkcrc", json!(null)),
+        ] {
+            let mut v = metadata();
+            v["rom"]["fs"]["res"][field] = value;
+            assert!(validate(v).is_err(), "accepted {field}");
+        }
+        let mut v = metadata();
+        v["download"]["res_addr"] = json!("0xbb0000");
+        assert!(validate(v).is_err());
+        for field in ["offset", "size", "type", "bkcrc"] {
+            let mut v = metadata();
+            v["rom"]["fs"]["res"].as_object_mut().unwrap().remove(field);
+            assert!(validate(v).is_err());
+        }
+    }
+}
