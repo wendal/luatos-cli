@@ -1185,3 +1185,41 @@ mod tests {
         println!("\n=== Handshake PASSED ===");
     }
 }
+
+#[cfg(test)]
+mod resource_download_tests {
+    use super::*;
+    use std::io::Write;
+    fn soc(v: &serde_json::Value) -> tempfile::NamedTempFile {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        let mut zip = zip::ZipWriter::new(&mut file);
+        zip.start_file("info.json", zip::write::SimpleFileOptions::default()).unwrap();
+        zip.write_all(&serde_json::to_vec(v).unwrap()).unwrap();
+        zip.finish().unwrap();
+        file
+    }
+    #[test]
+    fn invalid_inputs_fail_before_serial_connection() {
+        let mut v = serde_json::json!({"chip":{"type":"bk72xx"},"rom":{"file":"rom.bin"},"script":{"file":"script.bin"},"download":{}});
+        let folders = tempfile::tempdir().unwrap();
+        let run = |v: &serde_json::Value| {
+            let file = soc(v);
+            flash_resources(
+                file.path().to_str().unwrap(),
+                &[folders.path().to_str().unwrap()],
+                "NO_SUCH_SERIAL_PORT",
+                Arc::new(AtomicBool::new(false)),
+                Box::new(|_| {}),
+            )
+            .unwrap_err()
+            .to_string()
+        };
+        assert!(run(&v).contains("rom.fs.res"));
+        v["rom"]["fs"] = serde_json::json!({"res":{"offset":"0xcb0000","size":4,"type":"luadb","bkcrc":false}});
+        assert!(run(&v).contains("1–1024"));
+        std::fs::write(folders.path().join("large"), vec![0; 4096]).unwrap();
+        assert!(run(&v).contains("exceeds partition"));
+        v["chip"]["type"] = serde_json::json!("air6208");
+        assert!(run(&v).contains("BK72xx only"));
+    }
+}
