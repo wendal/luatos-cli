@@ -46,6 +46,8 @@ pub struct SocRom {
 pub struct SocFs {
     pub script: Option<SocScriptFs>,
     pub filesystem: Option<SocPartition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub res: Option<SocResourcePartition>,
     pub kv: Option<SocPartition>,
     pub ap: Option<SocPartition>,
     pub fota: Option<SocPartition>,
@@ -60,6 +62,17 @@ pub struct SocScriptFs {
     pub fs_type: Option<String>,
     pub bkcrc: Option<bool>,
     pub location: Option<String>,
+}
+
+/// Raw Luadb resource partition, independently configured from scripts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SocResourcePartition {
+    pub offset: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_size_flex")]
+    pub size: Option<u64>,
+    #[serde(rename = "type")]
+    pub fs_type: Option<String>,
+    pub bkcrc: Option<bool>,
 }
 
 /// Generic flash partition descriptor (filesystem, kv, fota, etc.)
@@ -133,6 +146,8 @@ pub struct SocScript {
 pub struct SocDownload {
     pub bl_addr: Option<String>,
     pub script_addr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub res_addr: Option<String>,
     pub force_br: Option<String>,
     pub cp_addr: Option<String>,
     pub ap_addr: Option<String>,
@@ -193,6 +208,30 @@ impl SocInfo {
         let offset = parse_addr(fs.offset.as_deref()?)? as u32;
         let size = fs.size? as usize * 1024;
         Some((offset, size))
+    }
+
+    /// Validate the raw resource partition before any hardware access.
+    pub fn resource_partition(&self) -> anyhow::Result<(u32, usize)> {
+        use anyhow::{ensure, Context};
+        let res = self
+            .rom
+            .fs
+            .as_ref()
+            .and_then(|fs| fs.res.as_ref())
+            .context("Resource partition rom.fs.res missing in info.json")?;
+        ensure!(res.fs_type.as_deref() == Some("luadb"), "Resource partition type must be luadb");
+        ensure!(res.bkcrc == Some(false), "Resource partition bkcrc must be false");
+        let addr = res.offset.as_deref().and_then(parse_addr).context("Invalid resource offset")?;
+        let size = res.size.context("Resource partition size missing")?.checked_mul(1024).context("Resource size overflow")?;
+        ensure!(size > 0, "Resource partition size must be nonzero");
+        ensure!(addr % 4096 == 0 && size % 4096 == 0, "Resource address and size must be 4KiB aligned");
+        let addr32 = u32::try_from(addr).context("Resource address overflow")?;
+        let size_usize = usize::try_from(size).context("Resource size overflow")?;
+        ensure!(addr.checked_add(size).is_some_and(|end| end <= u32::MAX as u64 + 1), "Resource end address overflow");
+        if let Some(ref download_addr) = self.download.res_addr {
+            ensure!(parse_addr(download_addr) == Some(addr), "download.res_addr conflicts with rom.fs.res.offset");
+        }
+        Ok((addr32, size_usize))
     }
 
     /// Get the FSKV (key-value) partition address and size (bytes).
