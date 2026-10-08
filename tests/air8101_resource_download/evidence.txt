@@ -1,0 +1,79 @@
+Air8101B A12 / COM6 / V2021 108 / CLI 1.12.0 / 2026-10-08
+
+=== setup.log ===
+[1.861] I/- I/user.CLI_RES CLI_RES_SETUP_PASS LFS sentinel prepared before resource download
+[4.862] I/- I/user.CLI_RES CLI_RES_SETUP_PASS LFS sentinel prepared before resource download
+[7.863] I/- I/user.CLI_RES CLI_RES_SETUP_PASS LFS sentinel prepared before resource download
+
+=== full-pass.log ===
+[1.889] I/- I/user.CLI_RES BOOT 2 full
+[1.899] I/- I/user.CLI_RES VERIFY /res/asset.dat 2954534
+[4.845] I/- I/user.CLI_RES VERIFY /res/palette.bin 80000
+[5.037] I/- I/user.CLI_RES VERIFY /res/sub/pixels.bin 3000
+[5.053] I/- I/user.CLI_RES CLI_RES_FULL_PASS exact contents, seek, EOF, dir, stats, interleave, readonly, LFS preserved
+[8.054] I/- I/user.CLI_RES CLI_RES_FULL_PASS exact contents, seek, EOF, dir, stats, interleave, readonly, LFS preserved
+[11.055] I/- I/user.CLI_RES CLI_RES_FULL_PASS exact contents, seek, EOF, dir, stats, interleave, readonly, LFS preserved
+
+=== full-reboot.log ===
+[1.894] I/- I/user.CLI_RES BOOT 3 full
+[1.906] I/- I/user.CLI_RES VERIFY /res/asset.dat 2954534
+[4.814] I/- I/user.CLI_RES VERIFY /res/palette.bin 80000
+[4.900] I/- I/user.CLI_RES VERIFY /res/sample.ttf 107848
+[5.003] I/- I/user.CLI_RES VERIFY /res/sub/pixels.bin 3000
+[5.020] I/- I/user.CLI_RES CLI_RES_FULL_PASS exact contents, seek, EOF, dir, stats, interleave, readonly, LFS preserved
+[8.020] I/- I/user.CLI_RES CLI_RES_FULL_PASS exact contents, seek, EOF, dir, stats, interleave, readonly, LFS preserved
+
+=== generic-pass.log ===
+[1.902] I/- I/user.CLI_RES BOOT 5 generic
+[1.916] I/- I/user.CLI_RES VERIFY /res/asset.dat 3062535
+[4.946] I/- I/user.CLI_RES VERIFY /res/palette.bin 80000
+[5.032] I/- I/user.CLI_RES VERIFY /res/new/image.bin 3000
+[5.051] I/- I/user.CLI_RES CLI_RES_GENERIC_PASS exact contents, seek, EOF, dir, stats, interleave, readonly, LFS preserved
+[8.052] I/- I/user.CLI_RES CLI_RES_GENERIC_PASS exact contents, seek, EOF, dir, stats, interleave, readonly, LFS preserved
+
+=== final-pass.log ===
+[1.898] I/- I/user.CLI_RES BOOT 6 generic
+[1.914] I/- I/user.CLI_RES VERIFY /res/asset.dat 3062535
+[4.953] I/- I/user.CLI_RES VERIFY /res/palette.bin 80000
+[5.037] I/- I/user.CLI_RES VERIFY /res/new/image.bin 3000
+[5.058] I/- I/user.CLI_RES CLI_RES_GENERIC_PASS exact contents, seek, EOF, dir, stats, interleave, readonly, LFS preserved
+[8.058] I/- I/user.CLI_RES CLI_RES_GENERIC_PASS exact contents, seek, EOF, dir, stats, interleave, readonly, LFS preserved
+
+=== full-download.jsonl (selected events) ===
+{"command": "flash.flash-res", "done": false, "error": false, "message": "Resource: 0x00cb0000, 3145728 bytes; packing raw Luadb…", "percent": 3.0, "region": "Resource", "stage": "Building", "type": "progress"}
+{"command": "flash.flash-res", "done": true, "error": false, "message": "Resource flash complete! Device is rebooting.", "percent": 100.0, "region": "Resource", "stage": "Done", "type": "progress"}
+{"command": "flash.flash-res", "data": {}, "status": "ok", "type": "result"}
+
+=== negative downloads ===
+[
+  {
+    "test": "oversized",
+    "exit_code": 1,
+    "rejected_before_connect": true,
+    "reason": "exceeds partition"
+  },
+  {
+    "test": "old-soc",
+    "exit_code": 1,
+    "rejected_before_connect": true,
+    "reason": "rom.fs.res"
+  },
+  {
+    "test": "unsupported",
+    "exit_code": 1,
+    "rejected_before_connect": true,
+    "reason": "BK72xx only"
+  }
+]
+
+=== oversized-rejected.log ===
+{"command":"flash.flash-res","done":false,"error":false,"message":"Parsing resource SOC info…","percent":1.0,"region":"Resource","stage":"Preparing","type":"progress"}
+{"command":"flash.flash-res","done":false,"error":false,"message":"Resource: 0x00cb0000, 3145728 bytes; packing raw Luadb…","percent":3.0,"region":"Resource","stage":"Building","type":"progress"}
+{"command":null,"message":"Resource image (3145781 bytes) exceeds partition (3145728 bytes)","type":"error"}
+
+=== old-soc-rejected.log ===
+{"command":"flash.flash-res","done":false,"error":false,"message":"Parsing resource SOC info…","percent":1.0,"region":"Resource","stage":"Preparing","type":"progress"}
+{"command":null,"message":"Resource partition rom.fs.res missing in info.json","type":"error"}
+
+=== unsupported-rejected.log ===
+{"command":null,"message":"Resource download currently supports BK72xx only (chip: air6208)","type":"error"}
