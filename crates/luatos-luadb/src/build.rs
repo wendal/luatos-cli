@@ -417,3 +417,74 @@ mod tests {
         assert_eq!(image.len(), fs_size);
     }
 }
+
+#[cfg(test)]
+mod resource_tests {
+    use super::*;
+    use crate::{pack_resource_luadb, LuadbEntry};
+    fn unpack(image: &[u8]) -> Vec<(String, Vec<u8>)> {
+        let count = u16::from_le_bytes([image[18], image[19]]) as usize;
+        let mut offset = 24;
+        let mut files = Vec::new();
+        for _ in 0..count {
+            assert_eq!(&image[offset..offset + 6], &[1, 4, 0x5a, 0xa5, 0x5a, 0xa5]);
+            offset += 6;
+            assert_eq!(image[offset], 2);
+            let n = image[offset + 1] as usize;
+            offset += 2;
+            let name = String::from_utf8(image[offset..offset + n].to_vec()).unwrap();
+            offset += n;
+            assert_eq!(&image[offset..offset + 2], &[3, 4]);
+            let size = u32::from_le_bytes(image[offset + 2..offset + 6].try_into().unwrap()) as usize;
+            offset += 10;
+            files.push((name, image[offset..offset + size].to_vec()));
+            offset += size;
+        }
+        assert_eq!(offset, image.len());
+        files
+    }
+    #[test]
+    fn raw_files_recursive_overrides_and_large_data() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        fs::create_dir(a.path().join("sub")).unwrap();
+        fs::write(a.path().join("sub/raw.lua"), b"not even valid lua!\0").unwrap();
+        fs::write(a.path().join("same"), b"old").unwrap();
+        fs::write(b.path().join("same"), b"new").unwrap();
+        let large: Vec<u8> = (0..80000).map(|i| (i % 256) as u8).collect();
+        let long = "x".repeat(31);
+        fs::write(a.path().join(&long), &large).unwrap();
+        let image = build_resource_image(&[a.path(), b.path()], 100000).unwrap();
+        let files: std::collections::HashMap<_, _> = unpack(&image).into_iter().collect();
+        assert_eq!(files.len(), 3);
+        assert_eq!(files["sub/raw.lua"], b"not even valid lua!\0");
+        assert_eq!(files["same"], b"new");
+        assert_eq!(files[&long], large);
+    }
+    #[test]
+    fn capacity_and_invalid_directories() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(build_resource_image(&[], 4096).is_err());
+        assert!(build_resource_image(&[d.path()], 4096).is_err());
+        assert!(build_resource_image(&[&d.path().join("missing")], 4096).is_err());
+        fs::write(d.path().join("a"), vec![7; 4053]).unwrap();
+        assert_eq!(build_resource_image(&[d.path()], 4096).unwrap().len(), 4096);
+        assert!(build_resource_image(&[d.path()], 4095).is_err());
+        fs::write(d.path().join("a"), vec![7; 4054]).unwrap();
+        assert!(build_resource_image(&[d.path()], 4096).is_err());
+        assert!(build_resource_image(&[&d.path().join("a")], 8192).is_err());
+    }
+    #[test]
+    fn resource_name_and_count_boundaries() {
+        let entry = |name: String| LuadbEntry { filename: name, data: vec![] };
+        assert!(pack_resource_luadb(&[entry("x".repeat(31))]).is_ok());
+        for name in [String::new(), "x".repeat(32), "nul\0name".into(), "字".repeat(11)] {
+            assert!(pack_resource_luadb(&[entry(name)]).is_err());
+        }
+        assert!(pack_resource_luadb(&[entry("same".into()), entry("same".into())]).is_err());
+        let entries: Vec<_> = (0..1025).map(|i| entry(i.to_string())).collect();
+        assert!(pack_resource_luadb(&entries[..1024]).is_ok());
+        assert!(pack_resource_luadb(&entries).is_err());
+        assert!(crate::pack_luadb(&[entry("x".repeat(28))]).is_err());
+    }
+}
