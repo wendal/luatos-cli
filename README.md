@@ -27,6 +27,32 @@ SF32LB 系列刷机功能默认不编译（可省约 2.6MB），需要时显式�
 cargo build --release -p luatos-cli --features sf32lb58
 ```
 
+## Air8101 通用资源分区下载
+
+使用带 `rom.fs.res` 描述的固件（例如 Air8101B 108），指定资源目录即可
+打包原始 Luadb 并写入资源分区：
+
+```bash
+luatos-cli soc info LuatOS-SoC_V2021_Air8101_108.soc
+luatos-cli flash flash-res --soc LuatOS-SoC_V2021_Air8101_108.soc --port COM6 --resource ./resources
+# 可重复指定；相同相对路径由后面的目录覆盖
+luatos-cli flash flash-res --soc firmware.soc --port COM6 --resource ./base --resource ./overrides
+```
+
+递归保留文件相对路径，跳过 `.git/.svn/.hg`，不编译 `.lua`、不改变文件
+内容或扩展名，也不添加脚本分区使用的 Beken CRC。资源目录可以完全不含
+TTS 或字体。Luadb 文件名（包括相对路径）为 1–31 个 UTF-8 字节，最多
+1024 个文件；空目录、错误元数据和超容量镜像在连接串口前报错。
+
+`rom.fs.res` 必须包含绝对 `offset`、KiB 单位 `size`、`type: "luadb"`
+和 `bkcrc: false`，地址与容量按 4KiB 对齐。可选 `download.res_addr`
+必须与 offset 一致。只擦写镜像覆盖的资源扇区，末尾扇区以 FF 补齐；
+更新后旧文件是否可见由新镜像文件清单决定，尾部旧数据不作安全擦除。
+写入后自动复位，由固件只读挂载 `/res/`。目前下载后端支持 BK72xx。
+
+可重复生成的测试目录、验收脚本及实机记录见
+[资源下载测试](tests/air8101_resource_download/README.md)。
+
 ## C 共享库 (luatos-log-ffi)
 
 SOC 日志解码同样以 C ABI 形式发布, 方便 Python (`ctypes`)、C/C++、Go (`cgo`)、C# (P/Invoke) 等语言直接消费. 与第三方 `pySoclogAnalyze` DLL 签名完全兼容 (含日志帧/命令帧双模式), 现有用户可**无感替换** DLL.
