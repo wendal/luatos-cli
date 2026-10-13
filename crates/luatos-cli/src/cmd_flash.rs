@@ -389,7 +389,10 @@ pub fn cmd_flash_partition(
             "flash-res" => {
                 let folders = script_folders.context("resource directory required")?;
                 let refs: Vec<&str> = folders.iter().map(String::as_str).collect();
-                luatos_flash::bk7258::flash_resources(soc, &refs, port, cancel, on_progress)?;
+                let skipped = luatos_flash::bk7258::flash_resources(soc, &refs, port, cancel, on_progress)?;
+                for path in &skipped {
+                    event::emit_message(format, &command, MessageLevel::Warn, format!("跳过目录深度超过 4 层的资源: {path}"))?;
+                }
             }
             "clear-kv" => {
                 luatos_flash::bk7258::clear_fskv(soc, port, cancel, on_progress)?;

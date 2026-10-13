@@ -1035,25 +1035,40 @@ pub fn flash_filesystem(soc_path: &str, script_folders: &[&str], port: &str, can
 }
 
 /// Pack arbitrary directory files and download a raw resource partition.
-pub fn flash_resources(soc_path: &str, resource_folders: &[&str], port: &str, cancel: Arc<AtomicBool>, on_progress: ProgressCallback) -> Result<()> {
+pub fn flash_resources(soc_path: &str, resource_folders: &[&str], port: &str, cancel: Arc<AtomicBool>, on_progress: ProgressCallback) -> Result<Vec<String>> {
     cancel.store(false, Ordering::Relaxed);
     on_progress(&FlashProgress::info("Preparing", 1.0, "Parsing resource SOC info…").with_region("Resource"));
     let info = luatos_soc::read_soc_info(soc_path)?;
     anyhow::ensure!(info.family() == luatos_soc::ChipFamily::Bk72xx, "Resource download currently supports BK72xx only");
-    let (addr, capacity) = info.resource_partition()?;
-    on_progress(&FlashProgress::info("Building", 3.0, &format!("Resource: 0x{addr:08x}, {capacity} bytes; packing raw Luadb…")).with_region("Resource"));
+    let part = info.resource_partition()?;
+    let fs_type = luatos_luadb::build::ResourceFsType::from_framed(part.framed);
+    on_progress(
+        &FlashProgress::info(
+            "Building",
+            3.0,
+            &format!(
+                "Resource: 0x{:08x}, {} bytes, {}; packing {}…",
+                part.addr,
+                part.size,
+                fs_type.as_str(),
+                if part.framed { "romfs + BK CRC framing" } else { "raw romfs" }
+            ),
+        )
+        .with_region("Resource"),
+    );
     let paths: Vec<&Path> = resource_folders.iter().map(Path::new).collect();
-    let data = luatos_luadb::build::build_resource_image(&paths, capacity)?;
+    let built = luatos_luadb::build::build_resource_image(&paths, part.size, fs_type)?;
+    let data = built.data;
     let padded_size = data.len().checked_add(SECTOR_SIZE - 1).context("Resource image size overflow")? / SECTOR_SIZE * SECTOR_SIZE;
-    anyhow::ensure!(padded_size <= capacity, "Resource sector padding exceeds partition");
+    anyhow::ensure!(padded_size <= part.size, "Resource sector padding exceeds partition");
     if cancel.load(Ordering::Relaxed) {
         bail!("Flash cancelled by user");
     }
     let mut serial = connect_bootloader(port, info.flash_baud_rate(), &cancel, &on_progress)?;
-    flash_data(&mut *serial, &data, addr, 30.0, 95.0, "Resource", &cancel, &on_progress)?;
+    flash_data(&mut *serial, &data, part.addr, 30.0, 95.0, "Resource", &cancel, &on_progress)?;
     reboot_and_close(serial);
     on_progress(&FlashProgress::done_ok("Resource flash complete! Device is rebooting.").with_region("Resource"));
-    Ok(())
+    Ok(built.skipped)
 }
 
 /// Erase the FSKV (key-value) partition.
@@ -1215,10 +1230,11 @@ mod resource_download_tests {
             .to_string()
         };
         assert!(run(&v).contains("rom.fs.res"));
-        v["rom"]["fs"] = serde_json::json!({"res":{"offset":"0xcb0000","size":4,"type":"luadb","bkcrc":false}});
-        assert!(run(&v).contains("1–1024"));
+        v["rom"]["fs"] = serde_json::json!({"res":{"offset":"0xcb0000","size":4,"type":"romfs","bkcrc":true}});
         std::fs::write(folders.path().join("large"), vec![0; 4096]).unwrap();
         assert!(run(&v).contains("exceeds partition"));
+        v["rom"]["fs"] = serde_json::json!({"res":{"offset":"0xcb0000","size":4,"type":"luadb","bkcrc":false}});
+        assert!(run(&v).contains("must be romfs"));
         v["chip"]["type"] = serde_json::json!("air6208");
         assert!(run(&v).contains("BK72xx only"));
     }

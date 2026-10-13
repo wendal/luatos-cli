@@ -27,17 +27,6 @@ pub fn pack_luadb(entries: &[LuadbEntry]) -> Result<Vec<u8>> {
     pack_luadb_with_name_limit(entries, 27)
 }
 
-/// Pack raw resources with the firmware's 31-byte filename limit.
-pub fn pack_resource_luadb(entries: &[LuadbEntry]) -> Result<Vec<u8>> {
-    ensure!(!entries.is_empty() && entries.len() <= 1024, "Resource image requires 1–1024 files");
-    let mut names = std::collections::HashSet::new();
-    for entry in entries {
-        ensure!(!entry.filename.is_empty() && !entry.filename.contains('\0'), "Invalid resource filename");
-        ensure!(names.insert(&entry.filename), "Duplicate resource filename: {}", entry.filename);
-    }
-    pack_luadb_with_name_limit(entries, 31)
-}
-
 fn pack_luadb_with_name_limit(entries: &[LuadbEntry], name_limit: usize) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let count = u16::try_from(entries.len())?;
@@ -106,6 +95,7 @@ fn bk_crc16(block: &[u8; 32]) -> u16 {
 
 pub mod build;
 pub mod embedded_helpers;
+pub mod romfs;
 
 /// luac 调试信息保留级别：无调试信息（source 字段也不写）
 pub const LUAC_DEBUG_NONE: u8 = 0;

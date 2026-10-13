@@ -64,7 +64,7 @@ pub struct SocScriptFs {
     pub location: Option<String>,
 }
 
-/// Raw Luadb resource partition, independently configured from scripts.
+/// 资源分区描述(romfs 只读资源, 挂载 `/res/`)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SocResourcePartition {
     pub offset: Option<String>,
@@ -73,6 +73,27 @@ pub struct SocResourcePartition {
     #[serde(rename = "type")]
     pub fs_type: Option<String>,
     pub bkcrc: Option<bool>,
+}
+
+/// 校验后的资源分区: 地址、大小与是否 BK CRC 帧化
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourcePartition {
+    pub addr: u32,
+    /// 分区字节数
+    pub size: usize,
+    /// 镜像是否按 BK CRC(每 32 字节数据 + 2 字节 CRC)帧化
+    pub framed: bool,
+}
+
+impl ResourcePartition {
+    /// 净载荷上限: 帧化后每 34 字节只承载 32 字节数据
+    pub fn payload_limit(&self) -> usize {
+        if self.framed {
+            self.size / 34 * 32
+        } else {
+            self.size
+        }
+    }
 }
 
 /// Generic flash partition descriptor (filesystem, kv, fota, etc.)
@@ -210,8 +231,11 @@ impl SocInfo {
         Some((offset, size))
     }
 
-    /// Validate the raw resource partition before any hardware access.
-    pub fn resource_partition(&self) -> anyhow::Result<(u32, usize)> {
+    /// Validate the resource partition before any hardware access.
+    ///
+    /// 资源分区为 romfs, 是否按 BK CRC(每 32 字节数据 + 2 字节 CRC)帧化由 `bkcrc` 决定,
+    /// 需与设备端读取方式一致: 帧化镜像经 CPU 窗口虚拟地址指针直读(零拷贝)。
+    pub fn resource_partition(&self) -> anyhow::Result<ResourcePartition> {
         use anyhow::{ensure, Context};
         let res = self
             .rom
@@ -219,8 +243,12 @@ impl SocInfo {
             .as_ref()
             .and_then(|fs| fs.res.as_ref())
             .context("Resource partition rom.fs.res missing in info.json")?;
-        ensure!(res.fs_type.as_deref() == Some("luadb"), "Resource partition type must be luadb");
-        ensure!(res.bkcrc == Some(false), "Resource partition bkcrc must be false");
+        ensure!(
+            res.fs_type.as_deref() == Some("romfs"),
+            "Resource partition type must be romfs (got {:?}); reflash a romfs firmware or update the SOC",
+            res.fs_type.as_deref().unwrap_or("<missing>")
+        );
+        let framed = res.bkcrc.context("Resource partition bkcrc missing")?;
         let addr = res.offset.as_deref().and_then(parse_addr).context("Invalid resource offset")?;
         let size = res.size.context("Resource partition size missing")?.checked_mul(1024).context("Resource size overflow")?;
         ensure!(size > 0, "Resource partition size must be nonzero");
@@ -231,7 +259,11 @@ impl SocInfo {
         if let Some(ref download_addr) = self.download.res_addr {
             ensure!(parse_addr(download_addr) == Some(addr), "download.res_addr conflicts with rom.fs.res.offset");
         }
-        Ok((addr32, size_usize))
+        Ok(ResourcePartition {
+            addr: addr32,
+            size: size_usize,
+            framed,
+        })
     }
 
     /// Get the FSKV (key-value) partition address and size (bytes).
@@ -417,15 +449,27 @@ mod resource_tests {
     use super::*;
     use serde_json::json;
     fn metadata() -> serde_json::Value {
-        json!({"chip":{"type":"bk72xx"},"rom":{"file":"rom.bin","fs":{"res":{"offset":"0xcb0000","size":3072,"type":"luadb","bkcrc":false}}},"script":{"file":"script.bin"},"download":{"res_addr":"0xcb0000"}})
+        json!({"chip":{"type":"bk72xx"},"rom":{"file":"rom.bin","fs":{"res":{"offset":"0xcc0000","size":3008,"type":"romfs","bkcrc":true}}},"script":{"file":"script.bin"},"download":{"res_addr":"0xcc0000"}})
     }
-    fn validate(v: serde_json::Value) -> anyhow::Result<(u32, usize)> {
+    fn validate(v: serde_json::Value) -> anyhow::Result<ResourcePartition> {
         serde_json::from_value::<SocInfo>(v)?.resource_partition()
     }
     #[test]
     fn valid_optional_address_and_legacy() {
         let mut v = metadata();
-        assert_eq!(validate(v.clone()).unwrap(), (0xcb0000, 3145728));
+        assert_eq!(
+            validate(v.clone()).unwrap(),
+            ResourcePartition {
+                addr: 0xcc0000,
+                size: 3_080_192,
+                framed: true
+            }
+        );
+        assert_eq!(validate(v.clone()).unwrap().payload_limit(), 2_898_976);
+        // 未帧化(裸 romfs)也是合法组合, 净载荷等于分区容量
+        v["rom"]["fs"]["res"]["bkcrc"] = json!(false);
+        assert_eq!(validate(v.clone()).unwrap().payload_limit(), 3_080_192);
+        v["rom"]["fs"]["res"]["bkcrc"] = json!(true);
         v["download"].as_object_mut().unwrap().remove("res_addr");
         assert!(validate(v.clone()).is_ok());
         v["rom"]["fs"].as_object_mut().unwrap().remove("res");
@@ -445,7 +489,7 @@ mod resource_tests {
             ("size", json!(u64::MAX)),
             ("size", json!(-1)),
             ("type", json!("lfs")),
-            ("bkcrc", json!(true)),
+            ("type", json!("luadb")),
             ("bkcrc", json!(null)),
         ] {
             let mut v = metadata();

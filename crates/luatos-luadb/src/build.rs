@@ -9,6 +9,7 @@ use anyhow::{bail, Context, Result};
 use walkdir::WalkDir;
 
 use crate::embedded_helpers::{ensure_embedded_helper, ensure_mklfs_helper};
+use crate::romfs::{self, RomfsFile};
 use crate::{add_bk_crc, pack_luadb, LuadbEntry};
 
 /// 版本控制目录名称，遍历文件时需跳过
@@ -197,17 +198,89 @@ pub fn build_script_image(script_dirs: &[&Path], use_luac: bool, bitw: u32, use_
     Ok(result)
 }
 
-/// Build a raw resource image; no compilation, renaming or BK CRC framing.
-/// Later directories override earlier ones at the same relative path.
-pub fn build_resource_image(dirs: &[&Path], capacity: usize) -> Result<Vec<u8>> {
+/// Build the resource partition image.
+///
+/// 设备端由 `components/romfs/luat_vfs_romfs.c` 经 CPU 窗口指针直读, 因此镜像是标准 romfs;
+/// 是否按 BK CRC(每 32 字节数据 + 2 字节 CRC)帧化由 [`ResourceFsType`] 决定, 与 SOC 里的
+/// `type`/`bkcrc` 一致。后一个目录会覆盖前面目录中相同相对路径的文件。
+pub fn build_resource_image(dirs: &[&Path], capacity: usize, fs_type: ResourceFsType) -> Result<ResourceImage> {
     anyhow::ensure!(!dirs.is_empty(), "At least one resource directory is required");
     for dir in dirs {
         anyhow::ensure!(dir.is_dir(), "Resource directory does not exist or is not a directory: {}", dir.display());
     }
     let entries = collect_script_entries(dirs)?;
-    let image = crate::pack_resource_luadb(&entries)?;
-    anyhow::ensure!(image.len() <= capacity, "Resource image ({} bytes) exceeds partition ({} bytes)", image.len(), capacity);
-    Ok(image)
+    let framed = fs_type.framed();
+    match fs_type {
+        ResourceFsType::Romfs | ResourceFsType::RomfsRaw => {
+            let files: Vec<RomfsFile> = entries.into_iter().map(|e| RomfsFile { path: e.filename, data: e.data }).collect();
+            let img = romfs::build(&files)?;
+            let image = if framed { add_bk_crc(&img.data) } else { img.data };
+            anyhow::ensure!(
+                image.len() <= capacity,
+                "Resource image ({} bytes{}) exceeds partition ({} bytes); clean payload limit is {} bytes",
+                image.len(),
+                if framed { " after BK CRC framing" } else { "" },
+                capacity,
+                payload_limit(capacity, framed)
+            );
+            Ok(ResourceImage {
+                data: image,
+                skipped: img.skipped,
+            })
+        }
+    }
+}
+
+/// 资源分区镜像格式
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceFsType {
+    /// 标准 romfs + BK CRC 帧化; 设备端经 CPU 窗口虚拟地址指针直读, `mmap` 零拷贝可用
+    Romfs,
+    /// 标准 romfs 不帧化; 设备端经 CPU 窗口线性地址直接访问
+    RomfsRaw,
+}
+
+impl ResourceFsType {
+    /// SOC 里 `type: "romfs"` 配合 `bkcrc` 决定帧化与否
+    pub fn from_metadata(fs_type: &str, bkcrc: bool) -> Result<Self> {
+        anyhow::ensure!(fs_type == "romfs", "Unsupported resource filesystem type: {fs_type} (expected \"romfs\")");
+        Ok(Self::from_framed(bkcrc))
+    }
+
+    pub fn from_framed(framed: bool) -> Self {
+        if framed {
+            Self::Romfs
+        } else {
+            Self::RomfsRaw
+        }
+    }
+
+    /// 镜像是否按 BK CRC 帧化
+    pub fn framed(self) -> bool {
+        matches!(self, Self::Romfs)
+    }
+
+    /// SOC 里 `rom.fs.res.type` 的取值
+    pub fn as_str(self) -> &'static str {
+        "romfs"
+    }
+}
+
+/// 打包结果: 待写入分区的字节与需要告警的路径
+pub struct ResourceImage {
+    /// 最终写入分区的字节(帧化格式时已按 BK CRC 帧化)
+    pub data: Vec<u8>,
+    /// 目录嵌套超限被跳过的相对路径
+    pub skipped: Vec<String>,
+}
+
+/// 分区容量对应的净载荷上限: 帧化后每 34 字节承载 32 字节数据
+pub fn payload_limit(capacity: usize, framed: bool) -> usize {
+    if framed {
+        capacity / 34 * 32
+    } else {
+        capacity
+    }
 }
 
 /// Build a LittleFS image from a directory using the embedded mklfs helper.
@@ -421,70 +494,198 @@ mod tests {
 #[cfg(test)]
 mod resource_tests {
     use super::*;
-    use crate::{pack_resource_luadb, LuadbEntry};
-    fn unpack(image: &[u8]) -> Vec<(String, Vec<u8>)> {
-        let count = u16::from_le_bytes([image[18], image[19]]) as usize;
-        let mut offset = 24;
-        let mut files = Vec::new();
-        for _ in 0..count {
-            assert_eq!(&image[offset..offset + 6], &[1, 4, 0x5a, 0xa5, 0x5a, 0xa5]);
-            offset += 6;
-            assert_eq!(image[offset], 2);
-            let n = image[offset + 1] as usize;
-            offset += 2;
-            let name = String::from_utf8(image[offset..offset + n].to_vec()).unwrap();
-            offset += n;
-            assert_eq!(&image[offset..offset + 2], &[3, 4]);
-            let size = u32::from_le_bytes(image[offset + 2..offset + 6].try_into().unwrap()) as usize;
-            offset += 10;
-            files.push((name, image[offset..offset + size].to_vec()));
-            offset += size;
+
+    /// 去掉 BK CRC 帧并以头部声明的长度截断, 同时校验尾部 0xFF 补齐。
+    /// 帧化以 32 字节为单位, 因此净载荷后可能带 0xFF 填充(设备端只读 img_size 字节)。
+    fn unframe(framed: &[u8]) -> Vec<u8> {
+        assert_eq!(framed.len() % 34, 0, "帧化镜像长度应为 34 的整数倍");
+        let mut padded = Vec::with_capacity(framed.len() / 34 * 32);
+        for chunk in framed.chunks_exact(34) {
+            padded.extend_from_slice(&chunk[..32]);
         }
-        assert_eq!(offset, image.len());
-        files
+        assert_eq!(&padded[..8], b"-rom1fs-");
+        let declared = be32(&padded, 8) as usize;
+        assert!(declared <= padded.len(), "头部声明的长度 {declared} 不得超过净载荷 {}", padded.len());
+        assert!(padded[declared..].iter().all(|b| *b == 0xFF), "帧化尾部应以 0xFF 补齐");
+        padded.truncate(declared);
+        padded
     }
+
+    fn be32(buf: &[u8], off: usize) -> u32 {
+        u32::from_be_bytes(buf[off..off + 4].try_into().unwrap())
+    }
+
+    /// 遍历镜像内的兄弟链, 收集 (相对路径, 数据), 并校验头部 checksum
+    fn walk(img: &[u8]) -> Vec<(String, Vec<u8>)> {
+        assert_eq!(&img[..8], b"-rom1fs-");
+        assert_eq!(be32(img, 8) as usize, img.len(), "头部记录的镜像长度应等于实际长度");
+        let mut head = img.to_vec();
+        let stored = be32(&head, 12);
+        head[12..16].copy_from_slice(&[0, 0, 0, 0]);
+        let mut sum: u32 = 0;
+        // 头部 checksum 覆盖前 min(512, 总长) 字节; 镜像本身是 16 字节对齐的。
+        // 校验和字段已清零, 因此 (区域累加 + 存储值) 必须为 0。
+        for w in head.chunks_exact(4).take(512 / 4) {
+            sum = sum.wrapping_add(u32::from_be_bytes(w.try_into().unwrap()));
+        }
+        assert_eq!(sum.wrapping_add(stored), 0, "头部 checksum 应为 BE u32 累加的补码");
+
+        let mut out = Vec::new();
+        walk_dir(img, be32(img, 36) as usize, "", &mut out);
+        out
+    }
+
+    fn walk_dir(img: &[u8], mut off: usize, prefix: &str, out: &mut Vec<(String, Vec<u8>)>) {
+        while off != 0 {
+            assert_eq!(off % 16, 0, "条目偏移应 16 字节对齐");
+            let word0 = be32(img, off);
+            let next = (word0 & 0xFFFF_FFF0) as usize;
+            let ty = word0 & 0xF;
+            let spec = be32(img, off + 4) as usize;
+            let size = be32(img, off + 8) as usize;
+            let scan_end = (off + 16 + 128).min(img.len());
+            let name_end = img[off + 16..scan_end].iter().position(|b| *b == 0).unwrap() + off + 16;
+            let name = String::from_utf8(img[off + 16..name_end].to_vec()).unwrap();
+            let data_off = off + 16 + (name.len() + 1).div_ceil(16) * 16;
+            match ty {
+                1 => walk_dir(img, spec, &format!("{prefix}{name}/"), out),
+                2 => out.push((format!("{prefix}{name}"), img[data_off..data_off + size].to_vec())),
+                other => panic!("未预期的条目类型 {other}"),
+            }
+            off = next;
+        }
+    }
+
+    fn romfs_type() -> ResourceFsType {
+        ResourceFsType::Romfs
+    }
+
     #[test]
-    fn raw_files_recursive_overrides_and_large_data() {
+    fn recursive_files_overrides_and_large_payload() {
         let a = tempfile::tempdir().unwrap();
         let b = tempfile::tempdir().unwrap();
-        fs::create_dir(a.path().join("sub")).unwrap();
+        fs::create_dir_all(a.path().join("sub/deep")).unwrap();
         fs::write(a.path().join("sub/raw.lua"), b"not even valid lua!\0").unwrap();
+        fs::write(a.path().join("sub/deep/x.bin"), vec![0x11; 100]).unwrap();
         fs::write(a.path().join("same"), b"old").unwrap();
         fs::write(b.path().join("same"), b"new").unwrap();
         let large: Vec<u8> = (0..80000).map(|i| (i % 256) as u8).collect();
-        let long = "x".repeat(31);
+        let long = "x".repeat(64);
         fs::write(a.path().join(&long), &large).unwrap();
-        let image = build_resource_image(&[a.path(), b.path()], 100000).unwrap();
-        let files: std::collections::HashMap<_, _> = unpack(&image).into_iter().collect();
-        assert_eq!(files.len(), 3);
+
+        let image = build_resource_image(&[a.path(), b.path()], 200000, romfs_type()).unwrap();
+        assert!(image.skipped.is_empty());
+        let files: std::collections::HashMap<_, _> = walk(&unframe(&image.data)).into_iter().collect();
+        assert_eq!(files.len(), 4);
         assert_eq!(files["sub/raw.lua"], b"not even valid lua!\0");
+        assert_eq!(files["sub/deep/x.bin"], vec![0x11; 100]);
         assert_eq!(files["same"], b"new");
         assert_eq!(files[&long], large);
     }
+
     #[test]
-    fn capacity_and_invalid_directories() {
-        let d = tempfile::tempdir().unwrap();
-        assert!(build_resource_image(&[], 4096).is_err());
-        assert!(build_resource_image(&[d.path()], 4096).is_err());
-        assert!(build_resource_image(&[&d.path().join("missing")], 4096).is_err());
-        fs::write(d.path().join("a"), vec![7; 4053]).unwrap();
-        assert_eq!(build_resource_image(&[d.path()], 4096).unwrap().len(), 4096);
-        assert!(build_resource_image(&[d.path()], 4095).is_err());
-        fs::write(d.path().join("a"), vec![7; 4054]).unwrap();
-        assert!(build_resource_image(&[d.path()], 4096).is_err());
-        assert!(build_resource_image(&[&d.path().join("a")], 8192).is_err());
+    fn file_and_directory_with_same_name_is_rejected() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        fs::write(a.path().join("n"), b"file").unwrap();
+        fs::create_dir(b.path().join("n")).unwrap();
+        fs::write(b.path().join("n/x"), b"nested").unwrap();
+        assert!(build_resource_image(&[a.path(), b.path()], 8192, romfs_type()).is_err());
     }
+
     #[test]
-    fn resource_name_and_count_boundaries() {
-        let entry = |name: String| LuadbEntry { filename: name, data: vec![] };
-        assert!(pack_resource_luadb(&[entry("x".repeat(31))]).is_ok());
-        for name in [String::new(), "x".repeat(32), "nul\0name".into(), "字".repeat(11)] {
-            assert!(pack_resource_luadb(&[entry(name)]).is_err());
+    fn capacity_is_measured_after_framing() {
+        let d = tempfile::tempdir().unwrap();
+        // 空资源目录打包成合法的空 romfs, 不是错误
+        let empty = build_resource_image(&[d.path()], 4096, romfs_type()).unwrap();
+        assert!(empty.skipped.is_empty());
+        assert_eq!(unframe(&empty.data).len(), 64); // 头 16 + 卷名 16 + 根目录头 32
+        assert_eq!(empty.data.len(), 68); // 2 帧
+
+        assert!(build_resource_image(&[], 4096, romfs_type()).is_err());
+        assert!(build_resource_image(&[&d.path().join("missing")], 4096, romfs_type()).is_err());
+        assert!(build_resource_image(&[&d.path().join("a")], 8192, romfs_type()).is_err());
+
+        // 净载荷上限 = 容量/34*32 = 3840; 逐字节逼近边界
+        assert_eq!(payload_limit(4096, true), 3840);
+        assert_eq!(payload_limit(4096, false), 4096);
+        assert_eq!(payload_limit(3_080_192, true), 2_898_976);
+        // 镜像 = 64(头+卷名+根目录) + 16(条目固定) + 16(名字 "a" 补齐) + a16(数据)
+        fs::write(d.path().join("a"), vec![7; 3744]).unwrap();
+        let fits = build_resource_image(&[d.path()], 4096, romfs_type()).unwrap();
+        assert_eq!(unframe(&fits.data).len(), 3840);
+        assert_eq!(fits.data.len(), 4080); // 120 帧
+        fs::write(d.path().join("a"), vec![7; 3745]).unwrap();
+        assert!(build_resource_image(&[d.path()], 4096, romfs_type()).is_err());
+    }
+
+    #[test]
+    fn depth_over_limit_warns_and_skips() {
+        let d = tempfile::tempdir().unwrap();
+        fs::create_dir_all(d.path().join("a/b/c/d")).unwrap();
+        fs::create_dir_all(d.path().join("a/b/c/d/e")).unwrap();
+        fs::write(d.path().join("a/b/c/d/keep.bin"), b"keep").unwrap();
+        fs::write(d.path().join("a/b/c/d/e/drop.bin"), b"drop").unwrap();
+
+        let image = build_resource_image(&[d.path()], 4096, romfs_type()).unwrap();
+        assert_eq!(image.skipped, vec!["a/b/c/d/e/drop.bin".to_string()]);
+        let files: std::collections::HashMap<_, _> = walk(&unframe(&image.data)).into_iter().collect();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files["a/b/c/d/keep.bin"], b"keep");
+    }
+
+    #[test]
+    fn name_boundaries() {
+        let ok = tempfile::tempdir().unwrap();
+        fs::write(ok.path().join("x".repeat(64)), b"ok").unwrap();
+        assert!(build_resource_image(&[ok.path()], 8192, romfs_type()).is_ok());
+
+        let too_long = tempfile::tempdir().unwrap();
+        fs::write(too_long.path().join("x".repeat(65)), b"too long").unwrap();
+        assert!(build_resource_image(&[too_long.path()], 8192, romfs_type()).is_err());
+
+        // 汉字按 UTF-8 字节计算: 22 个汉字 = 66 字节, 超限
+        let cjk = tempfile::tempdir().unwrap();
+        fs::write(cjk.path().join("汉".repeat(22)), b"too long").unwrap();
+        assert!(build_resource_image(&[cjk.path()], 8192, romfs_type()).is_err());
+    }
+
+    #[test]
+    fn file_count_above_old_luadb_limit_is_allowed() {
+        let d = tempfile::tempdir().unwrap();
+        for i in 0..1100 {
+            fs::write(d.path().join(format!("f{i:04}")), b"x").unwrap();
         }
-        assert!(pack_resource_luadb(&[entry("same".into()), entry("same".into())]).is_err());
-        let entries: Vec<_> = (0..1025).map(|i| entry(i.to_string())).collect();
-        assert!(pack_resource_luadb(&entries[..1024]).is_ok());
-        assert!(pack_resource_luadb(&entries).is_err());
+        let image = build_resource_image(&[d.path()], 200000, romfs_type()).unwrap();
+        assert_eq!(walk(&unframe(&image.data)).len(), 1100);
+    }
+
+    /// 脚本分区仍在用 Luadb, 其 27 字节名字上限不能因子资源分区改造而变化
+    #[test]
+    fn script_name_limit_is_unchanged() {
+        let entry = |name: String| LuadbEntry { filename: name, data: vec![] };
+        assert!(crate::pack_luadb(&[entry("x".repeat(27))]).is_ok());
         assert!(crate::pack_luadb(&[entry("x".repeat(28))]).is_err());
+    }
+
+    #[test]
+    fn only_romfs_is_accepted_as_resource_type() {
+        assert!(ResourceFsType::from_metadata("romfs", true).is_ok());
+        assert!(ResourceFsType::from_metadata("romfs", false).is_ok());
+        assert!(ResourceFsType::from_metadata("luadb", false).is_err());
+        assert!(ResourceFsType::from_metadata("lfs", false).is_err());
+        assert_eq!(romfs_type().as_str(), "romfs");
+    }
+
+    /// 未帧化(裸 romfs)模式下容量按原始镜像计算, 且不加 BK CRC
+    #[test]
+    fn raw_romfs_mode_skips_framing() {
+        let d = tempfile::tempdir().unwrap();
+        fs::write(d.path().join("a.bin"), b"raw mode").unwrap();
+        let raw = build_resource_image(&[d.path()], 4096, ResourceFsType::from_framed(false)).unwrap();
+        assert!(raw.data.len() < 4096);
+        assert!(!raw.data.len().is_multiple_of(34), "裸镜像不应是 34 字节帧的整数倍");
+        assert_eq!(raw.data.len(), unframe(&build_resource_image(&[d.path()], 8192, romfs_type()).unwrap().data).len());
+        assert_eq!(payload_limit(4096, false), 4096);
     }
 }
