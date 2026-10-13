@@ -6,6 +6,14 @@ All notable changes to this project will be documented in this file.
 
 ### 变更
 
+#### 资源分区格式改为帧化 romfs（需配套新固件）
+
+- `flash flash-res` 写入资源分区的镜像从**原始 Luadb** 改为**标准 romfs（`-rom1fs-`，与核心 `tools/romfs/mkromfs.py` 逐字节一致）**，并按 BK CRC 每 32 字节数据 + 2 字节 CRC 帧化；设备端经 CPU flash 窗口指针直读镜像（`luat_fs_mmap` 零拷贝可用），不再把资源拷入 RAM。**必须使用固件侧已支持 romfs 挂载的新固件**，旧固件会因元数据不匹配直接报错
+- SOC 元数据：`rom.fs.res.type` 只接受 `"romfs"`（旧值 `"luadb"` 报错 "Resource partition type must be romfs"），`bkcrc: true` = 帧化、`false` = 不帧化的裸 romfs；`bkcrc` 缺失同样报错。`soc info` 改为按实际字段打印 `Res Addr: 0x006D7000  (1088 KB, romfs, bkcrc=true, payload 1024 KB)`
+- 容量：帧化后净载荷上限 = `size / 34 * 32`（约 5.9% 的容量用于 CRC 帧），超容量镜像仍在连接串口前拒绝
+- 新增打包限制与告警：单级文件名 ≤ **64 字节**（超限直接报错），旧 Luadb 资源路径的 31 字节名与 1–1024 文件数限制随格式一并取消；目录最多 **4 层**，第 5 层及更深的文件打印 `Skipped (目录深度超过 4 层): <路径>` 告警后跳过（不报错）
+- 测试与文档：`tests/air8101_resource_download/` 生成脚本与验收脚本改为 romfs 口径（干净镜像 1MiB，帧化后 1114112 字节正好填满临时布局的 1088KiB 资源分区）
+
 #### SF32LB 系列改为默认关闭（feature 裁剪）
 
 - `luatos-cli` / `luatos-flash` 的 `sf32lb52`~`sf32lb58` feature **默认全部关闭**，默认构建不再编译 SF32LB 刷机代码，`sftool-lib` 依赖变为 optional；release exe 由 9.60 MiB 降至 7.00 MiB（省约 2.6 MiB）

@@ -30,7 +30,7 @@ cargo build --release -p luatos-cli --features sf32lb58
 ## Air8101 通用资源分区下载
 
 使用带 `rom.fs.res` 描述的固件（例如 Air8101B 108），指定资源目录即可
-打包原始 Luadb 并写入资源分区：
+打包标准 romfs 镜像并写入资源分区：
 
 ```bash
 luatos-cli soc info LuatOS-SoC_V2021_Air8101_108.soc
@@ -39,14 +39,34 @@ luatos-cli flash flash-res --soc LuatOS-SoC_V2021_Air8101_108.soc --port COM6 --
 luatos-cli flash flash-res --soc firmware.soc --port COM6 --resource ./base --resource ./overrides
 ```
 
+资源分区镜像是**标准 romfs（`-rom1fs-`，与核心 `tools/romfs/mkromfs.py`
+逐字节一致）**，并按 BK CRC 每 32 字节数据 + 2 字节 CRC 帧化写入；
+`rom.fs.res` 元数据形如：
+
+```json
+{"offset": "0x6D7000", "size": 1088, "type": "romfs", "bkcrc": true}
+```
+
+`type` 必须是 `"romfs"`（旧的 `"luadb"` 直接报错），`bkcrc: true` 表示帧化、
+`false` 表示不帧化的裸 romfs，`size` 单位为 KiB，地址与容量按 4KiB 对齐，
+可选 `download.res_addr` 必须与 offset 一致。设备端经 CPU flash 窗口指针
+直读镜像（`luat_fs_mmap` 零拷贝可用），不再把资源拷入 RAM，只读挂载 `/res/`。
+
 递归保留文件相对路径，跳过 `.git/.svn/.hg`，不编译 `.lua`、不改变文件
 内容或扩展名，也不添加脚本分区使用的 Beken CRC。资源目录可以完全不含
-TTS 或字体。Luadb 文件名（包括相对路径）为 1–31 个 UTF-8 字节，最多
-1024 个文件；空目录、错误元数据和超容量镜像在连接串口前报错。
+TTS 或字体。romfs 约束：单级文件名 ≤ **64 个 UTF-8 字节**（超限直接报错），
+目录最多 **4 层**（第 5 层及更深的文件打印告警后跳过），文件数不再有旧
+Luadb 的 1–1024 上限。空目录、错误元数据和超容量镜像在连接串口前报错。
 
-`rom.fs.res` 必须包含绝对 `offset`、KiB 单位 `size`、`type: "luadb"`
-和 `bkcrc: false`，地址与容量按 4KiB 对齐。可选 `download.res_addr`
-必须与 offset 一致。只擦写镜像覆盖的资源扇区，末尾扇区以 FF 补齐；
+帧化让每 34 字节只承载 32 字节数据，净载荷上限 = `size / 34 * 32`（约 5.9%
+的容量用于 CRC 帧；3MiB 分区净载荷 2891KiB，3008KiB 分区净载荷 2831KiB =
+2,898,976 字节）。`soc info` 按实际元数据打印：
+
+```
+Res Addr:   0x006D7000  (1088 KB, romfs, bkcrc=true, payload 1024 KB)
+```
+
+只擦写镜像覆盖的资源扇区，末尾扇区以 FF 补齐；
 更新后旧文件是否可见由新镜像文件清单决定，尾部旧数据不作安全擦除。
 写入后自动复位，由固件只读挂载 `/res/`。目前下载后端支持 BK72xx。
 
