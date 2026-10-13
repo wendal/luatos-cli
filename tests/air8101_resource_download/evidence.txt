@@ -77,3 +77,42 @@ Air8101B A12 / COM6 / V2021 108 / CLI 1.12.0 / 2026-10-08
 
 === unsupported-rejected.log ===
 {"command":null,"message":"Resource download currently supports BK72xx only (chip: air6208)","type":"error"}
+
+================================================================================
+2026-10-13  romfs 资源分区(帧化 + 窗口指针直读) — 8MB Air8101B / 固件 102 / COM12
+================================================================================
+本轮证据来自 `luatos-sdk-bk72xx-smp` 侧改造后的首次实机联调。固件为按临时布局
+构建的 102(`luat_lfs 0x5D2000/1024KiB` + `luat_res 0x6D7000/1088KiB`), 资源分区
+净载荷 1MiB; 资源与脚本用本目录 `generate.py` 生成的 fixture。
+串口为 CH340(1a86:7523), 每次复位/进 BL 会重新枚举(本轮 COM6 → COM12),
+因此命令里的端口以 `luatos-cli serial list` 的实时结果为准。
+
+--- 打包与写入尺寸(full fixture, 干净镜像 1048576 B) ---------------------------
+[  3.0%] Building [Resource] — Resource: 0x006d7000, 1114112 bytes, romfs; packing romfs + BK CRC framing…
+[  56.0%] Writing [Resource] — Resource – erase done, writing…
+[ 100.0%] Done [Resource] — Resource flash complete! Device is rebooting.
+写入扇区数 272 × 4KiB = 1114112 字节 = 分区容量, 即帧化后恰好填满(干净镜像 1MiB)。
+
+--- 超过 4 层目录的告警(deep fixture, a/b/c/d/e/x.bin) -------------------------
+跳过目录深度超过 4 层的资源: a/b/c/d/e/x.bin
+(注: 该告警必须走 event::emit_message, 不能复用进度回调: 进度回调按
+ (stage, percent) 去重, 相同 stage/percent 的重复事件会被静默丢弃。)
+
+--- 设备端挂载与验收(luatos-cli log view --port COM12 --baud 2000000 --rts-reset) ---
+romfs mounted at /res/: window=0x02670000 mode=framed partition=0x006d7000/1114112 bytes
+romfs mounted, image size 1048576, dir cache 4 nodes
+romfs is readonly, reject mode w / wb / a / r+
+
+[deep fixture]  CLI_RES_DEEP_PASS 4-level kept, 5th-level skipped, romfs readonly, LFS preserved
+[full fixture]  CLI_RES_FULL_PASS exact contents, seek, EOF, dir, romfs stats, interleave, readonly, LFS preserved
+[无 profile.txt 的镜像, 先建立 LFS 哨兵]
+                CLI_RES_SETUP_PASS LFS sentinel prepared before resource download
+
+--- 本轮暴露并修复的问题 -------------------------------------------------------
+1. 固件侧探针: 帧化镜像的首帧数据与裸镜像前缀相同, 早期版本仅凭 raw 前缀判定形态,
+   导致以线性窗口比对而挂载失败。已改为"帧化候选优先 + 窗口字节复核", 由
+   `tests/romfs_partition/test_romfs_partition.c` 覆盖。
+2. 进度回调去重导致跳过告警不显示, 已改为由 CLI 用结构化告警输出(见上)。
+3. 固件侧 `LUAT_ROMFS_MAX_NAME` 必须比允许的名字长 1: 核心在"读完宏值字节仍未遇到
+   NUL"时判定名字过长, 默认 64 会让 64 字节名被静默丢弃(实测 8 个条目只列出 7 个)。
+   固件已覆写为 65, 64 字节名条目恢复正常(full fixture 8 个条目全部列出)。
