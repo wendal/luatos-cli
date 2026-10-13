@@ -17,6 +17,9 @@ luatos-cli flash run --soc firmware.soc --port COM6 --tail-log-secs 20
 # 刷脚本区
 luatos-cli flash script --soc firmware.soc --port COM6 --script lua/ --script lib/
 
+# 刷资源分区 /res/（romfs，按 BK CRC 帧化）
+luatos-cli flash flash-res --soc firmware.soc --port COM6 --resource ./resources
+
 # 文本日志
 luatos-cli log view --port COM6 --baud 921600
 
@@ -35,3 +38,9 @@ luatos-cli fota build --new firmware.soc -o air8101_full_fota.bin
 - BK72xx SOC UART 默认二进制 0xA5 流程；验证启动请用 `--tail-log-secs` 或 `log view-binary`
 - `fota build` 已支持 BK72XX 新格式全量/脚本包
 - 当前仅支持 `rom.fs.script.bkcrc=true` 的新格式，旧 `LFTA` 不在 luatos-cli 支持范围内
+- 资源分区 `/res/` 为**帧化 romfs**：工具按 34/32 帧化（每 32 字节数据 + 2 字节大端
+  CRC16），固件经 CPU flash 窗口虚拟地址指针直读（零拷贝）。要求 SOC 元数据
+  `rom.fs.res.type == "romfs"`、分区偏移 34 字节对齐，净载荷 = `容量/34*32`
+  （108 的 3008KiB 分区约 2831KiB）；单级文件名 ≤ 64 字节、目录 ≤ 4 层（更深文件
+  告警并跳过）。格式与上限语义见 `README.md` 的「Air8101 通用资源分区下载」、
+  `tests/air8101_resource_download/README.md`，以及 LuatOS 核心的 `docs/romfs.md`
