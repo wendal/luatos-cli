@@ -311,9 +311,9 @@ ISP + ramrun 加载（同上）
 | 项目 | 约束 |
 |---|---|
 | 写入地址 | 无对齐要求，`CMD 0x0A` 的 address 字段可直接指定 |
-| 擦除 | `CMD 0x08` 是**分区级**命令，实际擦除粒度由固件决定（`GET_DOWNLOAD_INFO` 返回的 `block_len`，通常 256KB），可能大于请求范围 |
-| 写后校验 | `CMD 0x0D` 返回设备回读 MD5，**可真正判定对错**；且 `soc_download_file` 内部已自带该校验 |
-| 读回 dump | `SOC_CMD_GET_FLASH_DATA`(0x06) 常量已定义但此前未使用，**是否可用待验证** |
+| 擦除 | `CMD 0x08` 是**分区级**命令。**实测（Air1601 + LuatOS_V1027）`block_len = 256KB`，且擦除地址向下对齐到块边界整块擦除** —— 对块内非对齐地址发命令会连带清掉其下方的数据 |
+| 写后校验 | `CMD 0x0D` 返回设备回读 MD5，**可真正判定对错**（真机已验证与主机侧 MD5 一致）；且 `soc_download_file` 内部已自带该校验 |
+| 读回 dump | **实测 `SOC_CMD_GET_FLASH_DATA`(0x06) 无应答**，该芯片目前无可用的 flash 读回通道 |
 
 ```bash
 luatos-cli flash raw --soc Air1602.soc --port COM7 \

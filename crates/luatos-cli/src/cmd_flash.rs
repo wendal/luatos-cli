@@ -643,6 +643,22 @@ pub fn cmd_flash_raw(
             "未指定 --erase：NOR Flash 不能把 0 写回 1，若目标区间已有数据且为 0 位，写入结果可能不正确",
         )?;
     }
+    if erase {
+        // 实测（Air1601 + LuatOS_V1027）：FLASH_ERASE_BLOCK 按 256KB 整块擦除，
+        // 请求几 KB 都会连带清掉整个块，必须提前讲清楚。
+        if let Some(gran) = chip.erase_granularity() {
+            event::emit_message(
+                format,
+                &command,
+                MessageLevel::Warn,
+                format!(
+                    "擦除按 0x{gran:x}（{gran} 字节）整块进行并向下对齐：本次写入 {} 字节，但实际会被擦掉约 {gran} 字节（到 0x{:08x}）",
+                    req.len(),
+                    (addr / (gran as u32)) * (gran as u32)
+                ),
+            )?;
+        }
+    }
     if verify && !chip.supports_digest_verify() {
         event::emit_message(
             format,

@@ -1497,4 +1497,149 @@ mod tests {
         assert_eq!(responses[0].sn, 99);
         assert_eq!(responses[0].data, payload);
     }
+
+    // ─── 真机能力探针（需硬件，默认跳过，CI 不跑） ───────────────────────────
+
+    /// 连上真机，探测 block_len 与 `GET_FLASH_DATA`(0x06) 是否可用。
+    ///
+    /// 两者都是 `flash raw` 的能力前提：
+    /// - `block_len` 是分区级擦除的实际粒度，直接决定 `erase()` 循环几次
+    /// - `GET_FLASH_DATA` 若可用，`flash raw dump` 的成本会大幅下降
+    ///
+    /// 用法：`cargo test -p luatos-flash hw_probe -- --ignored --nocapture`
+    /// 环境变量：`HW_PORT`（默认 COM23）、`HW_SOC`（默认 refs/soc_files 下的 Air1601 V1021）
+    #[test]
+    #[ignore = "需要真机 CCM4211，改用 --ignored 显式运行"]
+    fn hw_probe_raw_capabilities() {
+        let port = std::env::var("HW_PORT").unwrap_or_else(|_| "COM23".into());
+        let soc = std::env::var("HW_SOC").unwrap_or_else(|_| "refs/soc_files/LuatOS-SoC_V1021_Air1601.soc".into());
+
+        let info = luatos_soc::read_soc_info(&soc).expect("read soc info");
+        let tmpdir = tempfile::tempdir().expect("tempdir");
+        luatos_soc::unpack_soc(&soc, tmpdir.path()).expect("unpack soc");
+        let ramrun = load_ramrun_data(&soc, tmpdir.path()).expect("load ramrun");
+        drop(tmpdir);
+
+        let on_progress: ProgressCallback = Box::new(|p| println!("  [progress] {} {} {}", p.stage, p.percent, p.message));
+        let mut port_handle = isp_load_ramrun(&port, &ramrun, &on_progress).expect("isp_load_ramrun");
+        switch_to_soc_protocol(&mut *port_handle, info.flash_baud_rate()).expect("switch to soc protocol");
+
+        let mut parser = SocFrameParser::new();
+        let mut sn: u16 = 0;
+
+        // 1) block_len
+        let resp = soc_send_cmd(&mut port_handle, &mut parser, SOC_CMD_GET_DOWNLOAD_INFO, 0, &[], &mut sn, Duration::from_secs(2)).expect("GET_DOWNLOAD_INFO");
+        let block_len = u32::from_le_bytes(resp.data[0..4].try_into().unwrap());
+        println!("\n>>> block_len = {block_len} (0x{block_len:x})");
+
+        // 2) GET_FLASH_DATA 探测（只读，不改 flash）
+        //    按 文档语义 试：address + payload=len
+        let probe_addr: u32 = info.script_addr();
+        println!(">>> probing {SOC_CMD_GET_FLASH_DATA} (GET_FLASH_DATA) at 0x{probe_addr:08X} ...");
+        let mut found = false;
+        for len in [64u32, 256] {
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&len.to_le_bytes());
+            match soc_send_cmd(&mut port_handle, &mut parser, SOC_CMD_GET_FLASH_DATA, probe_addr, &payload, &mut sn, Duration::from_secs(3)) {
+                Ok(r) => {
+                    println!("    len={len} -> OK, resp.cmd={} data_len={}", r.cmd, r.data.len());
+                    let preview: Vec<String> = r.data.iter().take(32).map(|b| format!("{b:02x}")).collect();
+                    println!("    first32: {}", preview.join(" "));
+                    found = true;
+                }
+                Err(e) => println!("    len={len} -> ERR {e}"),
+            }
+        }
+        println!(">>> GET_FLASH_DATA available: {found}");
+
+        // 3) CHECK_CODE 读回校验（只读）
+        let len4k = 4096u32.to_le_bytes();
+        match soc_send_cmd(&mut port_handle, &mut parser, SOC_CMD_CHECK_CODE, probe_addr, &len4k, &mut sn, Duration::from_secs(10)) {
+            Ok(r) => {
+                let md5hex: String = r.data.iter().take(16).map(|b| format!("{b:02x}")).collect();
+                println!(">>> CHECK_CODE(0x{probe_addr:08X}, 4096) -> MD5={md5hex}");
+            }
+            Err(e) => println!(">>> CHECK_CODE ERR {e}"),
+        }
+
+        let _ = soc_reset_device(&mut port_handle);
+    }
+
+    /// 实测 `FLASH_ERASE_BLOCK` 的真实擦除范围。
+    ///
+    /// 背景：`block_len` 报 256KB，但 `flash raw --erase` 的语义是"擦掉用户请求的
+    /// 区间"。若设备实际按 256KB 擦，用户只想擦 4KB 就会连带清掉邻近 252KB ——
+    /// 这是必须查清并写进文档的行为差异。
+    ///
+    /// 手法：先用已知图案填满一整个 256KB 块，再只发一次擦除命令，
+    /// 然后对块内多个偏移做 MD5，看哪些位置变成了全 0xFF。
+    ///
+    /// 用法：`cargo test -p luatos-flash hw_erase_granularity -- --ignored --nocapture`
+    #[test]
+    #[ignore = "需要真机 CCM4211，且会擦写脚本分区（可恢复）"]
+    fn hw_measure_erase_granularity() {
+        let port = std::env::var("HW_PORT").unwrap_or_else(|_| "COM23".into());
+        let soc = std::env::var("HW_SOC").unwrap_or_else(|_| "refs/soc_files/LuatOS-SoC_V1021_Air1601.soc".into());
+        let info = luatos_soc::read_soc_info(&soc).expect("read soc info");
+        let tmpdir = tempfile::tempdir().expect("tempdir");
+        luatos_soc::unpack_soc(&soc, tmpdir.path()).expect("unpack soc");
+        let ramrun = load_ramrun_data(&soc, tmpdir.path()).expect("load ramrun");
+        drop(tmpdir);
+
+        let base: u32 = info.script_addr();
+        let on_progress: ProgressCallback = Box::new(|_| {});
+        let mut p = isp_load_ramrun(&port, &ramrun, &on_progress).expect("isp_load_ramrun");
+        switch_to_soc_protocol(&mut *p, info.flash_baud_rate()).expect("switch soc");
+        let mut parser = SocFrameParser::new();
+        let mut sn: u16 = 0;
+        let block_len = {
+            let r = soc_send_cmd(&mut p, &mut parser, SOC_CMD_GET_DOWNLOAD_INFO, 0, &[], &mut sn, Duration::from_secs(2)).expect("info");
+            u32::from_le_bytes(r.data[0..4].try_into().unwrap())
+        };
+
+        // 填充图案：每 512 字节换一次值，保证任意 4KB 窗口内容互不相同。
+        //（不能用 (i*k+c)%256 —— 那样的周期是 256 字节，每个对齐窗口都一样，
+        //  会让"各偏移 MD5 是否不同"这项验证完全失效）
+        let fill: Vec<u8> = (0..block_len).map(|i| ((i / 512) % 256) as u8).collect();
+        println!("\n>>> 填充 {block_len} 字节图案到 0x{base:08X} ...");
+        soc_download_file(&mut p, &mut parser, &mut sn, base, &fill, block_len, &on_progress, "Fill", 0.0, 10.0).expect("fill");
+
+        // 探测点：块内多个偏移
+        let offsets: [u32; 8] = [0, 0x1000, 0x2000, 0x8000, 0x10000, 0x30000, 0x3F000, 0x40000];
+        let md5_at = |p: &mut Box<dyn SerialPort>, parser: &mut SocFrameParser, sn: &mut u16, addr: u32| -> String {
+            let len = 4096u32.to_le_bytes();
+            let r = soc_send_cmd(p, parser, SOC_CMD_CHECK_CODE, addr, &len, sn, Duration::from_secs(10)).expect("check_code");
+            r.data.iter().take(16).map(|b| format!("{b:02x}")).collect()
+        };
+
+        let md5_ff4k = format!("{:x}", md5::compute(&[0xFFu8; 4096]));
+        println!(">>> MD5(4096 × 0xFF) = {md5_ff4k}");
+        let before: Vec<String> = offsets.iter().map(|o| md5_at(&mut p, &mut parser, &mut sn, base + o)).collect();
+        println!(">>> 擦除前各偏移 MD5:");
+        for (o, m) in offsets.iter().zip(&before) {
+            println!("    +0x{o:05x} (0x{:08x}) = {m}", base + o);
+        }
+
+        // 只发一次擦除。注意用的是**块内非对齐地址** base+0x1000：
+        // 若设备按 block 向下取整，base+0x00000（用户并未请求）也会被清掉 ——
+        // 这是 `flash raw --erase` 最危险的行为，必须查清。
+        let erase_at = base + 0x1000;
+        println!(">>> 对 0x{erase_at:08X} 发一次 FLASH_ERASE_BLOCK ...");
+        soc_send_cmd(&mut p, &mut parser, SOC_CMD_FLASH_ERASE_BLOCK, erase_at, &[], &mut sn, Duration::from_secs(10)).expect("erase block");
+
+        println!(">>> 擦除后各偏移 MD5（== {md5_ff4k} 表示已被擦成 0xFF）:");
+        let mut wiped_upto = 0u32;
+        for (o, b4) in offsets.iter().zip(&before) {
+            let a = md5_at(&mut p, &mut parser, &mut sn, base + o);
+            let erased = a == md5_ff4k;
+            let changed = a != *b4;
+            println!("    +0x{o:05x} = {a}  [擦除={erased} 变化={changed}]");
+            if changed {
+                wiped_upto = *o;
+            }
+        }
+        println!(">>> 实测擦除覆盖到至少 base+0x{wiped_upto:05x}（block_len=0x{block_len:x}）");
+
+        let _ = soc_reset_device(&mut p);
+    }
 }

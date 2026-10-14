@@ -44,6 +44,24 @@ All notable changes to this project will be documented in this file.
 - 适配 Rust 1.99.0 工具链：修复 clippy 新增 lint `chunks_exact_to_as_chunks`（`sftool-lib/src/common/sifli_debug.rs`，`chunks_exact(4)` 改为 `as_chunks::<4>()`）
 - CI action 版本更新：`actions/checkout` v6 → **v7**（v7 默认拒绝 checkout fork PR 代码，v6 及更早版本已在 2026-07-20 回移植同等防护）、`codecov/codecov-action` v4 → **v5**；`actions/cache` 保持 v5（已是最新）。Rust 工具链继续用 `dtolnay/rust-toolchain@stable` 跟随最新 stable
 
+### 修复
+
+- `flash raw` 在 CCM4211 上新增**擦除对齐预检**。真机实测发现 `FLASH_ERASE_BLOCK` 会向下对齐到 256KB 块边界整块擦除，此前 CLI 在连通硬件前不拦未对齐地址，用户擦 4KB 实际会连带清掉整块 256KB（包含未请求的下方数据）。现在连硬件前即拒绝未对齐的 `--erase` 地址，并在报错中指出会被连带擦除的具体区间；已对齐时也会提示实际擦除量远大于写入量
+
+### 真机验证（Air1601，2026-10）
+
+在 CH343/COM23、`+HW: Air1601_A11`、固件 `LuatOS_V1027_Air160X` 上完成 CCM4211 侧验证，
+新增两个 `#[ignore]` 探针（CI 不跑，需接真机并显式 `--ignored`）：
+
+- `hw_probe_raw_capabilities`：确认 `CHECK_CODE` 回读 MD5 与主机侧**完全一致**（真校验可用）；
+  `block_len = 262144`(256KB)；**`GET_FLASH_DATA`(0x06) 无应答** —— Air1601 目前无可用 flash 读回通道，
+  该芯片上无法实现 `flash raw dump`
+- `hw_measure_erase_granularity`：实测擦除范围**正好一个 256KB 块**，且对块内非对齐地址同样向下取整
+  整块擦除（对 `0x14701000` 发命令会连带清掉 `0x14700000`）
+
+以上结论已回填 `docs/flash-raw-design.md` 与 `docs/ccm4211-flash-protocol.md`。
+**Air8101/BK7258 侧仍未做真机验证**，相关描述仍为协议文档推断。
+
 ## [1.12.0] - 2026-09-21
 
 ### 变更

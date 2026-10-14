@@ -57,18 +57,33 @@ impl RawChip {
 
     /// 协议固定的擦除粒度（字节）。`None` 表示运行时才确定。
     ///
-    /// CCM4211 的 `FLASH_ERASE_BLOCK` 是分区级命令，粒度要问设备
-    /// （`GET_DOWNLOAD_INFO` 返回的 block_len），所以这里返回 `None`。
+    /// CCM4211 的 `FLASH_ERASE_BLOCK` 是分区级命令，设备会通过
+    /// `GET_DOWNLOAD_INFO` 返回真实 `block_len`。
+    ///
+    /// ⚠️ **实测结论（Air1601 + LuatOS_V1027，2026-10）**：
+    /// `block_len = 262144 (256KB)`，且**擦除地址会向下对齐到块边界，整块擦除**。
+    /// 对块内非对齐地址（如 `0x14701000`）发擦除命令，会连同其下方的
+    /// `0x14700000` 一起清掉 —— 即用户没请求的数据也会丢。
+    /// 因此这里给出实测值，让 CLI 能在连硬件之前就拦下未对齐的擦除地址。
+    /// 设备实例仍以其自报的 `block_len` 为准做权威校验（见 `check_alignment`）。
     pub fn erase_granularity(self) -> Option<u64> {
         match self {
+            // BK7258 固定 4K 扇区
             RawChip::Bk7258 => Some(BK_SECTOR_SIZE as u64),
-            RawChip::Ccm4211 => None,
+            // CCM4211 实测值，设备自报值不同则以设备为准
+            RawChip::Ccm4211 => Some(CCM_ERASE_GRANULARITY),
         }
     }
 }
 
 /// BK7258 的扇区大小，CLI 提示文案与对齐预检共用。
 const BK_SECTOR_SIZE: usize = 0x1000;
+
+/// CCM4211 实测的擦除块大小（256KB）。
+///
+/// 该值来自真机 `GET_DOWNLOAD_INFO`，且实测擦除按此粒度向下对齐整块擦除。
+/// 仅用于**连硬件之前**的保守预检；连上设备后仍以设备自报的 `block_len` 为准。
+const CCM_ERASE_GRANULARITY: u64 = 0x4_0000;
 
 /// 写后校验结果。
 ///
@@ -354,7 +369,13 @@ fn check_write_alignment(chip: &str, addr: u32, align: u64) -> Result<()> {
 
 fn check_erase_alignment(chip: &str, addr: u32, gran: u64) -> Result<()> {
     if gran > 1 && !(addr as u64).is_multiple_of(gran) {
-        bail!("{chip} 擦除地址必须按 {gran} 字节（0x{gran:x}）对齐，当前 0x{addr:08x}");
+        let down = addr / (gran as u32) * (gran as u32);
+        bail!(
+            "{chip} 擦除地址必须按 {gran} 字节（0x{gran:x}）对齐，当前 0x{addr:08x}。\n\
+             实测该协议的擦除命令会**向下对齐到 0x{down:08x} 并整块擦除**（约 {gran} 字节），\n\
+             也就是说你没请求的 0x{down:08x}..0x{addr:08x} 也会被清掉。\n\
+             请把 --addr 对齐到 0x{gran:x} 边界，或改用不擦除的写法。"
+        );
     }
     Ok(())
 }
@@ -557,8 +578,9 @@ mod tests {
     }
 
     #[test]
-    fn ccm4211_预检不要求对齐() {
-        precheck_alignment(RawChip::Ccm4211, 0x14000123, true).expect("CCM4211 写/擦均无需对齐");
+    fn ccm4211_预检写不要求对齐() {
+        // 写入地址任意合法（真机实测：未对齐写入可用）
+        precheck_alignment(RawChip::Ccm4211, 0x1400_0123, false).expect("CCM4211 写入无需对齐");
     }
 
     #[test]
@@ -566,9 +588,30 @@ mod tests {
         assert_eq!(RawChip::Bk7258.write_alignment(), 0x1000);
         assert_eq!(RawChip::Ccm4211.write_alignment(), 0);
         assert_eq!(RawChip::Bk7258.erase_granularity(), Some(0x1000));
-        assert_eq!(RawChip::Ccm4211.erase_granularity(), None, "CCM4211 擦除粒度需向设备查询");
+        // 实测值：CCM4211 擦除块 256KB，向下对齐整块擦
+        assert_eq!(RawChip::Ccm4211.erase_granularity(), Some(0x40000));
         assert!(RawChip::Ccm4211.supports_digest_verify());
         assert!(!RawChip::Bk7258.supports_digest_verify());
+    }
+
+    #[test]
+    fn ccm4211_预检拒绝未对齐擦除地址() {
+        // 真机实测：擦除会向下对齐整块擦掉，未对齐地址会连带清掉下方数据
+        let err = precheck_alignment(RawChip::Ccm4211, 0x1470_1000, true).unwrap_err().to_string();
+        assert!(err.contains("对齐"), "实际错误: {err}");
+        assert!(err.contains("向下对齐"), "错误信息应说明向下对齐整块擦除: {err}");
+        assert!(err.contains("0x14700000"), "错误信息应指出被连带擦除的起点: {err}");
+    }
+
+    #[test]
+    fn ccm4211_预检接受对齐擦除地址() {
+        precheck_alignment(RawChip::Ccm4211, 0x1470_0000, true).expect("0x14700000 应通过");
+    }
+
+    #[test]
+    fn 擦除对齐检查文案包含被擦范围() {
+        let err = check_erase_alignment("ccm4211", 0x1474_1000, 0x40000).unwrap_err().to_string();
+        assert!(err.contains("0x14740000"), "{err}");
     }
 
     #[test]
