@@ -56,7 +56,7 @@ enum GuideCommands {
     Models,
     /// 查看指定型号的推荐刷机/日志命令
     Model {
-        /// 型号别名，例如 air1601/air1602/ccm4211/air8000
+        /// 型号别名，例如 air1601/air1602/air1603/air1604/ccm4211/air8000
         #[arg(long)]
         model: String,
     },
@@ -391,7 +391,7 @@ enum FlashCommands {
     /// 读回任意 Flash 地址区间到文件（flash raw dump）
     ///
     /// 只读操作，不需要 --force。需要协议支持 flash 读命令：Air8101 支持，
-    /// Air1601/Air1602 不支持（实测无读回通道）。
+    /// Air1601/Air1602/Air1603/Air1604 不支持（实测无读回通道）。
     Dump {
         /// Path to .soc file（用于确定芯片族与下载波特率）
         #[arg(long)]
@@ -456,7 +456,7 @@ enum LogCommands {
         #[command(flatten)]
         reset: reset_args::ResetArgs,
     },
-    /// View serial log in binary SOC mode (Air1601/Air1602, Air8000/EC718, etc.)
+    /// View serial log in binary SOC mode (Air1601/Air1602/Air1603/Air1604, Air8000/EC718, etc.)
     ViewBinary {
         /// Serial port (e.g. COM7, or "auto" for EC718 auto-detect)
         #[arg(long)]
@@ -464,7 +464,7 @@ enum LogCommands {
         /// Baud rate (default: 2000000, 6000000 for Air1601 V1013+)
         #[arg(long, default_value = "2000000")]
         baud: u32,
-        /// Send probe command to trigger log output (required for Air1601/Air1602/CCM4211/EC718)
+        /// Send probe command to trigger log output (required for Air1601/Air1602/Air1603/Air1604/CCM4211/EC718)
         #[arg(long)]
         probe: bool,
         /// Save raw binary log to directory (rolling 200 MB files with timestamp injection)
@@ -724,7 +724,7 @@ enum DeviceCommands {
         /// Serial port (e.g. COM6). EC718 series can be omitted for auto-detect.
         #[arg(long)]
         port: Option<String>,
-        /// Chip type (bk72xx, air8101, xt804, air6208, air101, ec718, air8000, air1601, air1602, ccm4211, ...)
+        /// Chip type (bk72xx, air8101, xt804, air6208, air101, ec718, air8000, air1601, air1602, air1603, air1604, ccm4211, ...)
         /// If omitted, UART RTS+DTR pulse is used. `--port auto` is treated as omitted.
         #[arg(long)]
         chip: Option<String>,
@@ -734,7 +734,7 @@ enum DeviceCommands {
         /// Serial port (e.g. COM6). EC718 series can be omitted for auto-detect.
         #[arg(long)]
         port: Option<String>,
-        /// Chip type (bk72xx, air8101, xt804, air6208, air101, ec718, air8000, air1601, air1602, ccm4211, ...)
+        /// Chip type (bk72xx, air8101, xt804, air6208, air101, ec718, air8000, air1601, air1602, air1603, air1604, ccm4211, ...)
         /// If omitted, UART RTS+DTR pulse is used. `--port auto` is treated as omitted.
         #[arg(long)]
         chip: Option<String>,
@@ -757,7 +757,7 @@ enum FotaCommands {
         /// Path to FotaToolkit.exe (auto-detected if omitted)
         #[arg(long)]
         fota_toolkit: Option<String>,
-        /// Build a script-only FOTA package (EC7xx/Air8000, Air1601/Air1602/CCM4211, BK72XX)
+        /// Build a script-only FOTA package (EC7xx/Air8000, Air1601/Air1602/Air1603/Air1604/CCM4211, BK72XX)
         #[arg(long)]
         script_only: bool,
         /// 强制走差分 FOTA（关闭"底层固件相同自动回落脚本包"）

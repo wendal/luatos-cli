@@ -169,6 +169,30 @@ fn lzma_compress_block(input: &[u8], dict_size: u32, lc: u32, lp: u32, pb: u32) 
     Ok((dest, props))
 }
 
+/// 按 CCM4211 下载协议压缩单个数据块，返回 `(压缩流, 5 字节 props)`。
+///
+/// 格式与设备端 ramrun 的 `fota_decode` 输入约定逐字节一致
+/// （`csdk/project/ramrun/src/ramrun_main.c`）：
+/// ```text
+/// fw_org_cache[0..5]  = props   (LZMA SDK 的 propsByte + 4 字节 dict size)
+/// fw_org_cache[5..]   = LZMA 流
+/// ```
+/// 设备端 `fota_decode(..., props, 5)` 解压后，按 CMD `0x0A` 里给的原始长度烧写，
+/// 因此 `dict_size` 应当传设备上报的分块长度（`GET_DOWNLOAD_INFO` → 通常 256KB）。
+///
+/// 压缩失败（如输出缓冲不足）时返回 `None`，由调用方回落到明文发送；
+/// 这里不返回 `Err`，因为压缩只是可选加速路径，不该让刷机失败。
+pub fn lzma_compress_block_for_download(input: &[u8], dict_size: u32) -> Option<(Vec<u8>, [u8; 5])> {
+    // 与 soc_tools `zip_file` 的无 md5 分支一致：lc=3 / lp=0 / pb=2，level 9。
+    match lzma_compress_block(input, dict_size, 3, 0, 2) {
+        Ok(pair) => Some(pair),
+        Err(error) => {
+            log::debug!("LZMA 分块压缩失败（回落明文）: {error}");
+            None
+        }
+    }
+}
+
 // ── zip_file — LZMA block-compress a binary ────────────────────────────────
 
 /// LZMA block-compress a binary file (equivalent to `soc_tools zip_file`).
@@ -657,6 +681,50 @@ mod tests {
         for v in dst.iter().take(4) {
             assert_eq!(*v, 0);
         }
+    }
+
+    /// 下载用压缩原语：可压缩数据应压出更小的流，且 props 恰好 5 字节。
+    #[test]
+    fn lzma_compress_block_for_download_shrinks_compressible_data() {
+        // 重复的 Thumb 指令模式 = 固件里典型的代码段
+        const CODE: [u8; 8] = [0x00, 0x48, 0xb5, 0x21, 0x68, 0x49, 0x8b, 0x35];
+        let mut data = Vec::new();
+        while data.len() < 64 * 1024 {
+            data.extend_from_slice(&CODE);
+        }
+        data.truncate(64 * 1024);
+
+        let (compressed, props) = lzma_compress_block_for_download(&data, 256 * 1024).expect("可压缩数据应当压缩成功");
+        assert_eq!(props.len(), 5, "props 必须是设备端约定的 5 字节");
+        assert!(compressed.len() < data.len() / 2, "64KB 重复数据压缩后应显著变小，实际 {}", compressed.len());
+    }
+
+    /// 不可压缩数据不应 panic：压缩原语只负责给出结果，由调用方判断是否有收益。
+    #[test]
+    fn lzma_compress_block_for_download_handles_incompressible_data() {
+        // 线性同余伪随机，LZMA 压不动
+        let mut state = 0x1234_5678u32;
+        let data: Vec<u8> = (0..64 * 1024)
+            .map(|_| {
+                state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                (state >> 16) as u8
+            })
+            .collect();
+
+        match lzma_compress_block_for_download(&data, 256 * 1024) {
+            Some((compressed, props)) => {
+                assert_eq!(props.len(), 5);
+                // 压不动时不保证更小，调用方 `pick_wire_payload` 会据此回落明文。
+                log::debug!("随机数据压缩后 {} -> {} 字节", data.len(), compressed.len());
+            }
+            None => log::debug!("随机数据压缩失败，调用方回落明文"),
+        }
+    }
+
+    /// 空输入不能 panic（压缩器对 0 长度可能直接返回错误）。
+    #[test]
+    fn lzma_compress_block_for_download_accepts_empty_input() {
+        let _ = lzma_compress_block_for_download(&[], 256 * 1024);
     }
 
     #[test]

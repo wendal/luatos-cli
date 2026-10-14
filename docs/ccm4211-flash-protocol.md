@@ -1,8 +1,10 @@
-# CCM4211 (Air1601 / Air1602) 刷机协议文档
+# CCM4211 (Air1601 / Air1602 / Air1603 / Air1604) 刷机协议文档
 
 ## 概述
 
-Air1601 与 Air1602 模组都使用 CCM4211 芯片，刷机流程、地址布局、波特率与日志协议完全一致，分为三个阶段：
+Air1601 / Air1602 / Air1603 / Air1604 模组都使用 CCM4211 芯片（Air1603 与 Air1601 同 die、
+Air1604 与 Air1602 同 die，只是 PCBA 版本不同），刷机流程、地址布局、波特率与日志协议完全一致，
+分为三个阶段：
 
 1. **ISP 阶段**：通过 ROM bootloader 将 ramrun 程序加载到 RAM
 2. **SOC 协议阶段**：通过 ramrun 程序执行 Flash 操作（下载、擦除、校验）
@@ -145,8 +147,13 @@ ISP (In-System Programming) 通过芯片内置 ROM bootloader 实现。
 | 0x10 | SET_BAUD | 0 | 0 | 3 | `\x00\x01\x24` | 切换到 1Mbps |
 | 0x14 | SYNC | 0 | 0 | 0x10/0x24 | 无 | 同步/握手 |
 | 0x20 | SET_RAM_BASE | 0x20 | 0 | 4 | 无 | 设置 RAM 基地址 |
+| 0x20 | SET_REG_BASE | 0x40 | 0 | 4 | 无 | 切到 CPM（外设寄存器组）窗口 |
 | 0x31 | WRITE_RAM | addr | 0 | chunk_len | 数据 | 写入 RAM（512B 块）|
+| 0x31 | WRITE_REG | 0x40 | 0x4C | 4 | `\xFF\xB3\xF3\xFF` | 写 `IPSCGTCR`，关闭其他串口时钟 |
 | 0x81 | EXECUTE | go1 | go2 | 0 | 无 | 跳转执行 ramrun |
+
+> `0x20` 与 `0x31` 是**成对**使用的命令：先 `0x20` 选窗口，再用 `0x31` 往该窗口写数据。
+> `0x20/0x20` = RAM 窗口（ramrun 装载区），`0x20/0x40` = CPM 寄存器窗口。
 
 ### 1.4 Ramrun 加载流程
 
@@ -154,15 +161,38 @@ ISP (In-System Programming) 通过芯片内置 ROM bootloader 实现。
 1. 握手: CMD 0x14 (DataLen=0x24)
 2. 切波特率: CMD 0x10 → 切换到 1Mbps (就地切换波特率，不关闭/重新打开串口)
 3. 同步确认: CMD 0x14 (DataLen=0x10)
-4. 设 RAM 基地址: CMD 0x20 (Param1=0x20)
-5. 分块写入: CMD 0x31 × N (512字节/块, Param1 从 0x30 开始, 每块 +2)
-6. 跳转执行: CMD 0x81 (go_addr1=ramrun[5], go_addr2=ramrun[4])
+4. 关闭其他串口: CMD 0x20 (Param1=0x40) → CMD 0x31 (0x40, 0x4C, FF B3 F3 FF)
+5. 设 RAM 基地址: CMD 0x20 (Param1=0x20)
+6. 分块写入: CMD 0x31 × N (512字节/块, Param1 从 0x30 开始, 每块 +2)
+7. 跳转执行: CMD 0x81 (go_addr1=ramrun[5], go_addr2=ramrun[4])
 ```
 
 > **关键：** WRITE_RAM 的 Param1 是递增的地址页码（0x30, 0x32, 0x34, ...），
 > 不是固定值 0。每写入一个 512 字节块，地址 +2。
 
-### 1.5 波特率切换注意事项
+### 1.5 关闭其他串口（IPSCGTCR）
+
+装载 ramrun 之前先把寄存器窗口切到 CPM（`0x20` Param1=`0x40`），再写
+`IPSCGTCR`（窗口内偏移 `0x4C`）= `0xFFF3B3FF`，关掉其他 UART 的时钟门控，
+避免板子上多出来的串口干扰下载口的收发（PCBA_TYPE2 的 Air1603/Air1604 尤其明显）。
+
+`IPSCGTCR` 的位含义（依据 SDK `cpm_drv.h` / `am_uart.c`）：
+
+| 位 | 外设 | `0xFFF3B3FF` 下的状态 |
+|----|------|------------------------|
+| 2 | WDT | 保留（置 1）|
+| 10 | UART1 | **关闭** |
+| 11 | UART2 | **关闭** |
+| 12 | UART4 | 保留 |
+| 18 | UART3 | **关闭** |
+| 19 | UART5 | **关闭** |
+| 22 | UART6 | 保留 |
+
+> **本仓库实现为 best-effort：** 这两条命令无 ACK 时只记日志并继续，
+> 行为退化为「不做这一步」的旧流程。对已在真机验证过的 Air1601/1602 是纯增量。
+> 出处：LuaTools `ccm4211_isp.py` 提交 `eea0ca2`（2026-10-14）。
+
+### 1.6 波特率切换注意事项
 
 在 CH343 USB 转串口芯片上，**不能关闭/重新打开串口来切换波特率**。
 必须在已打开的串口上就地修改波特率，并清空旧配置下的收发缓冲：
@@ -255,7 +285,7 @@ fn crc16(data: &[u8]) -> u16 {
 | 0x09 | GET_DOWNLOAD_INFO | 0 | 空 | block_len (u32 LE) | 500ms |
 | 0x0A | SET_CODE_DATA_START | Flash 地址 | orig_len (u32 LE) | 确认 | 1s |
 | 0x0B | SET_CODE_DATA | 0 | 数据块 (≤3KB) | 确认 | 100ms |
-| 0x0C | SET_CODE_END | 0 | is_lzma (u8, 0=无压缩) | 确认 | 3s |
+| 0x0C | SET_CODE_END | 0 | is_lzma (u8, 0=无压缩 / 1=LZMA) | 确认 | 3s |
 | 0x0D | CHECK_CODE | 起始地址 | total_len (u32 LE) | MD5 (16B) | 10s |
 | 0x0F | FORCE_RESET | 0 | 空 | 无 | — |
 
@@ -276,19 +306,52 @@ ISP 阶段:
   1. 复位设备（DTR/RTS 翻转）
   2. 握手（0x55 同步 + CMD 0x14）
   3. 切换波特率到 1Mbps (CMD 0x10)
-  4. 加载 ramrun 到 RAM (CMD 0x20 + CMD 0x31 × N)
-  5. 执行 ramrun (CMD 0x81)
+  4. 关闭其他串口 (CMD 0x20 Param1=0x40 + CMD 0x31 写 IPSCGTCR)
+  5. 加载 ramrun 到 RAM (CMD 0x20 + CMD 0x31 × N)
+  6. 执行 ramrun (CMD 0x81)
 
 SOC 阶段:
-  6. 切换到 2Mbps/6Mbps (由 info.json force_br 决定), PARITY_NONE
-  7. 查询 block_len (CMD 0x09) → 返回 262144 (0x40000)
-  8. 对每个文件 (bootloader, core, script):
-     a. CMD 0x0A: 设置下载起始地址 + 原始数据长度
-     b. CMD 0x0B × N: 发送数据（3KB 子块，最多重试 10 次/块）
-     c. CMD 0x0C: 结束标记 (is_lzma=0)
-  9. 对每个文件: CMD 0x0D: MD5 校验（地址 + 总长度）
-  10. 复位设备（DTR/RTS 翻转）
+  7. 切换到 2Mbps/6Mbps (由 info.json force_br 决定), PARITY_NONE
+  8. 查询 block_len (CMD 0x09) → 返回 262144 (0x40000)
+  9. 对每个文件 (bootloader, font, core, TTS, fs, script):
+     a. 本块 LZMA 压缩（压不划算则回落明文）
+     b. CMD 0x0A: 设置下载起始地址 + **原始**数据长度
+     c. CMD 0x0B × N: 发送载荷（3KB 子块，最多重试 10 次/块）
+     d. CMD 0x0C: 结束标记 (is_lzma=本块是否压缩)
+  10. 对每个文件: CMD 0x0D: MD5 校验（地址 + 总长度）
+      失败且用压缩下发过 → 改明文把该文件整个重传一次
+  11. 复位设备（DTR/RTS 翻转）
 ```
+
+### 分块 LZMA 压缩
+
+设备端 ramrun 支持每个 block 单独压缩后下发，格式与 LZMA SDK 的
+`fota_decode` 输入一一对应（`csdk/project/ramrun/src/ramrun_main.c`）：
+
+```
+CMD 0x0B 载荷（is_lzma = 1 时）:
+┌──────────────┬───────────────────────────┐
+│ props (5B)   │ LZMA 数据流              │
+│ propsByte +  │                           │
+│ dictSize(4B) │                           │
+└──────────────┴───────────────────────────┘
+```
+
+设备端处理要点：
+
+- 收到 `CMD 0x0C` 后才解码：`fw_org_cache.Pos -= 5` → `fota_decode(..., props, 5)`
+- 解压后**按 `CMD 0x0A` 里给的原始长度**烧写（`fw_cache.Pos = next_program_len`），
+  因此 `CMD 0x0A` 的长度字段始终是**未压缩的原始长度**
+- **解码失败不报错**：把输出缓冲 memset 成 `0xFF` 后照常应答，
+  主机只能靠 `CMD 0x0D` 的 MD5 发现问题
+- `fw_org_cache.MaxLen = block_len`（256KB），所以压缩载荷必须比原文小才用；
+  本仓库的判定是 `压缩后 + 5 < 原始长度`，否则整块走明文
+- `dict_size` 取设备上报的 `block_len`，与设备端解码窗口一致
+
+主机侧压缩用仓库内置的 LZMA SDK（`luatos-soc::ota::lzma_compress_block_for_download`，
+lc=3 / lp=0 / pb=2，level 9），与设备端同一套实现，无需额外依赖。
+
+**关闭压缩**：设环境变量 `LUATOS_CCM_LZMA=0`，强制全程明文下发（排查用）。
 
 ### 仅刷脚本
 

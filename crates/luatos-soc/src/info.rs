@@ -281,7 +281,7 @@ impl SocInfo {
             return bitw;
         }
         match self.chip.chip_type.as_str() {
-            "air6208" | "air101" | "air103" | "air601" | "air1601" | "air1602" | "ccm4211" => 64,
+            "air6208" | "air101" | "air103" | "air601" | "air1601" | "air1602" | "air1603" | "air1604" | "ccm4211" => 64,
             _ => 32,
         }
     }
@@ -399,6 +399,24 @@ mod tests {
         }"#;
         let info: SocInfo = serde_json::from_str(json).unwrap();
         assert_eq!(info.script_bitw(), 64);
+    }
+
+    /// Air1603/Air1604 与 Air1601/1602 同族，未显式给 bitw 时同样是 64 位。
+    #[test]
+    fn script_bitw_defaults_for_air1603_air1604() {
+        for chip in ["air1603", "air1604"] {
+            let json = format!(
+                r#"{{
+                    "version": 1,
+                    "chip": {{"type": "{chip}"}},
+                    "rom": {{"file": "luatos.bin"}},
+                    "script": {{"file": "script.bin"}},
+                    "download": {{}}
+                }}"#
+            );
+            let info: SocInfo = serde_json::from_str(&json).unwrap();
+            assert_eq!(info.script_bitw(), 64, "chip {chip} 应当默认 64 位");
+        }
     }
 
     /// 验证 Air6208 SOC info.json 中 fs/kv 分区的解析（size 单位为 KB）
