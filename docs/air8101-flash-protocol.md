@@ -525,29 +525,61 @@ Step 10: 重启并关口（LuaTools `_reboot_and_close`）
 4. RTS+DTR 500ms 重启后关口
 ```
 
-### 任意地址刷写（`flash raw`）
+### 任意地址读写（`flash raw` / `flash dump`）
 
 上述分区级操作之外，`flash raw` 允许直接按用户给定地址擦写，复用同一批协议原语
-（`erase_range` / `write_sector_4k` / `check_crc`）。
+（`erase_range` / `write_sector_4k` / 读命令）。详见 [flash-raw-design.md](flash-raw-design.md)。
 
-**BK7258 的能力边界（重要）：**
+**读命令（真机验证可用）** —— 本文档早期版本未覆盖，命令表来自 Beken SDK
+`cp/components/bk_download/dl_protocol.h`：
 
-| 项目 | 约束 |
-|---|---|
-| 写入地址 | 必须 4K 对齐，否则 CLI 直接拒绝 |
-| 擦除 | 4K / 64K 自适应，同 `erase_range` |
-| 写后校验 | 只能用 `CMD 0x10` 的 CRC32。**该 CRC 由 bootloader 计算，主机端无法复现同一算法**，因此只能记录数值，不能作为"写对了"的判据 |
-| 读回 dump | 本协议未覆盖读 flash 命令，需逆向 `BK7231GUIFlashTool` 才能确认 |
-
-由于 `check_crc` 不能判定对错，CLI 对 BK7258 的 `--verify` 会主动告警，
-并在 JSON 输出里用 `"verified": false` 标注，避免误读。
-
-```bash
-luatos-cli flash raw --soc Air8101.soc --port COM6 \
-  --addr 0x200000 --file data.bin --erase --verify
+```c
+FLASH_CMD_WRITE        = 0x06,
+FLASH_CMD_SECTOR_WRITE = 0x07,
+FLASH_CMD_READ         = 0x08,   // 请求 addr(4) + size(u8)，size ≤ 255
+FLASH_CMD_SECTOR_READ  = 0x09,   // 请求 addr(4)，固定回读 0x1000 字节
+FLASH_CMD_CHIP_ERASE   = 0x0A,
+FLASH_CMD_SECTOR_ERASE = 0x0B,
+FLASH_CMD_REG_READ     = 0x0C,
+FLASH_CMD_REG_WRITE    = 0x0D,
+FLASH_CMD_SPI_OPERATE  = 0x0E,
+FLASH_CMD_SIZE_ERASE   = 0x0F,
 ```
 
-详见 [flash-raw-design.md](flash-raw-design.md)。
+⚠️ **帧内 LEN 包含 CMD 字节本身**（handler 收到的是 `cmd_len - 1`）：
+
+| 命令 | LEN | payload | 应答总长 |
+|---|---|---|---|
+| `SECTOR_READ` (0x09) | **5** | addr(4) | 11 + 4 + 4096 = 4111 |
+| `READ` (0x08) | **6** | addr(4) + size(1) | 11 + 4 + size |
+
+应答布局（`tx_rsp_for_flash_cmd_hdr`）：
+
+```
+04 0E FF | 01 E0 FC F4 | LEN_LE | CMD | status | addr(4) | data(size)
+```
+
+其中 `LEN = payload_len + 2`。
+
+**擦除是精确的**：`SIZE_ERASE`(0x0F) 带显式子命令（`0x20`=4K、`0xD8`=64K），
+实测重刷中间扇区不会影响左右邻居。这与 CCM4211 的整块擦除不同。
+
+**速率注意：** 2Mbps 下 4111 字节的突发应答会随机丢尾部几字节（实测 `4109/4111`、
+`4096/4100`）。`flash dump` 因此先走 `SECTOR_READ` 快速路径，失败时降级为
+16 次 `READ`(0x08) 小包读。
+
+```bash
+# 写入 + 主机端读回真校验
+luatos-cli flash raw --soc Air8101.soc --port COM6 \
+  --addr 0x40d000 --file data.bin --erase --verify
+
+# 只读导出任意区间（不需要 --force）
+luatos-cli flash dump --soc Air8101.soc --port COM6 \
+  --addr 0x40d000 --len 0x1000 -o dump.bin
+```
+
+因为有真读回通道，`--verify` 现在是主机端逐字节比对，能给出首个差异位置；
+`CMD 0x10` 的设备端 CRC32 已仅保留作排障诊断。
 
 ---
 

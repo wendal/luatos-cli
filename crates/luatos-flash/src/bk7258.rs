@@ -262,7 +262,12 @@ fn write_sector_4k(port: &mut dyn serialport::SerialPort, addr: u32, data: &[u8;
     Ok(true)
 }
 
-/// CRC check for a flash range [start_addr, end_addr] inclusive.
+/// 设备端 CRC32 校验（`CMD 0x10`），覆盖 `[start_addr, end_addr]`。
+///
+/// 该 CRC 由 bootloader 计算，主机端无法复现同一算法，因此**不能作为写入是否正确的
+/// 判据**。真校验走 `read_flash_range()` 主机端读回比对。
+/// 这里保留它用于排障诊断与真机探针（`hw_probe_bk7258_read`）。
+#[allow(dead_code)]
 fn check_crc(port: &mut dyn serialport::SerialPort, start_addr: u32, end_addr: u32) -> Result<u32> {
     let [s0, s1, s2, s3] = start_addr.to_le_bytes();
     let [e0, e1, e2, e3] = end_addr.to_le_bytes();
@@ -276,6 +281,160 @@ fn check_crc(port: &mut dyn serialport::SerialPort, start_addr: u32, end_addr: u
         bail!("CheckCRC: bad response {:02x?}", buf);
     }
     Ok(u32::from_le_bytes([buf[7], buf[8], buf[9], buf[10]]))
+}
+
+// ─── Flash read ──────────────────────────────────────────────────────────────
+//
+// 协议来源：SDK `cp/components/bk_download/dl_protocol.h` / `dl_protocol.c`
+//   FLASH_CMD_READ        = 0x08,  // 请求 addr(4) + size(u8)，size ≤ 255
+//   FLASH_CMD_SECTOR_READ = 0x09,  // 请求 addr(4)，固定回读 0x1000 字节
+//
+// 注意帧内 LEN **包含 CMD 字节本身**（handler 收到的是 cmd_len - 1）：
+//   0x08 → LEN = 1 + 4 + 1 = 6，0x09 → LEN = 1 + 4 = 5。
+//
+// 应答布局（tx_rsp_for_flash_cmd_hdr）：
+//   [0..3]=04 0E FF [3..7]=01 E0 FC F4 [7..9]=LEN_LE [9]=CMD [10]=status [11..]=payload
+// 其中 payload = addr(4) + data(size)。
+
+/// `FLASH_CMD_READ` 单次最大读取字节数（size 是 u8）。
+const FLASH_READ_MAX: usize = 255;
+
+/// 读取 flash 响应头（11 字节），校验魔数并返回 (len, status)。
+fn read_flash_rsp_hdr(buf: &[u8]) -> Result<(u16, u8)> {
+    if buf[0] != 0x04 || buf[1] != 0x0E || buf[2] != 0xFF || buf[3] != 0x01 || buf[4] != 0xE0 || buf[5] != 0xFC || buf[6] != 0xF4 {
+        bail!("Flash read: bad response header {:02x?}", &buf[..7]);
+    }
+    Ok((u16::from_le_bytes([buf[7], buf[8]]), buf[10]))
+}
+
+/// 发送一条 flash 命令并读取应答。
+///
+/// 先读固定 11 字节的应答头，**按头里的 LEN 字段精确计算剩余字节数**再读 body，
+/// 最后按 `CMD`/`status`/地址回显校验。分两段读而不是一次 `read_exact`，
+/// 是因为 4K 扇区应答有 4111 字节，单次突发在 2Mbps 下尾部容易丢字节
+/// （实测出现过 4109/4111），重试一次即可收敛。
+fn flash_cmd_exchange(port: &mut dyn serialport::SerialPort, tx: &[u8], expect_cmd: u8) -> Result<Vec<u8>> {
+    let mut last_err = None;
+    for attempt in 0..3 {
+        let _ = port.clear(serialport::ClearBuffer::Input);
+        port.write_all(tx)?;
+        port.flush()?;
+
+        let mut hdr = [0u8; 11];
+        if let Err(e) = read_exact_timeout(port, &mut hdr, Duration::from_secs(15)) {
+            last_err = Some(e);
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
+        }
+        let (len, status) = match read_flash_rsp_hdr(&hdr) {
+            Ok(v) => v,
+            Err(e) => {
+                last_err = Some(e);
+                log::debug!("flash_cmd_exchange: 应答头异常 (attempt {}/3)", attempt + 1);
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+        };
+        if hdr[9] != expect_cmd {
+            last_err = Some(anyhow::anyhow!("Flash cmd 0x{:02X}: unexpected rsp cmd 0x{:02X}", expect_cmd, hdr[9]));
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
+        }
+        if status != 0 {
+            bail!("Flash cmd 0x{expect_cmd:02X}: status={status} (len={len})");
+        }
+
+        // payload 长度 = LEN - 2（tx_rsp_for_flash_cmd_hdr 里 LEN = param_len + 2）
+        let payload_len = (len as usize).saturating_sub(2);
+        let mut payload = vec![0u8; payload_len];
+        if payload_len > 0 {
+            if let Err(e) = read_exact_timeout(port, &mut payload, Duration::from_secs(20)) {
+                last_err = Some(e);
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+        }
+        return Ok(payload);
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Flash cmd 0x{expect_cmd:02X}: 交换失败")))
+}
+
+/// `FLASH_CMD_SECTOR_READ`(0x09)：读取一个 4K 扇区。
+///
+/// 先走 0x09 一次读 4K（快），但实测 2Mbps 下 4111 字节的突发应答会随机丢
+/// 尾部几个字节（观察到 4109/4111、4096/4100）。失败时降级为 16 次
+/// `FLASH_CMD_READ`(0x08) 小包读，每次 ≤255 字节，突发短、可靠。
+pub(crate) fn read_flash_sector(port: &mut dyn serialport::SerialPort, addr: u32) -> Result<Vec<u8>> {
+    if let Ok(data) = read_flash_sector_fast(port, addr) {
+        return Ok(data);
+    }
+    log::debug!("read_flash_sector: 0x{addr:08X} 0x09 突发读失败，降级为 0x08 小包读");
+    let mut out = Vec::with_capacity(SECTOR_SIZE);
+    for i in 0..(SECTOR_SIZE / FLASH_READ_MAX) {
+        let off = (i * FLASH_READ_MAX) as u32;
+        out.extend_from_slice(&read_flash_small(port, addr + off, FLASH_READ_MAX as u8)?);
+    }
+    Ok(out)
+}
+
+/// `FLASH_CMD_SECTOR_READ`(0x09)` 快速路径。
+fn read_flash_sector_fast(port: &mut dyn serialport::SerialPort, addr: u32) -> Result<Vec<u8>> {
+    let [a0, a1, a2, a3] = addr.to_le_bytes();
+    // LEN = 1(cmd) + 4(addr)
+    let tx = [0x01u8, 0xE0, 0xFC, 0xFF, 0xF4, 0x05, 0x00, 0x09, a0, a1, a2, a3];
+    let payload = flash_cmd_exchange(port, &tx, 0x09)?;
+    if payload.len() != 4 + SECTOR_SIZE {
+        bail!("Flash sector read: 期望 {} 字节，实际 {}", 4 + SECTOR_SIZE, payload.len());
+    }
+    let echo = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+    if echo != addr {
+        bail!("Flash sector read: addr echo mismatch sent 0x{addr:08X} got 0x{echo:08X}");
+    }
+    Ok(payload[4..].to_vec())
+}
+
+/// `FLASH_CMD_READ`(0x08)：读取 `size`（≤255）字节。
+fn read_flash_small(port: &mut dyn serialport::SerialPort, addr: u32, size: u8) -> Result<Vec<u8>> {
+    debug_assert!(size as usize <= FLASH_READ_MAX);
+    let [a0, a1, a2, a3] = addr.to_le_bytes();
+    // LEN = 1(cmd) + 4(addr) + 1(size)
+    let tx = [0x01u8, 0xE0, 0xFC, 0xFF, 0xF4, 0x06, 0x00, 0x08, a0, a1, a2, a3, size];
+    let payload = flash_cmd_exchange(port, &tx, 0x08)?;
+    if payload.len() < 4 {
+        bail!("Flash read: 短应答 {} 字节", payload.len());
+    }
+    let echo = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+    if echo != addr {
+        bail!("Flash read: addr echo mismatch sent 0x{addr:08X} got 0x{echo:08X}");
+    }
+    let data = payload[4..].to_vec();
+    if data.len() != size as usize {
+        bail!("Flash read: 期望 {size} 字节，实际 {} 字节", data.len());
+    }
+    Ok(data)
+}
+
+/// 读取任意长度的 flash 区间。
+///
+/// 整扇区用 0x09 一次读 4K（快），尾部不足一扇区用 0x08 分片读（每片 ≤255）。
+pub(crate) fn read_flash_range(port: &mut dyn serialport::SerialPort, addr: u32, len: u64) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(len as usize);
+    let mut cur = addr;
+    let mut remaining = len;
+
+    while remaining >= SECTOR_SIZE as u64 {
+        out.extend_from_slice(&read_flash_sector(port, cur)?);
+        cur = cur.checked_add(SECTOR_SIZE as u32).context("Flash 地址溢出")?;
+        remaining -= SECTOR_SIZE as u64;
+    }
+    while remaining > 0 {
+        let n = remaining.min(FLASH_READ_MAX as u64) as u8;
+        let got = read_flash_small(port, cur, n)?;
+        out.extend_from_slice(&got);
+        cur = cur.checked_add(n as u32).context("Flash 地址溢出")?;
+        remaining -= n as u64;
+    }
+    Ok(out)
 }
 
 // ─── Flash unprotect ──────────────────────────────────────────────────────────
@@ -1214,11 +1373,29 @@ impl crate::raw::RawFlashDevice for Bk7258Raw {
         if data.is_empty() {
             bail!("校验数据为空");
         }
-        let last = addr.checked_add(data.len() as u32 - 1).ok_or_else(|| anyhow::anyhow!("校验范围地址溢出"))?;
-        // BK7231 ISP 只有设备端 CRC32，主机端无法复现同一算法，
-        // 因此只能记录，不能作为「写对了」的判据。
-        let crc32 = check_crc(&mut *self.port, addr, last)?;
-        Ok(crate::raw::VerifyResult::DeviceCrcOnly { crc32 })
+        // SDK `FLASH_CMD_READ`(0x08) / `FLASH_CMD_SECTOR_READ`(0x09) 提供真读回，
+        // 所以这里能直接在主机端比对，不需要依赖设备端 CRC。
+        let actual = read_flash_range(&mut *self.port, addr, data.len() as u64)?;
+        let expected_digest = format!("{:x}", md5::compute(data));
+        if actual != data {
+            let actual_digest = format!("{:x}", md5::compute(&actual));
+            // 找到第一个不一致的字节，便于定位
+            let first_diff = actual.iter().zip(data.iter()).position(|(a, b)| a != b).unwrap_or(0);
+            bail!(
+                "回读比对失败：期望 md5={expected_digest}，实际 md5={actual_digest}，首个差异在 +0x{first_diff:x} \
+                 (期望 {:02x}，实际 {:02x})",
+                data[first_diff],
+                actual[first_diff]
+            );
+        }
+        Ok(crate::raw::VerifyResult::DigestMatched { digest: expected_digest })
+    }
+
+    fn read(&mut self, addr: u32, len: u64) -> Result<Vec<u8>> {
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+        read_flash_range(&mut *self.port, addr, len)
     }
 
     fn reset(&mut self) {
@@ -1352,5 +1529,102 @@ mod resource_download_tests {
         assert!(run(&v).contains("must be romfs"));
         v["chip"]["type"] = serde_json::json!("air6208");
         assert!(run(&v).contains("BK72xx only"));
+    }
+
+    // ─── 真机能力探针（需硬件，默认跳过，CI 不跑） ───────────────────────────
+
+    /// 探测 BK7258 的 flash 读命令是否可用。
+    ///
+    /// 协议来源：SDK `cp/components/bk_download/dl_protocol.h`：
+    /// ```c
+    /// FLASH_CMD_WRITE        = 0x06,
+    /// FLASH_CMD_SECTOR_WRITE = 0x07,
+    /// FLASH_CMD_READ         = 0x08,   // addr(4) + size(u8)   → 回读 size 字节
+    /// FLASH_CMD_SECTOR_READ  = 0x09,   // addr(4)              → 回读 0x1000 字节
+    /// ```
+    ///
+    /// 若可用，则 `flash raw --verify` 可以从"只能记录设备端 CRC"升级为真正的
+    /// 主机端读回比对，`flash raw dump` 也变得可行。
+    ///
+    /// 用法：`cargo test -p luatos-flash hw_probe_bk7258 -- --ignored --nocapture`
+    /// 环境变量：`HW_PORT`（默认 COM12）、`HW_SOC`（默认 refs/soc_files 下的 Air8101 V2015）
+    #[test]
+    #[ignore = "需要真机 Air8101，改用 --ignored 显式运行"]
+    fn hw_probe_bk7258_read() {
+        let port = std::env::var("HW_PORT").unwrap_or_else(|_| "COM12".into());
+        let soc = std::env::var("HW_SOC").unwrap_or_else(|_| "refs/soc_files/LuatOS-SoC_V2015_Air8101.soc".into());
+        let info = luatos_soc::read_soc_info(&soc).expect("read soc info");
+        let cancel = AtomicBool::new(false);
+        let on_progress: ProgressCallback = Box::new(|p| println!("  [{}] {}", p.stage, p.message));
+        let mut serial = connect_bootloader(&port, info.flash_baud_rate(), &cancel, &on_progress).expect("connect bootloader");
+
+        let addr = info.script_addr();
+        println!("\n>>> 目标地址 script_addr = 0x{addr:08X}");
+
+        // ---- FLASH_CMD_READ (0x08)：addr(4) + size(u8) ----
+        // LEN 含 CMD 字节本身：cmd_len = 1 + 4 + 1 = 6，handler 收到 param_len=5
+        for size in [16u8, 255] {
+            let [a0, a1, a2, a3] = addr.to_le_bytes();
+            let tx = [0x01u8, 0xE0, 0xFC, 0xFF, 0xF4, 0x06, 0x00, 0x08, a0, a1, a2, a3, size];
+            let _ = serial.clear(serialport::ClearBuffer::Input);
+            serial.write_all(&tx).expect("tx");
+            serial.flush().expect("flush");
+            // 应答 = 11 字节头 + addr(4) + data(size)
+            let mut buf = vec![0u8; 11 + 4 + size as usize];
+            match read_exact_timeout(&mut *serial, &mut buf, Duration::from_secs(5)) {
+                Ok(_) => {
+                    let len = u16::from_le_bytes([buf[7], buf[8]]);
+                    println!(
+                        ">>> CMD 0x08 size={size}: len={} (expect {}) cmd=0x{:02X} status=0x{:02X} addr=0x{:08X}",
+                        len,
+                        size as u16 + 6,
+                        buf[9],
+                        buf[10],
+                        u32::from_le_bytes([buf[11], buf[12], buf[13], buf[14]])
+                    );
+                    let data = &buf[15..15 + size as usize];
+                    let preview: Vec<String> = data.iter().take(16).map(|b| format!("{b:02x}")).collect();
+                    println!("    data[0..16]: {}", preview.join(" "));
+                }
+                Err(e) => println!(">>> CMD 0x08 size={size}: ERR {e}"),
+            }
+        }
+
+        // ---- FLASH_CMD_SECTOR_READ (0x09)：addr(4) → 4096 字节 ----
+        {
+            let [a0, a1, a2, a3] = addr.to_le_bytes();
+            // LEN = 1(cmd) + 4(addr) = 5，handler 收到 param_len=4
+            let tx = [0x01u8, 0xE0, 0xFC, 0xFF, 0xF4, 0x05, 0x00, 0x09, a0, a1, a2, a3];
+            let _ = serial.clear(serialport::ClearBuffer::Input);
+            serial.write_all(&tx).expect("tx");
+            serial.flush().expect("flush");
+            let mut buf = vec![0u8; 11 + 4 + 4096];
+            match read_exact_timeout(&mut *serial, &mut buf, Duration::from_secs(10)) {
+                Ok(_) => {
+                    let len = u16::from_le_bytes([buf[7], buf[8]]);
+                    println!(
+                        ">>> CMD 0x09: len={len} (expect 4102) cmd=0x{:02X} status=0x{:02X} addr=0x{:08X}",
+                        buf[9],
+                        buf[10],
+                        u32::from_le_bytes([buf[11], buf[12], buf[13], buf[14]])
+                    );
+                    let data = &buf[15..4111];
+                    let all_ff = data.iter().all(|&b| b == 0xFF);
+                    let preview: Vec<String> = data.iter().take(16).map(|b| format!("{b:02x}")).collect();
+                    println!("    4096 字节全为 0xFF? {all_ff}");
+                    println!("    data[0..16]: {}", preview.join(" "));
+                    println!("    md5(sector) = {:x}", md5::compute(data));
+                }
+                Err(e) => println!(">>> CMD 0x09: ERR {e}"),
+            }
+        }
+
+        // ---- 现有 CHECK_CRC (0x10) 对比 ----
+        match check_crc(&mut *serial, addr, addr + 4095) {
+            Ok(crc) => println!(">>> CMD 0x10 CHECK_CRC -> 0x{crc:08X}"),
+            Err(e) => println!(">>> CMD 0x10 ERR {e}"),
+        }
+
+        let _ = serial.set_baud_rate(115_200);
     }
 }

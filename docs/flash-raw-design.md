@@ -45,37 +45,59 @@ luatos-cli flash raw \
 
 ## 芯片能力差异
 
-这是使用前最需要知道的一点：**两颗芯片的写入与校验能力并不对等。**
+这是使用前最需要知道的一点：**两颗芯片的擦除语义与读回能力并不对等。**
 
 | 维度 | Air8101 / BK7258 | Air1601 / CCM4211 |
 |---|---|---|
 | 写入地址对齐 | **必须 4K 对齐**，否则拒绝执行 | 无要求（真机已验证未对齐写入可用） |
-| 擦除粒度 | 4K / 64K 自适应 | **实测 256KB，向下对齐整块擦**（见下） |
-| 写后校验 | 只能拿到设备端 CRC32，**主机端无法复现该算法**，因此只能记录、不能判定对错 | `CHECK_CODE` 返回设备回读 MD5，**可真正判定**（真机已验证） |
-| 读回 dump | ❌ 协议文档未覆盖读 flash 命令 | ❌ **实测 `GET_FLASH_DATA`(0x06) 无应答**，此路不通 |
+| 擦除 | 4K / 64K 自适应，**精确不越界**（真机已验证） | **实测 256KB，向下对齐整块擦**（见下） |
+| 写后校验 | ✅ **主机端读回比对**（`FLASH_CMD_READ`/`SECTOR_READ`） | ✅ `CHECK_CODE` 返回设备回读 MD5 |
+| 读回 dump | ✅ `flash dump` 可用 | ❌ **实测 `GET_FLASH_DATA`(0x06) 无应答**，无读回通道 |
 
-CLI 会在 Air8101 上使用 `--verify` 时主动告警，避免用户把一个 CRC 数值误当成"校验通过"：
+### `flash dump`：读回任意区间到文件
 
+```bash
+luatos-cli flash dump --soc Air8101.soc --port COM12 \
+  --addr 0x40d000 --len 0x1000 -o dump.bin
 ```
-[WARN] BK7258 的 ISP 协议只能返回设备端 CRC32，主机端无法复现该算法，
-       因此 --verify 只能记录数值，不能判定写入是否正确
-```
 
-JSON 输出里用 `verified` 字段区分：`true` 仅在真正比对成功时出现。
+只读操作，不触碰受保护区间，因此不需要 `--force`。
+输出会打印区间的 md5，便于与设备镜像比对。
+
+Air1601/Air1602 会明确报错 —— 该协议没有读回通道（实测 `GET_FLASH_DATA` 无应答），
+只能靠 `--verify` 的 MD5 判断写入是否正确。
+
+**速率提示：** 2Mbps 下 4111 字节的突发应答会随机丢尾部几字节，实测出现过
+`4109/4111`、`4096/4100`。因此 `flash dump` 先走 `SECTOR_READ`(0x09) 快速路径，
+失败时自动降级为 16 次 `READ`(0x08) 小包读（每次 ≤255 字节）。慢一些但可靠。
+
+两颗芯片的 `--verify` 都是**真校验**，JSON 输出用 `verified` 字段标注：
 
 ```json
 {
   "status": "ok",
   "command": "flash.raw",
   "data": {
-    "chip": "ccm4211",
-    "addr": "0x14700000",
+    "chip": "bk7258",
+    "addr": "0x0040d000",
     "length": 4096,
     "erased": true,
-    "verify": { "verified": true, "digest": "8f1d..." }
+    "verify": { "verified": true, "digest": "8ec06cd4..." }
   }
 }
 ```
+
+比对失败时报错会给出首个差异字节的位置，便于定位：
+
+```
+Error: 回读比对失败：期望 md5=xxx，实际 md5=yyy，首个差异在 +0x1a (期望 c3，实际 ff)
+```
+
+> 早期版本把 BK7258 的 `--verify` 实现为「只记录设备端 CRC32」，因为当时
+> `docs/air8101-flash-protocol.md` 未覆盖读命令。后从 SDK
+> `cp/components/bk_download/dl_protocol.h` 确认 `FLASH_CMD_READ`(0x08) /
+> `FLASH_CMD_SECTOR_READ`(0x09) 存在，并真机验证通过，故已改为真读回比对。
+> `check_crc` 仅保留给排障诊断。
 
 ## 安全护栏
 

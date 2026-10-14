@@ -385,6 +385,27 @@ enum FlashCommands {
         #[arg(long)]
         no_reboot: bool,
     },
+    /// 读回任意 Flash 地址区间到文件（flash raw dump）
+    ///
+    /// 只读操作，不需要 --force。需要协议支持 flash 读命令：Air8101 支持，
+    /// Air1601/Air1602 不支持（实测无读回通道）。
+    Dump {
+        /// Path to .soc file（用于确定芯片族与下载波特率）
+        #[arg(long)]
+        soc: String,
+        /// Serial port (e.g. COM6)
+        #[arg(long)]
+        port: String,
+        /// 起始地址，支持 0x 前缀
+        #[arg(long)]
+        addr: String,
+        /// 读取字节数，支持 0x 前缀（最大 64MiB）
+        #[arg(long)]
+        len: String,
+        /// 输出文件路径
+        #[arg(long, short = 'o')]
+        output: String,
+    },
     /// Closed-loop flash test: flash → capture boot log → verify keywords → PASS/FAIL
     Test {
         /// Path to .soc file
@@ -840,6 +861,7 @@ fn main() {
                 progress_step,
                 &cli.format,
             ),
+            FlashCommands::Dump { soc, port, addr, len, output } => cmd_flash::cmd_flash_raw_dump(&soc, &port, &addr, &len, &output, progress_step, &cli.format),
             FlashCommands::Test {
                 soc,
                 port,

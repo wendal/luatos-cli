@@ -238,6 +238,11 @@ pub trait RawFlashDevice {
     /// 写后校验。返回设备能提供的最强校验结果。
     fn verify(&mut self, addr: u32, data: &[u8]) -> Result<VerifyResult>;
 
+    /// 读回 `[addr, addr+len)` 的原始字节。
+    ///
+    /// 协议不支持读回时返回错误（此时只能用 `verify`）。
+    fn read(&mut self, addr: u32, len: u64) -> Result<Vec<u8>>;
+
     /// 复位设备并释放串口（对齐 LuaTools `_reboot_and_close`）。
     fn reset(&mut self);
 }
@@ -524,6 +529,9 @@ mod tests {
         }
         fn verify(&mut self, _addr: u32, _data: &[u8]) -> Result<VerifyResult> {
             Ok(VerifyResult::DigestMatched { digest: "d41d8cd9".into() })
+        }
+        fn read(&mut self, _addr: u32, _len: u64) -> Result<Vec<u8>> {
+            Ok(Vec::new())
         }
         fn reset(&mut self) {}
     }

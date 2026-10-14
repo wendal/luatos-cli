@@ -541,6 +541,63 @@ pub fn cmd_flash_ext_flash(port: &str, baud: u32, partition: &str, file: &str, e
     Ok(())
 }
 
+/// 读回任意 Flash 地址区间（`flash raw dump`）。
+///
+/// 需要协议支持 flash 读命令：BK7258 支持（`FLASH_CMD_READ`/`FLASH_CMD_SECTOR_READ`），
+/// CCM4211 不支持（实测无读回通道）。
+pub fn cmd_flash_raw_dump(soc: &str, port: &str, addr: &str, len: &str, output: &str, step: u8, format: &OutputFormat) -> anyhow::Result<()> {
+    use luatos_flash::raw::{self, RawChip};
+
+    let command = "flash.raw-dump".to_string();
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    install_cancel_handler(format, &command, &cancel);
+
+    let addr = raw::parse_addr(addr)?;
+    let len = raw::parse_len(len)?;
+    anyhow::ensure!(len > 0, "--len 必须大于 0");
+    anyhow::ensure!(len <= 64 * 1024 * 1024, "--len 超过 64MiB 上限，请分多次导出");
+
+    let info = luatos_soc::read_soc_info(soc)?;
+    let chip = match info.family() {
+        ChipFamily::Bk72xx => RawChip::Bk7258,
+        ChipFamily::Ccm4211 => RawChip::Ccm4211,
+        other => anyhow::bail!(
+            "flash raw dump 目前仅支持 Air8101(BK7258) 与 Air1601/Air1602(CCM4211)，当前芯片: {} ({other:?})",
+            info.chip.chip_type
+        ),
+    };
+
+    let on_progress = make_progress_callback(format, command.clone(), step);
+    on_progress(&luatos_flash::FlashProgress::info("RawDump", 10.0, &format!("读回 0x{addr:08x} 共 {len} 字节")).with_region("raw"));
+
+    // dump 是只读操作，不触碰受保护区间，因此不需要 --force
+    let mut dev = raw::open(chip, port, soc, cancel, on_progress)?;
+    let data = dev.read(addr, len)?;
+
+    std::fs::write(output, &data).with_context(|| format!("无法写入输出文件: {output}"))?;
+    let digest = format!("{:x}", md5::compute(&data));
+
+    match format {
+        OutputFormat::Text => {
+            println!("已导出 0x{addr:08x} .. 0x{:08x}（{} 字节）", addr as u64 + len, data.len());
+            println!("输出: {output}");
+            println!("md5  : {digest}");
+        }
+        OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(
+            format,
+            &command,
+            "ok",
+            serde_json::json!({
+                "chip": chip.name(),
+                "addr": format!("0x{addr:08x}"),
+                "length": data.len(),
+                "output": output,
+                "md5": digest,
+            }),
+        )?,
+    }
+    Ok(())
+}
 /// Air6201 外置 SPI Flash 分区擦除
 pub fn cmd_flash_ext_erase(port: &str, baud: u32, partition: &str, ext_prog: bool, step: u8, format: &OutputFormat) -> anyhow::Result<()> {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -658,14 +715,6 @@ pub fn cmd_flash_raw(
                 ),
             )?;
         }
-    }
-    if verify && !chip.supports_digest_verify() {
-        event::emit_message(
-            format,
-            &command,
-            MessageLevel::Warn,
-            "BK7258 的 ISP 协议只能返回设备端 CRC32，主机端无法复现该算法，因此 --verify 只能记录数值，不能判定写入是否正确",
-        )?;
     }
     if no_reboot {
         event::emit_message(

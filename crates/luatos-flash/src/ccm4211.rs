@@ -1158,6 +1158,13 @@ impl crate::raw::RawFlashDevice for Ccm4211Raw {
         Ok(crate::raw::VerifyResult::DigestMatched { digest: device_md5_hex })
     }
 
+    fn read(&mut self, _addr: u32, _len: u64) -> Result<Vec<u8>> {
+        // 实测（Air1601 + LuatOS_V1027）：GET_FLASH_DATA(0x06) 以 len=64/256 探测均 3s
+        // 超时无应答，协议层没有可用的 flash 读回通道。写后校验只能依赖
+        // CHECK_CODE(0x0D) 返回的 MD5，无法 dump 原始内容。
+        bail!("ccm4211 协议不提供 flash 读回（实测 GET_FLASH_DATA 无应答）；写后校验请用 --verify（基于 MD5）")
+    }
+
     fn reset(&mut self) {
         let _ = soc_reset_device(&mut self.port);
     }

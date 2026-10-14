@@ -1009,6 +1009,7 @@ dependencies = [
  "luatos-serial",
  "luatos-soc",
  "luatos-testcase",
+ "md5",
  "serde",
  "serde_json",
  "serialport",
