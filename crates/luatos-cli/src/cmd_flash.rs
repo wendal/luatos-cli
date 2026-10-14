@@ -713,19 +713,26 @@ pub fn cmd_flash_raw(
         )?;
     }
     if erase {
-        // 实测（Air1601 + LuatOS_V1027）：FLASH_ERASE_BLOCK 按 256KB 整块擦除，
-        // 请求几 KB 都会连带清掉整个块，必须提前讲清楚。
+        // 擦除范围与请求范围的关系逐芯片不同，必须讲清楚，否则用户会误判影响面。
+        // - 向下对齐整块擦（BK7258 / CCM4211）：请求几 KB 都会连带清掉整个块
+        //   （CCM4211 的 256KB 是真机实测结论）。
+        // - 按扇区精确擦（XT804）：ROM 的 QFlash 擦除命令以 index/count 表达，
+        //   擦除范围就是请求的扇区数，不多不少。
         if let Some(gran) = chip.erase_granularity() {
-            event::emit_message(
-                format,
-                &command,
-                MessageLevel::Warn,
+            let msg = if chip.erase_aligns_down() {
                 format!(
                     "擦除按 0x{gran:x}（{gran} 字节）整块进行并向下对齐：本次写入 {} 字节，但实际会被擦掉约 {gran} 字节（到 0x{:08x}）",
                     req.len(),
                     (addr / (gran as u32)) * (gran as u32)
-                ),
-            )?;
+                )
+            } else {
+                format!(
+                    "擦除按 0x{gran:x}（{gran} 字节）扇区精确进行：共擦除 {} 个扇区，范围与本次写入的 {} 字节一致，不会波及其他扇区",
+                    req.len() / gran,
+                    req.len()
+                )
+            };
+            event::emit_message(format, &command, MessageLevel::Warn, msg)?;
         }
     }
     if no_reboot {

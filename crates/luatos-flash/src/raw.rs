@@ -48,9 +48,25 @@ impl RawChip {
 
     /// 该协议是否支持按区间擦除。
     ///
-    /// XT804 的 bootloader 只有**整片擦除**命令，没有按扇区/分区擦除的能力，
-    /// 因此 raw 路径必须禁用 `--erase`（整片擦会连 bootloader 一起擦掉导致变砖）。
+    /// 三颗芯片都支持，但实现路径不同：
+    /// - BK7258 / CCM4211：bootloader 有独立的擦除命令，带地址参数。
+    /// - XT804：bootloader 的**串口命令集里只有整片擦除**（`CMD_ERASE`，参数无地址域），
+    ///   整片擦会连 bootloader 一起擦掉导致变砖，因此**绝不能下发**。
+    ///   但它的 flash 与 secboot 都真实支持 4K 扇区擦除（SPI NOR `SE`/`0x20`，
+    ///   见 `decompile/secboot_flash.c` 的 `flash_erase_sector`/`flash_erase_range`），
+    ///   且 secboot 的 `flash_write()` 本身就会**逐 4K 扇区先擦后写**。
+    ///   因此 XT804 的按区间擦除通过「向目标区间写全 0xFF」实现，
+    ///   效果与真正的扇区擦除完全一致，粒度精确到 4K，不会越界。
     pub fn supports_erase(self) -> bool {
+        matches!(self, RawChip::Bk7258 | RawChip::Ccm4211 | RawChip::Xt804)
+    }
+
+    /// 该协议的擦除命令是**向下对齐并整块擦除**（擦除范围可能大于请求范围）。
+    ///
+    /// - BK7258 / CCM4211：设备端直接按块/扇区擦，未对齐会连带清掉下方未请求的数据。
+    /// - XT804：`index`/`count` 本身就以 4KB 扇区为单位表达，不对齐会被 ROM
+    ///   直接拒绝（'S' 命令参数错），不会误擦。
+    pub fn erase_aligns_down(self) -> bool {
         matches!(self, RawChip::Bk7258 | RawChip::Ccm4211)
     }
 
@@ -90,8 +106,8 @@ impl RawChip {
             RawChip::Bk7258 => Some(BK_SECTOR_SIZE as u64),
             // CCM4211 实测值，设备自报值不同则以设备为准
             RawChip::Ccm4211 => Some(CCM_ERASE_GRANULARITY),
-            // XT804 bootloader 没有按区间擦除的能力
-            RawChip::Xt804 => None,
+            // XT804 flash 的扇区大小（INSIDE_FLS_SECTOR_SIZE = 0x1000）
+            RawChip::Xt804 => Some(XT804_SECTOR_SIZE),
         }
     }
 }
@@ -107,6 +123,12 @@ const CCM_ERASE_GRANULARITY: u64 = 0x4_0000;
 
 /// XT804 的 XMODEM-1K 块大小，同时是负载的最小对齐单位。
 const XT804_XMODEM_BLOCK: usize = 1024;
+
+/// XT804 flash 的扇区大小（4KB）。
+///
+/// 来源：SDK `INSIDE_FLS_SECTOR_SIZE = 0x1000`，与 secboot 反编译出的
+/// `flash_erase_range()` 中 `andi 0xFFFFF000` / `>> 12` 的扇区运算一致。
+const XT804_SECTOR_SIZE: u64 = 0x1000;
 
 /// 写后校验结果。
 ///
@@ -368,16 +390,33 @@ pub fn check_request(req: &RawRequest) -> Result<()> {
 
 /// 能力检查：在连硬件之前拦下该协议根本做不到的操作。
 ///
-/// 这一点对 XT804 尤其重要 —— 它的 bootloader 只有整片擦除、没有读回命令，
-/// 如果放任 `--erase` 通过，整片擦除会把 bootloader 一起擦掉导致变砖。
+/// 擦除能力三颗芯片都有，但实现路径差异很大，护栏形状也不同 ——
+/// XT804 尤其危险：它的 bootloader 只有整片擦除命令且没有读回通道，
+/// 误用整片擦除会把 bootloader 一起擦掉导致变砖，且事后无法读回确认。
+/// `Xt804Raw::erase()` 因此只走「扇区对齐 + 写全 0xFF」，绝不碰 `CMD_ERASE`。
 pub fn check_capabilities(chip: RawChip, req: &RawRequest) -> Result<()> {
     if req.erase && !chip.supports_erase() {
-        bail!(
-            "{} 的 bootloader 只提供**整片擦除**命令，没有按区间擦除的能力。\n\
-             执行整片擦除会连 bootloader 一起擦掉导致模组变砖，因此 raw 路径禁用 `--erase`。\n\
-             好消息：XT804 的下载由 bootloader 依据镜像头的 run_img_addr 自行处理目标区域，无需手工擦除。",
-            chip.name()
-        );
+        bail!("{} 的 bootloader 没有提供按区间擦除的能力，raw 路径无法执行 `--erase`。", chip.name());
+    }
+    // 擦除**长度**的对齐要求，与地址的对齐方向是两件事，必须一起校验：
+    // - 按扇区精确擦的协议（XT804）的 index/count 只以扇区为单位表达，
+    //   长度不对齐会被 ROM 回 'S'（命令参数错），必须连硬件前就拦下。
+    // - 向下对齐整块擦的协议（BK7258 / CCM4211）由设备端处理长度，
+    //   长度不对齐是既定行为，不在这里拦。
+    if req.erase && !chip.erase_aligns_down() {
+        if let Some(gran) = chip.erase_granularity() {
+            if gran > 1 && !req.len().is_multiple_of(gran) {
+                bail!(
+                    "{} 按 {gran} 字节（0x{gran:x}）扇区精确擦除，**擦除长度必须是 {gran} 的整数倍**。\n\
+                     擦除长度取 `--file` 的大小，本次为 {} 字节（{} 个完整扇区 + 剩余 {} 字节）。\n\
+                     请把待写文件补齐到 {gran} 字节的整数倍，或改小 `--addr` 对应的区间。",
+                    chip.name(),
+                    req.len(),
+                    req.len() / gran,
+                    req.len() % gran
+                );
+            }
+        }
     }
     if req.verify && !chip.supports_digest_verify() {
         bail!(
@@ -395,7 +434,7 @@ pub fn check_capabilities(chip: RawChip, req: &RawRequest) -> Result<()> {
 pub fn check_alignment(dev: &dyn RawFlashDevice, req: &RawRequest) -> Result<()> {
     check_write_alignment(dev.chip().name(), req.addr, dev.write_alignment())?;
     if req.erase {
-        check_erase_alignment(dev.chip().name(), req.addr, dev.erase_granularity())?;
+        check_erase_alignment(dev.chip().name(), req.addr, dev.erase_granularity(), dev.chip().erase_aligns_down())?;
     }
     Ok(())
 }
@@ -408,7 +447,7 @@ pub fn precheck_alignment(chip: RawChip, addr: u32, erase: bool) -> Result<()> {
     check_write_alignment(chip.name(), addr, chip.write_alignment())?;
     if erase {
         if let Some(gran) = chip.erase_granularity() {
-            check_erase_alignment(chip.name(), addr, gran)?;
+            check_erase_alignment(chip.name(), addr, gran, chip.erase_aligns_down())?;
         }
     }
     Ok(())
@@ -424,14 +463,30 @@ fn check_write_alignment(chip: &str, addr: u32, align: u64) -> Result<()> {
     Ok(())
 }
 
-fn check_erase_alignment(chip: &str, addr: u32, gran: u64) -> Result<()> {
+/// 擦除地址对齐检查。
+///
+/// `aligns_down` 决定报错文案与「被连带擦除范围」的描述方向：
+/// - BK7258 / CCM4211：设备端命令**向下对齐并整块擦除**（CCM4211 为真机实测结论），
+///   未对齐会连带清掉下方未请求的数据 —— 必须说明清楚。
+/// - XT804：由主机侧自行构造负载，起点**向上对齐**、长度向上取整，
+///   未对齐时只是会被拒绝，不存在误擦下方数据的问题。
+fn check_erase_alignment(chip: &str, addr: u32, gran: u64, aligns_down: bool) -> Result<()> {
     if gran > 1 && !(addr as u64).is_multiple_of(gran) {
-        let down = addr / (gran as u32) * (gran as u32);
+        if aligns_down {
+            let down = addr / (gran as u32) * (gran as u32);
+            bail!(
+                "{chip} 擦除地址必须按 {gran} 字节（0x{gran:x}）对齐，当前 0x{addr:08x}。\n\
+                 实测该协议的擦除命令会**向下对齐到 0x{down:08x} 并整块擦除**（约 {gran} 字节），\n\
+                 也就是说你没请求的 0x{down:08x}..0x{addr:08x} 也会被清掉。\n\
+                 请把 --addr 对齐到 0x{gran:x} 边界，或改用不擦除的写法。"
+            );
+        }
+        let up = (addr / (gran as u32) + 1) * (gran as u32);
         bail!(
             "{chip} 擦除地址必须按 {gran} 字节（0x{gran:x}）对齐，当前 0x{addr:08x}。\n\
-             实测该协议的擦除命令会**向下对齐到 0x{down:08x} 并整块擦除**（约 {gran} 字节），\n\
-             也就是说你没请求的 0x{down:08x}..0x{addr:08x} 也会被清掉。\n\
-             请把 --addr 对齐到 0x{gran:x} 边界，或改用不擦除的写法。"
+             本协议由主机侧构造擦除负载，起点会**向上对齐到 0x{up:08x}**，\n\
+             为避免擦掉你没请求的 0x{addr:08x}..0x{up:08x}，这里直接拒绝未对齐的请求。\n\
+             请把 --addr 对齐到 0x{gran:x} 边界。"
         );
     }
     Ok(())
@@ -651,6 +706,8 @@ mod tests {
         assert_eq!(RawChip::Bk7258.erase_granularity(), Some(0x1000));
         // 实测值：CCM4211 擦除块 256KB，向下对齐整块擦
         assert_eq!(RawChip::Ccm4211.erase_granularity(), Some(0x40000));
+        // XT804 flash 扇区 4KB（INSIDE_FLS_SECTOR_SIZE）
+        assert_eq!(RawChip::Xt804.erase_granularity(), Some(0x1000));
     }
 
     #[test]
@@ -663,11 +720,11 @@ mod tests {
         assert!(RawChip::Ccm4211.supports_erase());
         assert!(!RawChip::Ccm4211.supports_read());
         assert!(RawChip::Ccm4211.supports_digest_verify());
-        // XT804：bootloader 只有整片擦除、无读回命令 —— 三者皆不支持
-        assert!(!RawChip::Xt804.supports_erase());
+        // XT804：可擦（走写全 0xFF 的扇区擦除）、不可读回、不可校验
+        assert!(RawChip::Xt804.supports_erase());
         assert!(!RawChip::Xt804.supports_read());
         assert!(!RawChip::Xt804.supports_digest_verify());
-        assert_eq!(RawChip::Xt804.erase_granularity(), None);
+        assert_eq!(RawChip::Xt804.erase_granularity(), Some(0x1000));
     }
 
     fn xt804_req() -> RawRequest {
@@ -675,12 +732,10 @@ mod tests {
     }
 
     #[test]
-    fn xt804_拒绝_erase_以免整片擦除变砖() {
+    fn xt804_允许_erase_因为能按扇区擦() {
         let mut r = xt804_req();
         r.erase = true;
-        let err = check_capabilities(RawChip::Xt804, &r).unwrap_err().to_string();
-        assert!(err.contains("整片擦除"), "实际错误: {err}");
-        assert!(err.contains("变砖"), "实际错误: {err}");
+        check_capabilities(RawChip::Xt804, &r).expect("XT804 可通过写全 0xFF 实现 4K 扇区擦除，不应被拦截");
     }
 
     #[test]
@@ -694,6 +749,32 @@ mod tests {
     #[test]
     fn xt804_普通写入通过能力检查() {
         check_capabilities(RawChip::Xt804, &xt804_req()).expect("不带 erase/verify 的写入应当通过");
+    }
+
+    #[test]
+    fn xt804_拒绝_非扇区整数倍的擦除长度() {
+        // 7KB = 1 个完整扇区 + 3072 字节，ROM 的 index/count 表达不了，必须连硬件前拦下
+        let mut r = req(0x0843_0000, 7168);
+        r.erase = true;
+        let err = check_capabilities(RawChip::Xt804, &r).unwrap_err().to_string();
+        assert!(err.contains("整数倍"), "{err}");
+        assert!(err.contains("3072"), "应指出剩余字节数: {err}");
+    }
+
+    #[test]
+    fn xt804_接受_扇区整数倍的擦除长度() {
+        // 8KB = 2 个扇区
+        let mut r = req(0x0843_0000, 8192);
+        r.erase = true;
+        check_capabilities(RawChip::Xt804, &r).expect("8KB = 2 个扇区，应当放行");
+    }
+
+    /// BK7258/CCM4211 由设备端向下对齐整块擦，长度不对齐是既定行为，不该被这里拦下。
+    #[test]
+    fn 向下对齐的协议不校验擦除长度() {
+        let mut r = req(0x1470_0000, 7168);
+        r.erase = true;
+        check_capabilities(RawChip::Ccm4211, &r).expect("CCM4211 擦除长度由设备端向下对齐，不在主机侧拦");
     }
 
     #[test]
@@ -735,8 +816,17 @@ mod tests {
 
     #[test]
     fn 擦除对齐检查文案包含被擦范围() {
-        let err = check_erase_alignment("ccm4211", 0x1474_1000, 0x40000).unwrap_err().to_string();
+        let err = check_erase_alignment("ccm4211", 0x1474_1000, 0x40000, true).unwrap_err().to_string();
         assert!(err.contains("0x14740000"), "{err}");
+    }
+
+    /// XT804 的擦除命令以扇区为单位表达，未对齐时是「拒绝」而不是「向下误擦」。
+    #[test]
+    fn xt804_未对齐擦除报错不应声称向下误擦() {
+        let err = check_erase_alignment("xt804", 0x0843_1800, 0x1000, false).unwrap_err().to_string();
+        assert!(err.contains("向上对齐"), "{err}");
+        assert!(err.contains("0x08432000"), "应指出实际上对齐到的扇区起点: {err}");
+        assert!(!err.contains("也会被清掉"), "XT804 不存在向下误擦，不应使用该措辞: {err}");
     }
 
     #[test]

@@ -355,7 +355,10 @@ enum FlashCommands {
     /// 往任意 Flash 地址刷写原始二进制（低阶操作，慎用）
     ///
     /// 绕过 info.json 的分区定义，直接按 --addr 擦写。bootloader/core 区间默认受保护，
-    /// 需 --force 才能覆盖。Air8101 写入地址必须 4K 对齐；Air1601 无对齐要求。
+    /// 需 --force 才能覆盖。对齐要求因芯片而异：Air8101 写入必须 4K 对齐；
+    /// Air6208(XT804) 写入需 1024 对齐、--erase 需 --addr 与文件长度都是 4K 的整数倍；
+    /// Air1601 无对齐要求，但 --erase 会按 256KB 向下对齐整块擦。
+    /// 擦除长度取 --file 的大小，没有独立的 --len 参数。
     Raw {
         /// Path to .soc file（用于确定芯片族、波特率与受保护区间）
         #[arg(long)]

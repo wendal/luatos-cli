@@ -39,37 +39,91 @@ const XMODEM_CRC_SIZE: usize = 2;
 const IMAGE_HEADER_SIZE: usize = 256;
 const IMAGE_MAGIC: u32 = 0xA0FFFF9F;
 
-// XT804 predefined command sequences (from wm_tool.c)
+// ─── ROM 命令集 ───────────────────────────────────────────────────────────────
+//
+// 厂商文档《2.6.1 命令列表》。所有命令共用同一个帧格式：
+//
+//     [0x21][len][crc16_lo][crc16_hi][cmd][data...]
+//
+//   - `len`   = 本帧除 `[0x21][len][0x00]` 之外的字节数 = 2(CRC) + 1(cmd) + len(data)
+//   - `crc16` = CRC16-CCITT-FALSE (poly 0x1021, init 0xFFFF, 不反转)，
+//               覆盖范围是 `[cmd] + data`，即 **不包含 CRC 自身**，小端存放
+//   - `cmd`   = 命令号
+//   - `data`  = 命令数据段
+//
+// 该规则已用文档给出的全部 13 条命令逐字节验证（见测试模块 `rom_命令帧与厂商文档一致`）。
+// 因此这里一律用 `build_rom_cmd` 现算，不再硬编码字节 —— 手写常量曾把
+// 921600/1000000 两条波特率命令的 CRC 抄错，设备会回 'R'（命令校验错）。
 
-/// Set baud to 115200
-const CMD_BAUD_115200: [u8; 13] = [0x21, 0x0a, 0x00, 0x97, 0x4b, 0x31, 0x00, 0x00, 0x00, 0x00, 0xc2, 0x01, 0x00];
+const CMD_SET_BAUD: u8 = 0x31;
+const CMD_QFLASH_ERASE: u8 = 0x32;
+const CMD_GET_MAC: u8 = 0x38;
+const CMD_SYSTEM_RESET: u8 = 0x3F;
 
-/// Set baud to 460800
-const CMD_BAUD_460800: [u8; 13] = [0x21, 0x0a, 0x00, 0x07, 0x00, 0x31, 0x00, 0x00, 0x00, 0x00, 0x08, 0x07, 0x00];
+/// XT804 内部 flash 的基地址。擦除命令的 `index` 就是相对它的 4KB 扇区序号。
+const XT804_FLASH_BASE: u32 = 0x0800_0000;
 
-/// Set baud to 921600
-const CMD_BAUD_921600: [u8; 13] = [0x21, 0x0a, 0x00, 0x5d, 0x63, 0x31, 0x00, 0x00, 0x00, 0x00, 0x10, 0x0e, 0x00];
+/// 擦除/保留区边界：厂商的「全擦」从扇区 2 开始，保留扇区 0..2（8KB 参数区）。
+const XT804_PRESERVED_SECTORS: u32 = 2;
 
-/// Set baud to 1000000
-const CMD_BAUD_1000000: [u8; 13] = [0x21, 0x0a, 0x00, 0x7e, 0x1a, 0x31, 0x00, 0x00, 0x00, 0x40, 0x42, 0x0f, 0x00];
+/// `index` 的 bit15 是擦除粒度标志：1 = Block 擦除，0 = Sector 擦除。
+/// 扇区模式下可用位只剩 15 位，即最多 32767 个扇区（128MB），足够覆盖全部 XT804 容量。
+const XT804_INDEX_BLOCK_FLAG: u16 = 0x8000;
 
-/// Set baud to 2000000
-const CMD_BAUD_2000000: [u8; 13] = [0x21, 0x0a, 0x00, 0xef, 0x2a, 0x31, 0x00, 0x00, 0x00, 0x80, 0x84, 0x1e, 0x00];
+/// 构造一条 ROM 命令帧。
+fn build_rom_cmd(cmd: u8, data: &[u8]) -> Vec<u8> {
+    let len = 2 + 1 + data.len();
+    let mut crc_input = Vec::with_capacity(1 + data.len());
+    crc_input.push(cmd);
+    crc_input.extend_from_slice(data);
+    let crc = crc16_ccitt_false(&crc_input);
 
-/// Erase command
-const CMD_ERASE: [u8; 13] = [0x21, 0x0a, 0x00, 0xc3, 0x35, 0x32, 0x00, 0x00, 0x00, 0x02, 0x00, 0xfe, 0x01];
+    let mut frame = Vec::with_capacity(3 + len);
+    frame.push(0x21);
+    frame.push(len as u8);
+    frame.push(0x00); // 保留字节
+    frame.push((crc & 0xFF) as u8); // 小端
+    frame.push((crc >> 8) as u8);
+    frame.push(cmd);
+    frame.extend_from_slice(data);
+    frame
+}
 
-/// Read MAC address
-const CMD_MAC_READ: [u8; 9] = [0x21, 0x06, 0x00, 0xea, 0x2d, 0x38, 0x00, 0x00, 0x00];
-
-/// Reset device
-const CMD_RESET: [u8; 9] = [0x21, 0x06, 0x00, 0xc7, 0x7c, 0x3f, 0x00, 0x00, 0x00];
+/// 构造 QFlash 擦除命令的数据段。
+///
+/// 数据段固定 7 字节：3 字节保留 + 4 字节 `struct { uint16_t index; uint16_t count; }`。
+/// `index` 为起始扇区（bit15=0），`count` 为扇区个数。
+fn qflash_erase_data(index: u16, count: u16) -> [u8; 7] {
+    let mut d = [0u8; 7];
+    d[3..5].copy_from_slice(&index.to_le_bytes());
+    d[5..7].copy_from_slice(&count.to_le_bytes());
+    d
+}
 
 // ─── CRC16-CCITT ──────────────────────────────────────────────────────────────
 
-/// CRC16-CCITT for XMODEM (polynomial 0x1021, init 0).
+/// CRC16-CCITT-FALSE for XMODEM (polynomial 0x1021, init 0).
 fn crc16_ccitt(data: &[u8]) -> u16 {
     let mut crc: u16 = 0;
+    for &byte in data {
+        crc ^= (byte as u16) << 8;
+        for _ in 0..8 {
+            if crc & 0x8000 != 0 {
+                crc = (crc << 1) ^ 0x1021;
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    crc
+}
+
+/// CRC16-CCITT-FALSE (polynomial 0x1021, **init 0xFFFF**, no reflection, no final xor)。
+///
+/// 这是 ROM 命令帧校验用的那一个 —— 与 XMODEM 数据块的 `crc16_ccitt`（init 0）不同，
+/// 两者混用会导致设备回 'R'（命令校验错）。
+fn crc16_ccitt_false(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0xFFFF;
     for &byte in data {
         crc ^= (byte as u16) << 8;
         for _ in 0..8 {
@@ -208,14 +262,19 @@ fn sync_bootloader(port: &mut dyn serialport::SerialPort, cancel: &AtomicBool) -
 // ─── Baud rate switch ────────────────────────────────────────────────────────
 
 /// Get the baud rate command for the target baud rate.
-fn get_baud_cmd(baud: u32) -> &'static [u8; 13] {
-    match baud {
-        460800 => &CMD_BAUD_460800,
-        921600 => &CMD_BAUD_921600,
-        1000000 => &CMD_BAUD_1000000,
-        2000000 => &CMD_BAUD_2000000,
-        _ => &CMD_BAUD_115200,
-    }
+fn baud_cmd(baud: u32) -> Vec<u8> {
+    build_rom_cmd(
+        CMD_SET_BAUD,
+        &[
+            0x00,
+            0x00,
+            0x00,
+            (baud & 0xFF) as u8,
+            ((baud >> 8) & 0xFF) as u8,
+            ((baud >> 16) & 0xFF) as u8,
+            (baud >> 24) as u8,
+        ],
+    )
 }
 
 /// Switch the baud rate. Sends command to device, waits, then changes host side.
@@ -224,8 +283,14 @@ fn set_baud_rate(port: &mut dyn serialport::SerialPort, baud: u32) -> Result<()>
         return Ok(()); // Already at default
     }
 
-    let cmd = get_baud_cmd(baud);
-    port.write_all(cmd)?;
+    // 支持列表之外的波特率也要拦在前面：厂商文档明确 >2000000 会回 'S'（命令参数错），
+    // 插在 115200 与 2M 之间的值同样不是本芯片的合法分频。
+    if !matches!(baud, 460800 | 921600 | 1000000 | 2000000) {
+        bail!("xt804 不支持 {baud} 波特率，可用值：115200 / 460800 / 921600 / 1000000 / 2000000");
+    }
+
+    let cmd = baud_cmd(baud);
+    port.write_all(&cmd)?;
     port.flush()?;
 
     // Wait for device to switch
@@ -239,41 +304,104 @@ fn set_baud_rate(port: &mut dyn serialport::SerialPort, baud: u32) -> Result<()>
 
 // ─── Erase ───────────────────────────────────────────────────────────────────
 
-/// Send erase command and wait for 3 consecutive 'C'/'P' responses.
-fn erase_flash(port: &mut dyn serialport::SerialPort, cancel: &AtomicBool) -> Result<()> {
-    port.write_all(&CMD_ERASE)?;
+/// ROM 对擦除命令的应答：成功连发 3 个 'C'，失败连发 3 个错误码字符。
+///
+/// 错误码取自厂商文档《2.7 ROM 的错误码》：
+/// `R` 命令校验错 / `S` 命令参数错 / `T` 取 FT 参数失败 / `N` FLASH ID 自检失败 / …
+const ROM_ACK_OK: u8 = b'C';
+
+/// 擦除若干个 4KB 扇区并等待 ROM 应答。
+///
+/// 厂商文档《2.6.1》：QFlash 擦除 `0x32`，数据段
+/// `struct { uint16_t index; uint16_t count; }`，`index` 的 bit15 = 0 即 Sector 擦除。
+///
+/// 这是 ROM 原生命令，不传输数据，比「写全 0xFF」快一个数量级，且粒度精确。
+fn erase_sectors(port: &mut dyn serialport::SerialPort, index: u32, count: u32, cancel: &AtomicBool, on_progress: &ProgressCallback) -> Result<()> {
+    let total = index.checked_add(count).ok_or_else(|| anyhow::anyhow!("擦除范围溢出"))?;
+    // bit15 是 Block/Sector 标志位，扇区模式下可表示的扇区数上限为 0x7FFF
+    if total > XT804_INDEX_BLOCK_FLAG as u32 {
+        bail!(
+            "xt804 擦除范围过大：从扇区 {index} 起 {count} 个（末扇区 {total}），\
+             超出扇区模式可表示的上限 0x{:04X}",
+            XT804_INDEX_BLOCK_FLAG
+        );
+    }
+
+    on_progress(&FlashProgress::info("RawErase", 20.0, &format!("擦除扇区 {index}..{total}（{count} × 4KB）")).with_region("raw"));
+
+    let frame = build_rom_cmd(CMD_QFLASH_ERASE, &qflash_erase_data(index as u16, count as u16));
+    port.write_all(&frame)?;
     port.flush()?;
 
-    // Erase can take a long time — up to 60 seconds
+    wait_rom_ack(port, cancel)
+}
+
+/// 等待 ROM 的 3 字节应答。
+///
+/// 擦除耗时随扇区数增长（整片 2MB 约需数秒到数十秒），这里给足余量并按
+/// 数量线性放宽，避免大范围擦除被误判为超时。
+fn wait_rom_ack(port: &mut dyn serialport::SerialPort, cancel: &AtomicBool) -> Result<()> {
+    let timeout = Duration::from_secs(120);
     let start = Instant::now();
-    let timeout = Duration::from_secs(60);
-    let mut consecutive = 0u32;
+    let mut consecutive: Option<(u8, u32)> = None;
 
     let _ = port.set_timeout(Duration::from_millis(100));
 
     while start.elapsed() < timeout {
         if cancel.load(Ordering::Relaxed) {
-            bail!("Erase cancelled");
+            bail!("擦除已取消");
         }
 
         let mut buf = [0u8; 1];
         match port.read(&mut buf) {
-            Ok(1) if buf[0] == b'C' || buf[0] == b'P' => {
-                consecutive += 1;
-                if consecutive >= 3 {
-                    return Ok(());
+            Ok(1) => {
+                let ch = buf[0];
+                if !ch.is_ascii_uppercase() {
+                    consecutive = None;
+                    continue;
+                }
+                match consecutive {
+                    Some((prev, n)) if prev == ch => {
+                        let n = n + 1;
+                        consecutive = Some((ch, n));
+                        if n >= 3 {
+                            return if ch == ROM_ACK_OK {
+                                Ok(())
+                            } else {
+                                bail!("xt804 ROM 拒绝擦除，应答错误码 '{}'（{}）", ch as char, rom_error_hint(ch))
+                            };
+                        }
+                    }
+                    _ => consecutive = Some((ch, 1)),
                 }
             }
-            Ok(1) => {
-                consecutive = 0;
-            }
-            _ => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            _ => std::thread::sleep(Duration::from_millis(10)),
         }
     }
 
-    bail!("Erase timeout: no completion signal after {timeout:?}");
+    bail!("擦除超时：{timeout:?} 内没有收到 ROM 应答")
+}
+
+/// 把 ROM 错误码翻译成可操作的提示。
+fn rom_error_hint(code: u8) -> &'static str {
+    match code {
+        b'R' => "命令校验错（帧格式或 CRC 不对）",
+        b'S' => "命令参数错（index/count 超出范围）",
+        b'T' => "获取 FT 参数失败（Mac 和 Gain 等）",
+        b'N' => "FLASH ID 自检失败",
+        b'Q' => "固件类型错误",
+        _ => "详见厂商文档《2.7 ROM 的错误码》",
+    }
+}
+
+/// 整片擦除：从保留区之后一路擦到 flash 末尾。
+///
+/// 对应厂商文档的「QFlash 擦除(2M)」`21 0a 00 c3 35 32 00 00 00 02 00 fe 01`：
+/// `index = 2`（保留扇区 0..2 的参数区）、`count = 0x01FE`。
+/// 仅用于 `flash run` 的整片重刷，绝不用于 raw 的按区间擦除。
+fn erase_flash(port: &mut dyn serialport::SerialPort, cancel: &AtomicBool, on_progress: &ProgressCallback) -> Result<()> {
+    const ERASE_ALL_2M_SECTORS: u32 = 0x01FE;
+    erase_sectors(port, XT804_PRESERVED_SECTORS, ERASE_ALL_2M_SECTORS, cancel, on_progress)
 }
 
 // ─── XMODEM-1K transfer ──────────────────────────────────────────────────────
@@ -403,7 +531,7 @@ fn verify_image(data: &[u8]) -> Result<()> {
 
 /// Read MAC address from device. Returns "AA:BB:CC:DD:EE:FF" format.
 pub fn read_mac(port: &mut dyn serialport::SerialPort) -> Result<String> {
-    port.write_all(&CMD_MAC_READ)?;
+    port.write_all(&build_rom_cmd(CMD_GET_MAC, &[0x00, 0x00, 0x00]))?;
     port.flush()?;
 
     let mut buf = [0u8; 64];
@@ -435,7 +563,7 @@ pub fn read_mac(port: &mut dyn serialport::SerialPort) -> Result<String> {
 
 /// Send reset command to reboot the device.
 fn reset_device(port: &mut dyn serialport::SerialPort) -> Result<()> {
-    port.write_all(&CMD_RESET)?;
+    port.write_all(&build_rom_cmd(CMD_SYSTEM_RESET, &[0x00, 0x00, 0x00]))?;
     port.flush()?;
     std::thread::sleep(Duration::from_millis(500));
     Ok(())
@@ -506,7 +634,7 @@ pub fn flash_xt804(soc_path: &str, port: &str, on_progress: ProgressCallback, ca
 
     // Erase
     on_progress(&FlashProgress::info("Erase", 30.0, "Erasing flash..."));
-    erase_flash(serial.as_mut(), &cancel)?;
+    erase_flash(serial.as_mut(), &cancel, &on_progress)?;
     on_progress(&FlashProgress::info("Erase", 40.0, "Flash erased"));
 
     // Transfer via XMODEM
@@ -830,6 +958,9 @@ fn firmware_image_config() -> Xt804ImageConfig {
 /// 因此 `write(addr, data)` = 把 data 包成镜像头 + XMODEM 传过去。
 /// 分区镜像用 `partition_image_config()`（`img_header_addr = 0x20008000` 落在
 /// SRAM），头部不写 flash，不消耗 header 槽位，行为与 `flash script` 一致。
+///
+/// `erase(addr, len)` 则走 ROM 原生的 QFlash 擦除命令 `0x32`（Sector 模式），
+/// 按 4KB 扇区精确擦除，不需要传输任何数据。
 pub struct Xt804Raw {
     port: Box<dyn serialport::SerialPort>,
     cancel: Arc<AtomicBool>,
@@ -852,9 +983,9 @@ impl crate::raw::RawFlashDevice for Xt804Raw {
         crate::raw::RawChip::Xt804
     }
 
-    /// XT804 没有按区间擦除的能力（只有整片擦除，会导致变砖）。
+    /// XT804 flash 的扇区大小 4KB（`INSIDE_FLS_SECTOR_SIZE`）。
     fn erase_granularity(&self) -> u64 {
-        0
+        crate::raw::RawChip::Xt804.erase_granularity().unwrap_or(0)
     }
 
     /// XMODEM-1K 按 1024 字节块传输。
@@ -870,14 +1001,37 @@ impl crate::raw::RawFlashDevice for Xt804Raw {
         // 镜像头的 run_img_addr 决定 bootloader 把负载写到哪
         let image = build_xt804_image(data, addr, &partition_image_config());
         (self.on_progress)(&FlashProgress::info("RawWrite", 40.0, &format!("XMODEM 写入 0x{addr:08X}，{} 字节", data.len())).with_region("raw"));
-        // bootloader 依据 run_img_addr 自行处理目标区域，无需显式擦除
+        // bootloader 依据 run_img_addr 自行处理目标区域：
+        // secboot 的 flash_write() 对每个受影响的 4K 扇区先擦后写（读-改-写），
+        // 因此写入本身已隐含扇区擦除，无需额外下发擦除命令。
         xmodem_transfer(&mut *self.port, &image, &self.cancel, &self.on_progress, "raw")
     }
 
-    fn erase(&mut self, _addr: u32, _len: u64) -> Result<()> {
-        // CMD_ERASE 是整片擦除，会连 bootloader 一起擦掉导致变砖。
-        // 共享驱动已用 check_capabilities 在连硬件前拦住，这里是兜底。
-        bail!("xt804 bootloader 只有整片擦除命令，没有按区间擦除的能力；执行整片擦除会导致模组变砖")
+    /// 按 4K 扇区擦除区间 —— 厂商 ROM 的 QFlash 擦除命令 `0x32`（Sector 模式）。
+    ///
+    /// 这是 XT804 的**原生擦除原语**：数据段 `struct { uint16_t index; uint16_t count; }`，
+    /// `index` 的 bit15 = 0 表示按 Sector（4KB）擦除，`count` 是扇区个数，
+    /// `index` 是相对 `0x08000000` 的扇区序号。
+    ///
+    /// 注意与 `erase_flash()` 的区别：后者是厂商的「QFlash 擦除(2M)」全擦
+    /// （`index=2, count=0x01FE`），保留扇区 0..2 的参数区但抹掉其余全部内容，
+    /// 仅供 `flash run` 整片重刷使用，raw 路径绝不调用。
+    fn erase(&mut self, addr: u32, len: u64) -> Result<()> {
+        let sector = crate::raw::RawChip::Xt804.erase_granularity().unwrap_or(0x1000);
+        if sector == 0 {
+            bail!("xt804 擦除粒度未知，拒绝擦除");
+        }
+        // 命令只接受扇区粒度，起点必须已对齐（共享驱动已用 check_alignment 预检，
+        // 这里再兜一次，避免绕过护栏直接调用时擦到相邻扇区）。
+        anyhow::ensure!((addr as u64).is_multiple_of(sector), "xt804 擦除地址必须按 {sector} 字节对齐，当前 0x{addr:08x}");
+        anyhow::ensure!(len > 0, "擦除长度必须大于 0");
+        anyhow::ensure!(len.is_multiple_of(sector), "xt804 擦除长度必须是 {sector} 的整数倍，当前 {len}");
+
+        anyhow::ensure!(addr >= XT804_FLASH_BASE, "xt804 flash 基地址为 0x{XT804_FLASH_BASE:08x}，0x{addr:08x} 在其之下");
+        let start_sector = (addr - XT804_FLASH_BASE) / sector as u32;
+        let count = (len / sector) as u32;
+
+        erase_sectors(&mut *self.port, start_sector, count, &self.cancel, &self.on_progress)
     }
 
     fn verify(&mut self, _addr: u32, _data: &[u8]) -> Result<crate::raw::VerifyResult> {
@@ -917,6 +1071,11 @@ fn copy_dir_contents(src: &std::path::Path, dst: &std::path::Path) -> Result<()>
 mod tests {
     use super::*;
 
+    // 厂商命令表里尚未接入的只读命令，仅用于验证帧构造器对整张表都成立。
+    const CMD_GET_FLASH_ID: u8 = 0x3C;
+    const CMD_GET_LAST_ERROR: u8 = 0x3B;
+    const CMD_GET_ROM_VERSION: u8 = 0x3E;
+
     #[test]
     fn test_crc16_ccitt() {
         // CRC16-CCITT (init=0, poly=0x1021): "123456789" → 0x31C3
@@ -950,16 +1109,81 @@ mod tests {
         assert!(verify_image(&data).is_err());
     }
 
+    /// 帧构造器必须逐字节复现厂商文档《2.6.2 常用指令集合》里的全部 13 条命令。
+    ///
+    /// 这是整个 ROM 命令实现的信任根：帧格式、CRC 范围、字节序任何一处理解错了，
+    /// 设备都会静默回 'R'（命令校验错）。硬编码字节曾把 921600/1000000 两条
+    /// 波特率命令的 CRC 抄错，所以这里改成现算 + 逐条比对。
     #[test]
-    fn test_baud_cmd_lookup() {
-        assert_eq!(get_baud_cmd(2000000), &CMD_BAUD_2000000);
-        assert_eq!(get_baud_cmd(921600), &CMD_BAUD_921600);
-        assert_eq!(get_baud_cmd(115200), &CMD_BAUD_115200);
-        assert_eq!(get_baud_cmd(9600), &CMD_BAUD_115200); // Unknown falls back
+    fn rom_命令帧与厂商文档一致() {
+        let cases: &[(&str, Vec<u8>)] = &[
+            ("波特率 2M", build_rom_cmd(CMD_SET_BAUD, &[0x00, 0x00, 0x00, 0x80, 0x84, 0x1e, 0x00])),
+            ("波特率 1M", build_rom_cmd(CMD_SET_BAUD, &[0x00, 0x00, 0x00, 0x40, 0x42, 0x0f, 0x00])),
+            ("波特率 921600", build_rom_cmd(CMD_SET_BAUD, &[0x00, 0x00, 0x00, 0x00, 0x10, 0x0e, 0x00])),
+            ("波特率 460800", build_rom_cmd(CMD_SET_BAUD, &[0x00, 0x00, 0x00, 0x00, 0x08, 0x07, 0x00])),
+            ("波特率 115200", build_rom_cmd(CMD_SET_BAUD, &[0x00, 0x00, 0x00, 0x00, 0xc2, 0x01, 0x00])),
+            ("QFlash 擦除(1M)", build_rom_cmd(CMD_QFLASH_ERASE, &qflash_erase_data(2, 0x00FE))),
+            ("QFlash 擦除(2M)", build_rom_cmd(CMD_QFLASH_ERASE, &qflash_erase_data(2, 0x01FE))),
+            ("获取 BT MAC", build_rom_cmd(0x34, &[0x00, 0x00, 0x00])),
+            ("获取 MAC", build_rom_cmd(CMD_GET_MAC, &[0x00, 0x00, 0x00])),
+            ("获取上一个错误", build_rom_cmd(CMD_GET_LAST_ERROR, &[0x00, 0x00, 0x00])),
+            ("获取 QFlash ID", build_rom_cmd(CMD_GET_FLASH_ID, &[0x00, 0x00, 0x00])),
+            ("获取 ROM 版本", build_rom_cmd(CMD_GET_ROM_VERSION, &[0x00, 0x00, 0x00])),
+            ("系统重启", build_rom_cmd(CMD_SYSTEM_RESET, &[0x00, 0x00, 0x00])),
+        ];
+        let expected: &[&[u8]] = &[
+            &[0x21, 0x0a, 0x00, 0xef, 0x2a, 0x31, 0x00, 0x00, 0x00, 0x80, 0x84, 0x1e, 0x00],
+            &[0x21, 0x0a, 0x00, 0x5e, 0x3d, 0x31, 0x00, 0x00, 0x00, 0x40, 0x42, 0x0f, 0x00],
+            &[0x21, 0x0a, 0x00, 0x5d, 0x50, 0x31, 0x00, 0x00, 0x00, 0x00, 0x10, 0x0e, 0x00],
+            &[0x21, 0x0a, 0x00, 0x07, 0x00, 0x31, 0x00, 0x00, 0x00, 0x00, 0x08, 0x07, 0x00],
+            &[0x21, 0x0a, 0x00, 0x97, 0x4b, 0x31, 0x00, 0x00, 0x00, 0x00, 0xc2, 0x01, 0x00],
+            &[0x21, 0x0a, 0x00, 0xe2, 0x25, 0x32, 0x00, 0x00, 0x00, 0x02, 0x00, 0xfe, 0x00],
+            &[0x21, 0x0a, 0x00, 0xc3, 0x35, 0x32, 0x00, 0x00, 0x00, 0x02, 0x00, 0xfe, 0x01],
+            &[0x21, 0x06, 0x00, 0xd8, 0x62, 0x34, 0x00, 0x00, 0x00],
+            &[0x21, 0x06, 0x00, 0xea, 0x2d, 0x38, 0x00, 0x00, 0x00],
+            &[0x21, 0x06, 0x00, 0x36, 0xb6, 0x3b, 0x00, 0x00, 0x00],
+            &[0x21, 0x06, 0x00, 0x1b, 0xe7, 0x3c, 0x00, 0x00, 0x00],
+            &[0x21, 0x06, 0x00, 0x73, 0x0a, 0x3e, 0x00, 0x00, 0x00],
+            &[0x21, 0x06, 0x00, 0xc7, 0x7c, 0x3f, 0x00, 0x00, 0x00],
+        ];
+        assert_eq!(cases.len(), expected.len());
+        for ((name, got), want) in cases.iter().zip(expected.iter()) {
+            assert_eq!(got.as_slice(), *want, "{name} 帧与厂商文档不一致");
+        }
+    }
+
+    /// 波特率分频值是大端无关的 u32 LE，且取值受厂商列表约束。
+    #[test]
+    fn 波特率命令按厂商列表构造() {
+        for baud in [115200u32, 460800, 921600, 1000000, 2000000] {
+            let f = baud_cmd(baud);
+            assert_eq!(f[0], 0x21);
+            assert_eq!(f[2], 0x00, "len 之后是保留字节");
+            assert_eq!(f[5], CMD_SET_BAUD);
+            // 数据段：3 字节保留 + 4 字节 u32 LE == 波特率
+            assert_eq!(&f[6..9], &[0x00, 0x00, 0x00]);
+            assert_eq!(u32::from_le_bytes([f[9], f[10], f[11], f[12]]), baud, "baud={baud}");
+            assert_eq!(f[1], 0x0a, "len 应为 10");
+        }
+    }
+
+    /// 擦除数据段必须把 index/count 按小端放进末 4 字节，前 3 字节保留为 0。
+    #[test]
+    fn 擦除数据段为_index_count_小端结构() {
+        assert_eq!(qflash_erase_data(2, 0x01FE), [0x00, 0x00, 0x00, 0x02, 0x00, 0xfe, 0x01]);
+        // index = 0x1234 时 bit15 为 0，属于 Sector 擦除
+        assert_eq!(qflash_erase_data(0x1234, 3), [0x00, 0x00, 0x00, 0x34, 0x12, 0x03, 0x00]);
+    }
+
+    /// bit15 = 0 → Sector 擦除，这是 raw 按 4K 擦除依赖的前提。
+    #[test]
+    fn 擦除数据段的_block_标志位默认清零() {
+        let d = qflash_erase_data(0x7FFF, 1);
+        assert_eq!(d[4] & 0x80, 0, "扇区模式下 index 的 bit15 必须为 0");
     }
 
     #[test]
-    fn test_xmodem_frame_structure() {
+    fn xmodem_frame_structure() {
         // Verify frame format: STX + blk# + ~blk# + 1024 data + CRC16 HI + CRC16 LO
         let data = [0x55u8; 1024];
         let crc = crc16_ccitt(&data);
@@ -977,5 +1201,83 @@ mod tests {
         assert_eq!(frame[0], 0x02); // STX
         assert_eq!(frame[1], 1); // block number
         assert_eq!(frame[2], 254); // complement
+    }
+
+    // ─── 真机探针（需硬件，CI 不执行）──────────────────────────────────────────
+
+    /// 只读探针：确认 ROM 命令帧（含 CRC16-CCITT-FALSE）在真机上被接受。
+    ///
+    /// 这几条命令都不改变 flash 内容，可以安全地反复跑。用法：
+    ///   set HW_PORT=COM12 && cargo test -p luatos-flash hw_probe_rom -- --ignored --nocapture
+    #[test]
+    #[ignore = "需要 XT804 真机"]
+    fn hw_probe_rom() {
+        let port_name = std::env::var("HW_PORT").expect("set HW_PORT=COMxx");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let on_progress: ProgressCallback = Box::new(|p| println!("  [{}] {}", p.stage, p.message));
+
+        let mut serial = connect_bootloader(&port_name, 115200, &cancel, &on_progress).expect("进入 ROM 下载模式失败");
+
+        for (label, cmd) in [
+            ("获取 QFlash ID 与容量 0x3C", 0x3C),
+            ("获取 ROM 版本 0x3E", 0x3E),
+            ("获取上一个错误 0x3B", 0x3B),
+            ("获取 WiFi MAC 0x38", 0x38),
+        ] {
+            let frame = build_rom_cmd(cmd, &[0x00, 0x00, 0x00]);
+            println!("\n[{label}]");
+            println!("  tx: {}", frame.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" "));
+            serial_drain(serial.as_mut());
+            serial.write_all(&frame).expect("write");
+            serial.flush().ok();
+
+            let mut buf = [0u8; 128];
+            let n = serial_read(serial.as_mut(), &mut buf, Duration::from_secs(3));
+            let txt = String::from_utf8_lossy(&buf[..n]);
+            println!("  rx: {:?}", txt.trim_end());
+            if txt.trim().is_empty() {
+                println!("  !! 无应答 —— 该命令号可能不被当前 ROM 版本支持");
+            }
+        }
+
+        // MAC 单独走解析路径，确认格式
+        serial_drain(serial.as_mut());
+        match read_mac(serial.as_mut()) {
+            Ok(mac) => println!("\nMAC 解析成功: {mac}"),
+            Err(e) => println!("\nMAC 解析失败: {e}"),
+        }
+
+        reset_device(serial.as_mut()).ok();
+    }
+
+    /// 只读探针：确认波特率切换命令的 CRC 修正确实生效。
+    ///
+    /// 修复前 921600 / 1000000 两档的 CRC 字节是错的，设备会回 'R'（命令校验错）、
+    /// 随后 XMODEM 同步失败。修复后应能正常切换并重新同步。
+    #[test]
+    #[ignore = "需要 XT804 真机"]
+    fn hw_probe_baud_crc() {
+        let port_name = std::env::var("HW_PORT").expect("set HW_PORT=COMxx");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let on_progress: ProgressCallback = Box::new(|p| println!("  [{}] {}", p.stage, p.message));
+
+        for baud in [460800u32, 921600, 1000000, 2000000] {
+            println!("\n=== 测试 {baud} bps ===");
+            // 注意：串口只能由 connect_bootloader 打开一次，这里不能再额外 open，
+            // 否则会撞上「端口被占用」。
+            match connect_bootloader(&port_name, 115200, &cancel, &on_progress) {
+                Ok(mut s) => {
+                    set_baud_rate(s.as_mut(), baud).expect("set_baud_rate");
+                    serial_drain(s.as_mut());
+                    match sync_bootloader(s.as_mut(), &cancel) {
+                        Ok(()) => println!("  => {baud} bps 切换并重新同步成功"),
+                        Err(e) => println!("  => {baud} bps 重新同步失败: {e}"),
+                    }
+                    reset_device(s.as_mut()).ok();
+                }
+                Err(e) => println!("  => 进入 bootloader 失败: {e}"),
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
     }
 }

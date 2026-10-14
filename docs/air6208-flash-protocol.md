@@ -327,19 +327,80 @@ CRC32 校验字段：
 
 发送后等待 500ms，设备会自动重启。
 
-### bootloader 命令集（完整）
+### ROM 命令集
 
-来自官方 `wm_tool` 源码（`tools/w800/wm_tool.c`、`luatos-soc-air101/tools/xt804/wm_tool.c`），
-**全部命令就这四条**：
+帧格式（三段头 + 负载）：
 
-| 命令 | 字节 | 作用 |
+```
+[0x21][len][0x00][crc16_lo][crc16_hi][cmd][data...]
+```
+
+- `len` = 本帧除 `[0x21][len][0x00]` 之外的字节数 = `2(CRC) + 1(cmd) + len(data)`
+- `crc16` = **CRC16-CCITT-FALSE**（poly `0x1021`、init `0xFFFF`、不反转、无异或输出），
+  覆盖范围是 `[cmd] + data`（**不含 CRC 自身**），**小端存放**
+- `cmd` = 命令号，`data` = 命令数据段
+
+来源：厂商文档《2.6.1 命令列表》《2.6.2 常用指令集合》。本仓库用
+`build_rom_cmd()` 现算帧，并把文档给出的全部 13 条命令逐字节做成回归测试。
+
+| 命令号 | 命令 | 作用 |
 |---|---|---|
-| 切波特率 | `21 0a 00 ...`（每档一条） | 切换 UART 速率 |
-| 读 MAC | `21 06 00 ea 2d 38 00 00 00` | 返回 `MAC:AABBCCDDEEFF\n` |
-| 整片擦除 | `21 0a 00 c3 35 32 00 00 00 02 00 fe 01` | **擦除整片 flash** |
-| 复位 | `21 06 00 c7 7c 3f 00 00 00` | 重启设备 |
+| `0x31` | 波特率切换 | ≤2000000；设置大于 2M 报 `S`（命令参数错） |
+| `0x32` | **QFlash 擦除** | `struct { uint16_t index; uint16_t count; }`，见下 |
+| `0x33` | 设置 BT MAC | 6~8 字节 |
+| `0x34` | 获取 BT MAC | — |
+| `0x35` / `0x36` | 设置 / 获取 GAIN | 84 字节，发射增益参数（谨慎使用） |
+| `0x37` | 设置 MAC | 6~8 字节 |
+| `0x38` | 获取 MAC | 返回 `MAC:AABBCCDDEEFF\n` |
+| `0x3B` | 获取上一个错误 | 直到下一个操作才清除 |
+| `0x3C` | 获取 QFlash ID 与容量 | 如 GD 32MB 返回 `FID:C8,19` |
+| `0x3E` | 获取 ROM 版本 | — |
+| `0x3F` | 系统重启 | 重启设备 |
 
-加上 XMODEM-1K 下载通道。**没有按扇区/分区擦除命令，也没有读回 flash 或查询 CRC 的命令。**
+#### QFlash 擦除（`0x32`）—— 支持按扇区擦除
+
+数据段固定 7 字节 = 3 字节保留 + 4 字节结构体：
+
+```c
+struct {
+    uint16_t index;  // 起始位置；bit15 = 1 → Block 擦除，bit15 = 0 → Sector 擦除
+    uint16_t count;  // 擦除块数
+};
+```
+
+- **Sector 模式（bit15 = 0）擦除粒度为 4KB**，`index` 是相对 flash 基地址
+  `0x08000000` 的扇区序号，`count` 是扇区个数。
+- Block 模式（bit15 = 1）按 64KB 块擦除。
+- 厂商的两条「全擦」示例：`21 0a 00 e2 25 32 00 00 00 02 00 fe 00`
+  （1M：`index=2, count=0x00FE`）、`21 0a 00 c3 35 32 00 00 00 02 00 fe 01`
+  （2M：`index=2, count=0x01FE`）。两者都从**扇区 2**（`0x08002000`）开始，
+  保留扇区 0..2 的 8KB 参数区。
+
+> ⚠️ 早期版本的本文档写「没有按扇区/分区擦除命令」，那是错的 ——
+> 当时只读了开源 `wm_tool.c`，而 `wm_tool` 只用了「全擦」这一种调用方式，
+> 并不代表命令本身不支持按扇区擦除。厂商文档才是权威。
+
+#### 仍不具备的能力
+
+加上 XMODEM-1K 下载通道。**没有读回 flash 或查询 CRC 的命令**，
+因此 `flash raw --verify` 与 `flash dump` 在 XT804 上不可用。
+
+#### ROM 错误码
+
+| 错误码 | 含义 |
+|---|---|
+| `C` | 正常 |
+| `D` | 主机取消 |
+| `F` | 超时没有收到数据 |
+| `G` | 包序号错 |
+| `I` / `J` / `K` | IMAGE 过大 / 烧录地址不合法 / 烧录地址页不对齐 |
+| `L` / `M` / `P` | IMAGE 头校验错 / 内容校验错 / 内容不完整或签名缺失 |
+| `N` | FLASH ID 自检失败 |
+| `Q` | 固件类型错误 |
+| `R` | **命令校验错**（帧格式或 CRC 不对） |
+| `S` | **命令参数错**（如 index/count 越界） |
+| `T` / `U` / `V` | 获取 FT 参数失败 / 设置增益失败 / 设置 MAC 失败 |
+| `Y` / `Z` | 解密读 SECBOOT 失败 / 签名验证失败 |
 
 > 旧版本文档写 `script_addr: 0x200000`，与实际不符，见上文分区布局。
 
@@ -444,17 +505,33 @@ luatos-cli flash raw --soc Air6208.soc --port COM6 \
   --addr 0x08430000 --file data.bin
 ```
 
-**XT804 的能力边界（三项全不支持，与 BK7258/CCM4211 相反）：**
+**XT804 的能力边界：**
 
 | 操作 | 支持 | 说明 |
 |---|:---:|---|
 | 写任意地址 | ✅ | 经镜像头 `run_img_addr` |
-| 按区间擦除 | ❌ | bootloader 只有**整片擦除**，会连 bootloader 一起擦掉导致变砖，故 raw 路径禁用 `--erase` |
+| 按区间擦除 | ✅ | ROM `CMD 0x32` **Sector 模式，4KB 精确**，`--addr` 与长度都需 4K 对齐 |
 | 写后校验 | ❌ | 无读回/CRC 命令，无法判定 |
 | `flash dump` | ❌ | 无读回命令 |
 
-好在**不需要手工擦除**：bootloader 依据 `run_img_addr` 自行处理目标区域，
-这与 `flash script` 的行为一致（它同样不擦除）。
+擦除范围**就是**待写文件的字节数（`flash raw` 没有 `--len`，长度取文件大小），
+不会波及其他扇区。整片「全擦」（`index=2`，保留 8KB 参数区）只用于 `flash run`
+整片重刷，raw 路径不会下发。
+
+```bash
+# 先造一个 8KB 的空负载，再擦除并回写 0x08430000 起的 8 个 4KB 扇区
+dd if=/dev/zero of=blank_8k.bin bs=1024 count=8
+luatos-cli flash raw --soc Air6208.soc --port COM6 \
+  --addr 0x08430000 --file blank_8k.bin --erase
+```
+
+因此 XT804 上 `--erase` 要求：**`--addr` 按 4KB 对齐，且文件长度为 4KB 的整数倍**
+（bootloader 的 index/count 只以扇区为单位表达，不对齐会被 ROM 回 `S` 命令参数错）。
+
+> 补充：写入本身也会隐含擦除。secboot 的 `flash_write()`（0x0800553C）对每个受影响的
+> 4K 扇区执行「读出整扇区 → `flash_erase_sector()`（SPI NOR `SE`/0x20）→ 合并新数据
+> → 回写」，所以不指定 `--erase` 时已能正确覆盖部分扇区。显式 `--erase` 的价值在于
+> **先把目标区间清成全 0xFF**，避免 NOR Flash 不能把 0 写回 1 导致残留旧数据。
 
 详见 [flash-raw-design.md](flash-raw-design.md)。
 
@@ -466,7 +543,7 @@ luatos-cli flash raw --soc Air6208.soc --port COM6 \
 |------|---------|------|
 | Bootloader 同步 | 无限制（60s 总超时）| 10ms 读取超时 |
 | 波特率切换 | 1 次 | 1s 等待 |
-| Flash 擦除 | 无限制（60s 总超时）| 100ms 读取超时 |
+| Flash 擦除 | 无限制（120s 总超时）| 100ms 读取超时 |
 | XMODEM 数据块 | 100 次/块 | 5s ACK 超时 |
 | XMODEM EOT | 3 次 | 2s ACK 超时 |
 

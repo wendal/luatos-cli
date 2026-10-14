@@ -6,6 +6,53 @@ All notable changes to this project will be documented in this file.
 
 ### 新增
 
+#### XT804：QFlash 按扇区擦除，并修正命令帧 CRC
+
+- **修正错误结论**：XT804 **支持按 4KB 扇区擦除**。此前依据开源
+  `wm_tool.c` 判定「只有整片擦除」是错的 —— `wm_tool` 只调用了「全擦」一种用法，
+  不代表命令本身不支持。厂商文档《2.6.1 命令列表》明确 QFlash 擦除命令 `0x32` 的数据段为
+  `struct { uint16_t index; uint16_t count; }`，`index` 的 bit15 = 0 即 **Sector（4KB）擦除**，
+  bit15 = 1 为 Block（64KB）擦除。交叉印证：secboot 反编译源码
+  （`luatos-soc-air101/decompile/secboot_flash.c`）的 `flash_erase_sector()` 发 SPI NOR `SE`(0x20)、
+  `flash_erase_range()` 按 `>> 12` 逐 4KB 扇区循环；SDK `INSIDE_FLS_SECTOR_SIZE = 0x1000`
+- `flash raw` 在 XT804 上启用 `--erase`，走 ROM 原生命令，4KB 精确、不波及其他扇区。
+  `--addr` 与 `--len` 都需 4K 对齐；擦除范围就是请求的扇区数
+- **新增 `build_rom_cmd()`：用推导出的帧规则现算 ROM 命令帧，取代硬编码字节常量。**
+  规则：`[0x21][len][0x00][crc16_lo][crc16_hi][cmd][data...]`，
+  `len = 2(CRC) + 1(cmd) + len(data)`，`crc16` 为 **CRC16-CCITT-FALSE**
+  （poly `0x1021`、init `0xFFFF`、不反转），覆盖 `[cmd] + data`、**小端存放**
+- **修复波特率命令 CRC 错误**：原先 `CMD_BAUD_921600` / `CMD_BAUD_1000000` 的 CRC 字节
+  被抄错（`5d 63` / `7e 1a`，正确为 `5d 50` / `5e 3d`），这两档波特率会被 ROM 回
+  `R`（命令校验错）。同时区分了 ROM 命令用的 `crc16_ccitt_false()`（init 0xFFFF）与
+  XMODEM 数据块用的 `crc16_ccitt()`（init 0），两者混用会静默失败
+- 新增回归测试 `rom_命令帧与厂商文档一致`：把厂商文档给出的全部 13 条命令逐字节比对
+- 波特率非法值（文档支持的 115200/460800/921600/1000000/2000000 之外）提前拒绝
+- 擦除应答改为识别 ROM 错误码并翻译成可操作提示（`R` 命令校验错 / `S` 命令参数错 /
+  `T` 获取 FT 参数失败 / `N` FLASH ID 自检失败）
+- `raw` 与 CLI 的擦除提示文案按 `RawChip::erase_aligns_down()` 区分：
+  BK7258/CCM4211 是「向下对齐整块擦」，XT804 是「按扇区精确擦」，不再张冠李戴
+- 文档：重写 `docs/air6208-flash-protocol.md` 的 ROM 命令集章节（帧格式、完整命令表、
+  QFlash 擦除结构体、ROM 错误码表），并标注旧结论的来源问题；
+  `docs/flash-raw-design.md` / `README.md` 能力对照表同步更新
+
+##### 真机实测（Air6208 V2001，CH340 COM12）
+
+- **只读探针**确认帧格式与 CRC 规则在真机上成立：
+  - `0x3C` → `FID:0B,17`，按厂商容量编码 `2^0x17` = **8MB**，与分区布局吻合
+  - `0x3E` → `R:8`（ROM 版本 8）；`0x3B` → `ERR:C`（C = 正常，说明此前命令均通过校验）
+  - `0x38` 读 MAC 回 `T`（获取 FT 参数失败）——与官方 `wm_tool` 把自己
+    的 `wm_tool_query_mac()` 注释掉一致，非本实现的帧问题
+- **波特率 CRC 修复验证**：460800 / 921600 / 1000000 / 2000000 四档全部切换并重新
+  XMODEM 同步成功（修复前 921600 与 1000000 两档 CRC 错误）
+- **`flash raw --erase`**：在 fs 分区尾部 `0x087E0000` 擦除 2 个扇区，
+  ROM 返回 `CCC` 成功，随后 XMODEM 回写 8KB 全流程完成
+- **整体刷机**：`flash run` 擦除扇区 `2..512`（510 × 4KB）+ 传输 1979 个 XMODEM 块
+  + 复位，日志显示 `Flash completed successfully`，设备正常启动并运行测试脚本
+- ⚠️ **无法验证擦除范围精度**：XT804 既没有 ROM 读回命令（厂商命令表 11 条里没有读类命令，
+  只有 MAC/ID/版本/错误码），固件也未向 Lua 暴露 `flash` 模块（`app/port/luat_flash_air101.c`
+  的 `luat_flash_read` 未注册进任何 `luaL_Reg`）。因此「擦除是否精确不越界」只能靠
+  帧构造的正确性与厂商文档保证，无法像 BK7258 那样做 guard-band 实测。
+
 #### `flash raw`：任意 Flash 地址刷机（Air8101 / Air1601）
 
 - 新增 `luatos_flash::raw` 抽象层：`RawFlashDevice` trait 只描述「任意地址擦/写/校验/复位」，不含任何协议实现，护栏校验与「擦→写→校验→复位」公共流程集中在该模块，芯片协议实现留在各自模块
@@ -55,10 +102,7 @@ All notable changes to this project will be documented in this file.
   （`img_header_addr = 0x20008000` 落 SRAM，不占 flash 槽位），行为与 `flash script` 一致
 - 新增 `RawChip::Xt804` 与能力声明 `supports_erase()` / `supports_read()` /
   `supports_digest_verify()`，以及连硬件前生效的 `check_capabilities()`
-- **XT804 三项能力全部不支持**（其 bootloader 命令集只有切波特率、读 MAC、整片擦除、
-  复位四条 + XMODEM）：
-  - `--erase` 被拒 —— bootloader 只有**整片擦除**，执行会连 bootloader 一起擦掉导致变砖。
-    好在 bootloader 会依据 `run_img_addr` 自行处理目标区域，本就不需要手工擦除
+- XT804 的能力边界（后续版本已修正擦除一项，见下条）：
   - `--verify` 被拒 —— 无读回/CRC 命令，无法判定写入结果
   - `flash dump` 不支持 —— 无读回命令
 - 写入地址要求 1024 字节（XMODEM-1K 块）对齐；bootloader+core 区间
