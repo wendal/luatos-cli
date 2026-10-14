@@ -28,6 +28,8 @@ pub enum RawChip {
     Bk7258,
     /// CCM4211 / Air1601 / Air1602（ISP + SOC 帧协议）
     Ccm4211,
+    /// XT804 / Air6208 / Air101 / Air103（ESC 同步 + XMODEM-1K）
+    Xt804,
 }
 
 impl RawChip {
@@ -35,12 +37,26 @@ impl RawChip {
         match self {
             RawChip::Bk7258 => "bk7258",
             RawChip::Ccm4211 => "ccm4211",
+            RawChip::Xt804 => "xt804",
         }
     }
 
-    /// 该协议是否支持写后回读校验。
+    /// 该协议是否支持写后回读校验（能在主机端真正判定对错）。
     pub fn supports_digest_verify(self) -> bool {
-        matches!(self, RawChip::Ccm4211)
+        matches!(self, RawChip::Bk7258 | RawChip::Ccm4211)
+    }
+
+    /// 该协议是否支持按区间擦除。
+    ///
+    /// XT804 的 bootloader 只有**整片擦除**命令，没有按扇区/分区擦除的能力，
+    /// 因此 raw 路径必须禁用 `--erase`（整片擦会连 bootloader 一起擦掉导致变砖）。
+    pub fn supports_erase(self) -> bool {
+        matches!(self, RawChip::Bk7258 | RawChip::Ccm4211)
+    }
+
+    /// 该协议是否支持读回 flash 原始内容（`flash dump`）。
+    pub fn supports_read(self) -> bool {
+        matches!(self, RawChip::Bk7258)
     }
 
     /// 协议固定的写入对齐要求（字节）。`0` 表示无需对齐。
@@ -52,6 +68,8 @@ impl RawChip {
             RawChip::Bk7258 => BK_SECTOR_SIZE as u64,
             // SET_CODE_DATA_START 携带任意起始地址
             RawChip::Ccm4211 => 0,
+            // XMODEM-1K 按 1024 字节块传输
+            RawChip::Xt804 => XT804_XMODEM_BLOCK as u64,
         }
     }
 
@@ -72,6 +90,8 @@ impl RawChip {
             RawChip::Bk7258 => Some(BK_SECTOR_SIZE as u64),
             // CCM4211 实测值，设备自报值不同则以设备为准
             RawChip::Ccm4211 => Some(CCM_ERASE_GRANULARITY),
+            // XT804 bootloader 没有按区间擦除的能力
+            RawChip::Xt804 => None,
         }
     }
 }
@@ -84,6 +104,9 @@ const BK_SECTOR_SIZE: usize = 0x1000;
 /// 该值来自真机 `GET_DOWNLOAD_INFO`，且实测擦除按此粒度向下对齐整块擦除。
 /// 仅用于**连硬件之前**的保守预检；连上设备后仍以设备自报的 `block_len` 为准。
 const CCM_ERASE_GRANULARITY: u64 = 0x4_0000;
+
+/// XT804 的 XMODEM-1K 块大小，同时是负载的最小对齐单位。
+const XT804_XMODEM_BLOCK: usize = 1024;
 
 /// 写后校验结果。
 ///
@@ -259,6 +282,11 @@ pub fn open(chip: RawChip, port: &str, soc: &str, cancel: Arc<AtomicBool>, on_pr
             crate::bk7258::open_raw(port, br, cancel, on_progress)
         }
         RawChip::Ccm4211 => crate::ccm4211::open_raw(soc, port, cancel, on_progress),
+        RawChip::Xt804 => {
+            let info = luatos_soc::read_soc_info(soc)?;
+            let br = info.flash_baud_rate();
+            crate::xt804::open_raw(port, br, cancel, on_progress)
+        }
     }
 }
 
@@ -268,6 +296,7 @@ pub fn open(chip: RawChip, port: &str, soc: &str, cancel: Arc<AtomicBool>, on_pr
 pub fn run(mut dev: Box<dyn RawFlashDevice>, req: &RawRequest) -> Result<RawReport> {
     let chip = dev.chip();
     check_request(req)?;
+    check_capabilities(chip, req)?;
     check_alignment(dev.as_ref(), req)?;
 
     let erased = if req.erase {
@@ -333,6 +362,29 @@ pub fn check_request(req: &RawRequest) -> Result<()> {
                 );
             }
         }
+    }
+    Ok(())
+}
+
+/// 能力检查：在连硬件之前拦下该协议根本做不到的操作。
+///
+/// 这一点对 XT804 尤其重要 —— 它的 bootloader 只有整片擦除、没有读回命令，
+/// 如果放任 `--erase` 通过，整片擦除会把 bootloader 一起擦掉导致变砖。
+pub fn check_capabilities(chip: RawChip, req: &RawRequest) -> Result<()> {
+    if req.erase && !chip.supports_erase() {
+        bail!(
+            "{} 的 bootloader 只提供**整片擦除**命令，没有按区间擦除的能力。\n\
+             执行整片擦除会连 bootloader 一起擦掉导致模组变砖，因此 raw 路径禁用 `--erase`。\n\
+             好消息：XT804 的下载由 bootloader 依据镜像头的 run_img_addr 自行处理目标区域，无需手工擦除。",
+            chip.name()
+        );
+    }
+    if req.verify && !chip.supports_digest_verify() {
+        bail!(
+            "{} 的 bootloader 没有提供 flash 读回或校验命令，无法校验写入结果。\n\
+             请去掉 --verify；写入是否成功只能靠设备启动后的实际表现判断。",
+            chip.name()
+        );
     }
     Ok(())
 }
@@ -595,11 +647,76 @@ mod tests {
     fn 芯片常量与实现一致() {
         assert_eq!(RawChip::Bk7258.write_alignment(), 0x1000);
         assert_eq!(RawChip::Ccm4211.write_alignment(), 0);
+        assert_eq!(RawChip::Xt804.write_alignment(), 1024);
         assert_eq!(RawChip::Bk7258.erase_granularity(), Some(0x1000));
         // 实测值：CCM4211 擦除块 256KB，向下对齐整块擦
         assert_eq!(RawChip::Ccm4211.erase_granularity(), Some(0x40000));
+    }
+
+    #[test]
+    fn 能力矩阵与协议事实一致() {
+        // BK7258：可擦、可读回、可真校验
+        assert!(RawChip::Bk7258.supports_erase());
+        assert!(RawChip::Bk7258.supports_read());
+        assert!(RawChip::Bk7258.supports_digest_verify());
+        // CCM4211：可擦、不可读回、可真校验（靠设备端 MD5）
+        assert!(RawChip::Ccm4211.supports_erase());
+        assert!(!RawChip::Ccm4211.supports_read());
         assert!(RawChip::Ccm4211.supports_digest_verify());
-        assert!(!RawChip::Bk7258.supports_digest_verify());
+        // XT804：bootloader 只有整片擦除、无读回命令 —— 三者皆不支持
+        assert!(!RawChip::Xt804.supports_erase());
+        assert!(!RawChip::Xt804.supports_read());
+        assert!(!RawChip::Xt804.supports_digest_verify());
+        assert_eq!(RawChip::Xt804.erase_granularity(), None);
+    }
+
+    fn xt804_req() -> RawRequest {
+        req(0x0843_0000, 4096)
+    }
+
+    #[test]
+    fn xt804_拒绝_erase_以免整片擦除变砖() {
+        let mut r = xt804_req();
+        r.erase = true;
+        let err = check_capabilities(RawChip::Xt804, &r).unwrap_err().to_string();
+        assert!(err.contains("整片擦除"), "实际错误: {err}");
+        assert!(err.contains("变砖"), "实际错误: {err}");
+    }
+
+    #[test]
+    fn xt804_拒绝_verify_因为无读回命令() {
+        let mut r = xt804_req();
+        r.verify = true;
+        let err = check_capabilities(RawChip::Xt804, &r).unwrap_err().to_string();
+        assert!(err.contains("没有提供 flash 读回或校验命令"), "实际错误: {err}");
+    }
+
+    #[test]
+    fn xt804_普通写入通过能力检查() {
+        check_capabilities(RawChip::Xt804, &xt804_req()).expect("不带 erase/verify 的写入应当通过");
+    }
+
+    #[test]
+    fn bk7258_允许_erase_与_verify() {
+        let mut r = req(0x40d000, 4096);
+        r.erase = true;
+        r.verify = true;
+        check_capabilities(RawChip::Bk7258, &r).expect("BK7258 应支持擦除与校验");
+    }
+
+    #[test]
+    fn ccm4211_允许_erase_与_verify() {
+        let mut r = req(0x14700000, 4096);
+        r.erase = true;
+        r.verify = true;
+        check_capabilities(RawChip::Ccm4211, &r).expect("CCM4211 应支持擦除与校验");
+    }
+
+    #[test]
+    fn xt804_预检要求_1024_对齐() {
+        precheck_alignment(RawChip::Xt804, 0x0843_0000, false).expect("0x08430000 应通过");
+        let err = precheck_alignment(RawChip::Xt804, 0x0843_0100, false).unwrap_err().to_string();
+        assert!(err.contains("1024"), "实际错误: {err}");
     }
 
     #[test]

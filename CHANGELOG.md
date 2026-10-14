@@ -46,6 +46,28 @@ All notable changes to this project will be documented in this file.
 
 ### 新增
 
+#### `flash raw` 支持 XT804（Air6208 / Air101 / Air103）
+
+- `flash raw` 芯片族扩展到 XT804。写入机制与 BK7258/CCM4211 不同：XT804 没有
+  「写 N 字节到地址 M」的原语，只有 XMODEM-1K 整镜像传输，**写入位置由我们发送的
+  镜像头 `run_img_addr` 字段决定**（官方 `wm_tool` 以 `-ra run_address` 暴露同一机制，
+  见 `wm_sdk_w800/tools/w800/wm_tool.c`）。使用 `img_type=1` 分区镜像配置
+  （`img_header_addr = 0x20008000` 落 SRAM，不占 flash 槽位），行为与 `flash script` 一致
+- 新增 `RawChip::Xt804` 与能力声明 `supports_erase()` / `supports_read()` /
+  `supports_digest_verify()`，以及连硬件前生效的 `check_capabilities()`
+- **XT804 三项能力全部不支持**（其 bootloader 命令集只有切波特率、读 MAC、整片擦除、
+  复位四条 + XMODEM）：
+  - `--erase` 被拒 —— bootloader 只有**整片擦除**，执行会连 bootloader 一起擦掉导致变砖。
+    好在 bootloader 会依据 `run_img_addr` 自行处理目标区域，本就不需要手工擦除
+  - `--verify` 被拒 —— 无读回/CRC 命令，无法判定写入结果
+  - `flash dump` 不支持 —— 无读回命令
+- 写入地址要求 1024 字节（XMODEM-1K 块）对齐；bootloader+core 区间
+  `[0, script_addr)` 默认受保护需 `--force`
+- 修正 `docs/air6208-flash-protocol.md`：旧文档写 `script_addr: 0x200000` 与实际不符。
+  V2001 Air6208 实测为 `script_addr=0x08430000`、`fs_addr=0x084B0000`(3328KB)、
+  `kv_addr=0x08420000`(64KB)，已补入分区布局表并提示以 `soc info` 为准；
+  同时补上 bootloader 完整命令集（来源 `wm_tool.c`）
+
 #### `flash dump`：读回任意 Flash 区间到文件（Air8101）
 
 - 新增 `luatos-cli flash dump --soc --port --addr --len -o`，只读导出任意区间。
@@ -95,6 +117,19 @@ All notable changes to this project will be documented in this file.
   **0 字节差异** —— 与 CCM4211 的整块擦除形成明确对比
 
 **至此两颗芯片均完成真机验证**，结论已回填 `docs/flash-raw-design.md` 与两份协议文档。
+
+在 CH340/COM12 上完成 Air6208(XT804) 真机验证（`LuatOS-SoC_V2001_Air6208_101.soc`，
+`script_addr=0x08430000`）：
+
+- 四道护栏均在连串口前生效：`--erase` 被拒（整片擦除变砖）、`--verify` 被拒
+  （无读回命令）、非 1024 对齐被拒、写 bootloader 区被拒
+- 真机写入成功：XMODEM 传 5 块（64 字节镜像头 + 4096 字节负载）
+- 对三个**不同**地址（`0x08430000` script、`0x084B0000` FS、`0x084F0000` 无分区地址）
+  均传输成功，说明 bootloader 接受任意 `run_img_addr` 而非按固定分区表校验
+- 测试后已恢复：脚本分区用 `flash script`、文件系统用 `flash clear-fs`
+
+⚠️ **XT804 无法做字节级验证** —— bootloader 没有读回命令，只能确认「传输成功」，
+无法确认「数据确实落在指定地址」。这是协议限制，不是实现取舍。
 
 ## [1.12.0] - 2026-09-21
 

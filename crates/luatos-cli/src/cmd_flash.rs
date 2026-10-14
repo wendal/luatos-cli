@@ -669,8 +669,19 @@ pub fn cmd_flash_raw(
                 }],
             )
         }
+        ChipFamily::Xt804 => {
+            let script_addr = info.script_addr();
+            (
+                RawChip::Xt804,
+                vec![raw::ProtectedRange {
+                    start: 0,
+                    len: script_addr as u64,
+                    name: "bootloader+core",
+                }],
+            )
+        }
         other => anyhow::bail!(
-            "flash raw 目前仅支持 Air8101(BK7258) 与 Air1601/Air1602(CCM4211)，当前芯片: {} ({other:?})",
+            "flash raw 目前仅支持 Air8101(BK7258)、Air6208/Air101(XT804) 与 Air1601/Air1602(CCM4211)，当前芯片: {} ({other:?})",
             info.chip.chip_type
         ),
     };
@@ -690,6 +701,7 @@ pub fn cmd_flash_raw(
 
     // 静态校验先于连硬件，报错更快、也避免白占串口
     raw::check_request(&req)?;
+    raw::check_capabilities(chip, &req)?;
     raw::precheck_alignment(chip, addr, erase)?;
 
     if !erase {

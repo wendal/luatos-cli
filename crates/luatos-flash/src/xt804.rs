@@ -819,6 +819,82 @@ fn firmware_image_config() -> Xt804ImageConfig {
     }
 }
 
+// ─── Raw flash (任意地址) ────────────────────────────────────────────────────
+
+/// XT804 上的 raw flash 会话。
+///
+/// 机制与 BK7258/CCM4211 完全不同：XT804 没有「写 N 字节到地址 M」的原语，
+/// 只有 XMODEM-1K 整镜像传输。写入位置由我们发送的 XT804 镜像头里的
+/// `run_img_addr` 字段决定（官方 `wm_tool` 以 `-ra` 参数暴露同一机制）。
+///
+/// 因此 `write(addr, data)` = 把 data 包成镜像头 + XMODEM 传过去。
+/// 分区镜像用 `partition_image_config()`（`img_header_addr = 0x20008000` 落在
+/// SRAM），头部不写 flash，不消耗 header 槽位，行为与 `flash script` 一致。
+pub struct Xt804Raw {
+    port: Box<dyn serialport::SerialPort>,
+    cancel: Arc<AtomicBool>,
+    on_progress: ProgressCallback,
+}
+
+/// 进入 XT804 bootloader 并返回 raw 会话。
+pub fn open_raw(port: &str, flash_br: u32, cancel: Arc<AtomicBool>, on_progress: ProgressCallback) -> Result<Box<dyn crate::raw::RawFlashDevice>> {
+    cancel.store(false, Ordering::Relaxed);
+    let serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
+    Ok(Box::new(Xt804Raw {
+        port: serial,
+        cancel,
+        on_progress,
+    }))
+}
+
+impl crate::raw::RawFlashDevice for Xt804Raw {
+    fn chip(&self) -> crate::raw::RawChip {
+        crate::raw::RawChip::Xt804
+    }
+
+    /// XT804 没有按区间擦除的能力（只有整片擦除，会导致变砖）。
+    fn erase_granularity(&self) -> u64 {
+        0
+    }
+
+    /// XMODEM-1K 按 1024 字节块传输。
+    fn write_alignment(&self) -> u64 {
+        crate::raw::RawChip::Xt804.write_alignment()
+    }
+
+    fn progress(&self) -> &ProgressCallback {
+        &self.on_progress
+    }
+
+    fn write(&mut self, addr: u32, data: &[u8]) -> Result<()> {
+        // 镜像头的 run_img_addr 决定 bootloader 把负载写到哪
+        let image = build_xt804_image(data, addr, &partition_image_config());
+        (self.on_progress)(&FlashProgress::info("RawWrite", 40.0, &format!("XMODEM 写入 0x{addr:08X}，{} 字节", data.len())).with_region("raw"));
+        // bootloader 依据 run_img_addr 自行处理目标区域，无需显式擦除
+        xmodem_transfer(&mut *self.port, &image, &self.cancel, &self.on_progress, "raw")
+    }
+
+    fn erase(&mut self, _addr: u32, _len: u64) -> Result<()> {
+        // CMD_ERASE 是整片擦除，会连 bootloader 一起擦掉导致变砖。
+        // 共享驱动已用 check_capabilities 在连硬件前拦住，这里是兜底。
+        bail!("xt804 bootloader 只有整片擦除命令，没有按区间擦除的能力；执行整片擦除会导致模组变砖")
+    }
+
+    fn verify(&mut self, _addr: u32, _data: &[u8]) -> Result<crate::raw::VerifyResult> {
+        // bootloader 命令集只有：切波特率、读 MAC、复位、整片擦除、XMODEM 下载。
+        // 没有读回 flash 或查询 CRC 的命令，无法判定写入结果。
+        bail!("xt804 bootloader 未提供 flash 读回或校验命令，无法校验写入结果")
+    }
+
+    fn read(&mut self, _addr: u32, _len: u64) -> Result<Vec<u8>> {
+        bail!("xt804 bootloader 未提供 flash 读回命令，无法 dump")
+    }
+
+    fn reset(&mut self) {
+        let _ = reset_device(&mut *self.port);
+    }
+}
+
 /// Copy all files/dirs from src to dst (non-recursive merge).
 fn copy_dir_contents(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
     for entry in walkdir::WalkDir::new(src).min_depth(1) {

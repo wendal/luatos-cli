@@ -61,11 +61,24 @@ LuatOS-SoC_V2001_Air6208_101.soc (7z archive)
   },
   "download": {
     "bl_addr": "0x0",
-    "script_addr": "0x200000",
+    "script_addr": "0x8430000",
     "force_br": "2M"
   }
 }
 ```
+
+> **地址以实际 `.soc` 为准。** 上面的 `info.json` 只是结构示例；V2001 Air6208 实测为
+> `script_addr = 0x08430000`、`fs_addr = 0x084B0000`(3328KB)、`kv_addr = 0x08420000`(64KB)。
+> 用 `luatos-cli soc info <file.soc>` 读取真实值，不要照抄文档里的示例地址。
+
+### 分区布局（V2001 Air6208 实测）
+
+| 分区 | 地址 | 大小 |
+|---|---|---|
+| bootloader + core | `0x00000000` ~ `0x0841FFFF` | — |
+| KV / FSKV | `0x08420000` | 64 KB |
+| script | `0x08430000` | — |
+| filesystem | `0x084B0000` | 3328 KB |
 
 ---
 
@@ -314,6 +327,22 @@ CRC32 校验字段：
 
 发送后等待 500ms，设备会自动重启。
 
+### bootloader 命令集（完整）
+
+来自官方 `wm_tool` 源码（`tools/w800/wm_tool.c`、`luatos-soc-air101/tools/xt804/wm_tool.c`），
+**全部命令就这四条**：
+
+| 命令 | 字节 | 作用 |
+|---|---|---|
+| 切波特率 | `21 0a 00 ...`（每档一条） | 切换 UART 速率 |
+| 读 MAC | `21 06 00 ea 2d 38 00 00 00` | 返回 `MAC:AABBCCDDEEFF\n` |
+| 整片擦除 | `21 0a 00 c3 35 32 00 00 00 02 00 fe 01` | **擦除整片 flash** |
+| 复位 | `21 06 00 c7 7c 3f 00 00 00` | 重启设备 |
+
+加上 XMODEM-1K 下载通道。**没有按扇区/分区擦除命令，也没有读回 flash 或查询 CRC 的命令。**
+
+> 旧版本文档写 `script_addr: 0x200000`，与实际不符，见上文分区布局。
+
 ---
 
 ## 完整刷机流程
@@ -395,6 +424,39 @@ Step 9: 复位设备
 3. XMODEM 传输
 4. 复位设备
 ```
+
+### 任意地址写入（`flash raw`）
+
+XT804 没有「写 N 字节到地址 M」的原语 —— 只有 XMODEM-1K 整镜像传输。
+**写入位置由我们发送的镜像头 `run_img_addr` 字段决定**，官方 `wm_tool` 同样以
+`-ra run_address` 参数暴露这一机制：
+
+```c
+fbooter.run_img_addr = wm_tool_run_addr;   // 默认 0x8002400
+```
+
+因此 `flash raw --addr X` = 把负载包成 `img_type=1` 的分区镜像
+（`img_header_addr = 0x20008000`，头部落在 SRAM 不占 flash 槽位），
+再 XMODEM 传给 bootloader。
+
+```bash
+luatos-cli flash raw --soc Air6208.soc --port COM6 \
+  --addr 0x08430000 --file data.bin
+```
+
+**XT804 的能力边界（三项全不支持，与 BK7258/CCM4211 相反）：**
+
+| 操作 | 支持 | 说明 |
+|---|:---:|---|
+| 写任意地址 | ✅ | 经镜像头 `run_img_addr` |
+| 按区间擦除 | ❌ | bootloader 只有**整片擦除**，会连 bootloader 一起擦掉导致变砖，故 raw 路径禁用 `--erase` |
+| 写后校验 | ❌ | 无读回/CRC 命令，无法判定 |
+| `flash dump` | ❌ | 无读回命令 |
+
+好在**不需要手工擦除**：bootloader 依据 `run_img_addr` 自行处理目标区域，
+这与 `flash script` 的行为一致（它同样不擦除）。
+
+详见 [flash-raw-design.md](flash-raw-design.md)。
 
 ---
 
