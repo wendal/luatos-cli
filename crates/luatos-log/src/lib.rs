@@ -7,8 +7,8 @@
 // Design: LogParser trait allows adding new chip-specific parsers without
 // modifying existing code.
 
-pub mod smart;
 mod printf;
+pub mod smart;
 
 use serde::{Deserialize, Serialize};
 
@@ -884,11 +884,7 @@ fn decode_soc_printf(fmt: &str, args: &[u8]) -> String {
                 if pos >= args.len() {
                     break;
                 }
-                let end = args[pos..]
-                    .iter()
-                    .position(|&b| b == 0)
-                    .map(|p| pos + p)
-                    .unwrap_or(args.len());
+                let end = args[pos..].iter().position(|&b| b == 0).map(|p| pos + p).unwrap_or(args.len());
                 let s = String::from_utf8_lossy(&args[pos..end]).into_owned();
                 pos = (end + 4) & !3; // 字符串后按 4 字节对齐
                 out.push_str(&printf::render_str(&spec, &s));
@@ -1990,17 +1986,11 @@ mod tests {
             v
         };
         // `%.*s` ⇒ 字符串语义（**不 dump**），截到第一个 NUL
-        assert_eq!(
-            f("Manufacturer: %.*s", &dump(0x1c1eb200, b"SanDisk")),
-            "Manufacturer: SanDisk"
-        );
+        assert_eq!(f("Manufacturer: %.*s", &dump(0x1c1eb200, b"SanDisk")), "Manufacturer: SanDisk");
         // 数据区含 NUL 时在该处截断（对应 `common_log.cpp:856` 的 NUL 扫描）
         assert_eq!(f("v=%.*s", &dump(0x1000, b"abc\x00def")), "v=abc");
         // `%*s` ⇒ dump 十六进制：`dump (0x地址/长度) ` + 大写、每字节 2 位 + 1 个空格（末尾也带）
-        assert_eq!(
-            f("raw=%*s", &dump(0x1420c300, &[0xde, 0xad, 0xbe, 0xef])),
-            "raw=dump (0x1420c300/4) DE AD BE EF "
-        );
+        assert_eq!(f("raw=%*s", &dump(0x1420c300, &[0xde, 0xad, 0xbe, 0xef])), "raw=dump (0x1420c300/4) DE AD BE EF ");
         // `%*.*s` 含 `.` ⇒ 与 `%.*s` 同样走字符串
         assert_eq!(f("w=%*.*s", &dump(0x2000, b"hi")), "w=hi");
         // `%S` 与 `%s` 同分支（`am_log.c`：`cc == 's' || cc == 'S'`）

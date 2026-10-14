@@ -302,6 +302,28 @@ ISP + ramrun 加载（同上）
 → 复位设备
 ```
 
+### 任意地址刷写（`flash raw`）
+
+`flash raw` 允许按用户给定地址擦写，复用 `soc_download_file` / `CMD 0x08` / `CMD 0x0D`。
+
+**CCM4211 的能力边界：**
+
+| 项目 | 约束 |
+|---|---|
+| 写入地址 | 无对齐要求，`CMD 0x0A` 的 address 字段可直接指定 |
+| 擦除 | `CMD 0x08` 是**分区级**命令，实际擦除粒度由固件决定（`GET_DOWNLOAD_INFO` 返回的 `block_len`，通常 256KB），可能大于请求范围 |
+| 写后校验 | `CMD 0x0D` 返回设备回读 MD5，**可真正判定对错**；且 `soc_download_file` 内部已自带该校验 |
+| 读回 dump | `SOC_CMD_GET_FLASH_DATA`(0x06) 常量已定义但此前未使用，**是否可用待验证** |
+
+```bash
+luatos-cli flash raw --soc Air1602.soc --port COM7 \
+  --addr 0x10040000 --file hzfont_builtin_ttf.bin --erase --verify
+```
+
+适用于 `include.txt` 声明了 `LUAT_FONT_ADDRESS` 但 `.soc` 包内缺文件、需要单独补刷的场合。
+
+详见 [flash-raw-design.md](flash-raw-design.md)。
+
 ### 块大小与分块
 
 - **block_len**: 设备返回的块大小，通常为 262144 (256KB)

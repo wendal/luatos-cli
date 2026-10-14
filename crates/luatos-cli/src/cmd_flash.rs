@@ -556,6 +556,138 @@ pub fn cmd_flash_ext_erase(port: &str, baud: u32, partition: &str, ext_prog: boo
     Ok(())
 }
 
+/// 任意 Flash 地址刷机（`flash raw`）。
+///
+/// 低阶操作：绕过 info.json 的分区定义，直接按用户给的地址擦写。
+/// bootloader / core 区间默认受保护，需 `--force` 才能覆盖。
+#[allow(clippy::too_many_arguments)]
+pub fn cmd_flash_raw(
+    soc: &str,
+    port: &str,
+    addr: &str,
+    file: &str,
+    erase: bool,
+    verify: bool,
+    force: bool,
+    flash_size: Option<&str>,
+    no_reboot: bool,
+    step: u8,
+    format: &OutputFormat,
+) -> anyhow::Result<()> {
+    use luatos_flash::raw::{self, RawChip, RawRequest};
+
+    let command = "flash.raw".to_string();
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    install_cancel_handler(format, &command, &cancel);
+
+    let addr = raw::parse_addr(addr)?;
+    let data = std::fs::read(file).with_context(|| format!("无法读取文件: {file}"))?;
+
+    let info = luatos_soc::read_soc_info(soc)?;
+    let family = info.family();
+
+    // 受保护区间：bootloader + core。两者在 info.json 里的边界就是 bl_addr..script_addr
+    // （BK72xx 的 bl_addr 为 0x0，core 紧随其后直到脚本分区）。
+    let (chip, protected) = match family {
+        ChipFamily::Bk72xx => {
+            let script_addr = info.script_addr();
+            (
+                RawChip::Bk7258,
+                vec![raw::ProtectedRange {
+                    start: 0,
+                    len: script_addr as u64,
+                    name: "bootloader+core",
+                }],
+            )
+        }
+        ChipFamily::Ccm4211 => {
+            let bl_addr = info.bl_addr().unwrap_or(0);
+            let script_addr = info.script_addr();
+            (
+                RawChip::Ccm4211,
+                vec![raw::ProtectedRange {
+                    start: bl_addr,
+                    len: script_addr.saturating_sub(bl_addr) as u64,
+                    name: "bootloader+core",
+                }],
+            )
+        }
+        other => anyhow::bail!(
+            "flash raw 目前仅支持 Air8101(BK7258) 与 Air1601/Air1602(CCM4211)，当前芯片: {} ({other:?})",
+            info.chip.chip_type
+        ),
+    };
+
+    let capacity = match flash_size {
+        Some(s) => u32::try_from(raw::parse_len(s)?).context("--flash-size 超出 32 位地址空间")?,
+        None => 0,
+    };
+
+    let mut req = RawRequest::new(addr, data);
+    req.erase = erase;
+    req.verify = verify;
+    req.reboot = !no_reboot;
+    req.force = force;
+    req.protected = protected;
+    req.flash_size = capacity;
+
+    // 静态校验先于连硬件，报错更快、也避免白占串口
+    raw::check_request(&req)?;
+    raw::precheck_alignment(chip, addr, erase)?;
+
+    if !erase {
+        event::emit_message(
+            format,
+            &command,
+            MessageLevel::Warn,
+            "未指定 --erase：NOR Flash 不能把 0 写回 1，若目标区间已有数据且为 0 位，写入结果可能不正确",
+        )?;
+    }
+    if verify && !chip.supports_digest_verify() {
+        event::emit_message(
+            format,
+            &command,
+            MessageLevel::Warn,
+            "BK7258 的 ISP 协议只能返回设备端 CRC32，主机端无法复现该算法，因此 --verify 只能记录数值，不能判定写入是否正确",
+        )?;
+    }
+    if no_reboot {
+        event::emit_message(
+            format,
+            &command,
+            MessageLevel::Warn,
+            "已指定 --no-reboot：设备将停留在 ROM 下载模式（Air8101 表现为黑屏），需手动复位",
+        )?;
+    }
+
+    let on_progress = make_progress_callback(format, command.clone(), step);
+    let dev = raw::open(chip, port, soc, cancel, on_progress)?;
+    let report = raw::run(dev, &req)?;
+
+    let verify_json = match &report.verify {
+        Some(raw::VerifyResult::DigestMatched { digest }) => serde_json::json!({ "verified": true, "digest": digest }),
+        Some(raw::VerifyResult::DeviceCrcOnly { crc32 }) => serde_json::json!({ "verified": false, "device_crc32": format!("0x{crc32:08x}") }),
+        None => serde_json::Value::Null,
+    };
+
+    match format {
+        OutputFormat::Text => println!("{}", report.summary()),
+        OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(
+            format,
+            &command,
+            "ok",
+            serde_json::json!({
+                "chip": report.chip,
+                "addr": format!("0x{:08x}", report.addr),
+                "length": report.len,
+                "erased": report.erased,
+                "verify": verify_json,
+            }),
+        )?,
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct KeywordEvaluation {
     results: Vec<(String, bool)>,

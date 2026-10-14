@@ -9,12 +9,16 @@
 //   - SF32LB58 (Air8101 SF32): sftool-lib based protocol, requires a sf32lbXX
 //     cargo feature (code is compiled only when sf32lb58 is enabled; the
 //     sf32lb52/55/56/57 features only embed stub data for external tools)
+//
+// `raw` 不实现任何协议，它是「任意 Flash 地址读写」的抽象层，
+// 由上面各芯片模块提供具体实现。
 
 pub mod air6201;
 pub mod bk7258;
 pub mod ccm4211;
 pub mod device;
 pub mod ec718;
+pub mod raw;
 pub mod rda8910;
 pub mod sf32lb5x;
 pub mod xt804;

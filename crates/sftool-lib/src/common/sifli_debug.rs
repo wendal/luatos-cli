@@ -534,10 +534,8 @@ pub mod common_debug {
             }
         }
 
-        let words: Vec<u32> = buffer
-            .chunks_exact(4)
-            .map(|chunk| u32::from_le_bytes(chunk.try_into().expect("chunk length is 4")))
-            .collect();
+        let (chunks, _remainder) = buffer.as_chunks::<4>();
+        let words: Vec<u32> = chunks.iter().map(|chunk| u32::from_le_bytes(*chunk)).collect();
 
         // Write the entire alignment area at once
         debug_command_impl::<T, F>(

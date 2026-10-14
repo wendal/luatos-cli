@@ -352,6 +352,39 @@ enum FlashCommands {
         #[arg(long)]
         ext_prog: bool,
     },
+    /// 往任意 Flash 地址刷写原始二进制（低阶操作，慎用）
+    ///
+    /// 绕过 info.json 的分区定义，直接按 --addr 擦写。bootloader/core 区间默认受保护，
+    /// 需 --force 才能覆盖。Air8101 写入地址必须 4K 对齐；Air1601 无对齐要求。
+    Raw {
+        /// Path to .soc file（用于确定芯片族、波特率与受保护区间）
+        #[arg(long)]
+        soc: String,
+        /// Serial port (e.g. COM6)
+        #[arg(long)]
+        port: String,
+        /// 目标 Flash 起始地址，支持 0x 前缀
+        #[arg(long)]
+        addr: String,
+        /// 待写入的二进制文件
+        #[arg(long)]
+        file: String,
+        /// 写入前先擦除目标范围（NOR Flash 不能 0→1 写，通常必须开）
+        #[arg(long)]
+        erase: bool,
+        /// 写完做回读校验（Air1601 可真校验，Air8101 仅记录设备端 CRC32）
+        #[arg(long)]
+        verify: bool,
+        /// 允许写入 bootloader/core 等受保护区间（可能变砖且无法用本 CLI 恢复）
+        #[arg(long)]
+        force: bool,
+        /// Flash 总容量（字节，如 0x400000），用于越界校验；默认按芯片推断
+        #[arg(long)]
+        flash_size: Option<String>,
+        /// 写完不复位，设备将停留在下载模式
+        #[arg(long)]
+        no_reboot: bool,
+    },
     /// Closed-loop flash test: flash → capture boot log → verify keywords → PASS/FAIL
     Test {
         /// Path to .soc file
@@ -784,6 +817,29 @@ fn main() {
                 ext_prog,
             } => cmd_flash::cmd_flash_ext_flash(&port, baud, &partition, &file, ext_prog, progress_step, &cli.format),
             FlashCommands::ExtErase { port, baud, partition, ext_prog } => cmd_flash::cmd_flash_ext_erase(&port, baud, &partition, ext_prog, progress_step, &cli.format),
+            FlashCommands::Raw {
+                soc,
+                port,
+                addr,
+                file,
+                erase,
+                verify,
+                force,
+                flash_size,
+                no_reboot,
+            } => cmd_flash::cmd_flash_raw(
+                &soc,
+                &port,
+                &addr,
+                &file,
+                erase,
+                verify,
+                force,
+                flash_size.as_deref(),
+                no_reboot,
+                progress_step,
+                &cli.format,
+            ),
             FlashCommands::Test {
                 soc,
                 port,

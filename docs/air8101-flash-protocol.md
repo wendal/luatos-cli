@@ -525,6 +525,30 @@ Step 10: 重启并关口（LuaTools `_reboot_and_close`）
 4. RTS+DTR 500ms 重启后关口
 ```
 
+### 任意地址刷写（`flash raw`）
+
+上述分区级操作之外，`flash raw` 允许直接按用户给定地址擦写，复用同一批协议原语
+（`erase_range` / `write_sector_4k` / `check_crc`）。
+
+**BK7258 的能力边界（重要）：**
+
+| 项目 | 约束 |
+|---|---|
+| 写入地址 | 必须 4K 对齐，否则 CLI 直接拒绝 |
+| 擦除 | 4K / 64K 自适应，同 `erase_range` |
+| 写后校验 | 只能用 `CMD 0x10` 的 CRC32。**该 CRC 由 bootloader 计算，主机端无法复现同一算法**，因此只能记录数值，不能作为"写对了"的判据 |
+| 读回 dump | 本协议未覆盖读 flash 命令，需逆向 `BK7231GUIFlashTool` 才能确认 |
+
+由于 `check_crc` 不能判定对错，CLI 对 BK7258 的 `--verify` 会主动告警，
+并在 JSON 输出里用 `"verified": false` 标注，避免误读。
+
+```bash
+luatos-cli flash raw --soc Air8101.soc --port COM6 \
+  --addr 0x200000 --file data.bin --erase --verify
+```
+
+详见 [flash-raw-design.md](flash-raw-design.md)。
+
 ---
 
 ## 重试机制

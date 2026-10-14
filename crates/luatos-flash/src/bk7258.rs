@@ -263,7 +263,6 @@ fn write_sector_4k(port: &mut dyn serialport::SerialPort, addr: u32, data: &[u8;
 }
 
 /// CRC check for a flash range [start_addr, end_addr] inclusive.
-#[allow(dead_code)]
 fn check_crc(port: &mut dyn serialport::SerialPort, start_addr: u32, end_addr: u32) -> Result<u32> {
     let [s0, s1, s2, s3] = start_addr.to_le_bytes();
     let [e0, e1, e2, e3] = end_addr.to_le_bytes();
@@ -468,6 +467,13 @@ const LOG_CAPTURE_SECS: u64 = 20;
 /// LuaTools `_reboot_and_close`: RTS+DTR high 500ms, then release, then close.
 /// Air8101 stays in ROM bootloader (black LCD) if the port is only dropped.
 fn reboot_and_close(mut serial: Box<dyn serialport::SerialPort>) {
+    reboot_port(&mut *serial);
+    drop(serial);
+}
+
+/// 复位序列本体（不负责关闭串口）。
+/// raw 路径借用句柄调用，句柄由调用方随后释放，效果与 `reboot_and_close` 一致。
+fn reboot_port(serial: &mut dyn serialport::SerialPort) {
     let _ = serial.set_baud_rate(115_200);
     let _ = serial.write_data_terminal_ready(true);
     let _ = serial.write_request_to_send(true);
@@ -475,7 +481,6 @@ fn reboot_and_close(mut serial: Box<dyn serialport::SerialPort>) {
     let _ = serial.write_data_terminal_ready(false);
     let _ = serial.write_request_to_send(false);
     std::thread::sleep(Duration::from_millis(100));
-    drop(serial);
 }
 
 /// Flash via air602_flash.exe subprocess.
@@ -1109,6 +1114,116 @@ pub fn clear_fskv(soc_path: &str, port: &str, cancel: Arc<AtomicBool>, on_progre
     reboot_and_close(serial);
     on_progress(&FlashProgress::done_ok("FSKV cleared! Device is rebooting."));
     Ok(())
+}
+
+// ─── Raw flash (任意地址) ────────────────────────────────────────────────────
+
+/// BK7258 上的 raw flash 会话。
+///
+/// 复用同一批协议原语（`erase_range` / `write_sector_4k` / `check_crc`），
+/// 只是把「分区」换成用户给定的地址区间。
+pub struct Bk7258Raw {
+    port: Box<dyn serialport::SerialPort>,
+    cancel: Arc<AtomicBool>,
+    on_progress: ProgressCallback,
+}
+
+/// 进入 BK7258 bootloader 并返回 raw 会话（已完成握手、切波特率、SR 去保护）。
+///
+/// `on_progress` 由会话持有，写入/擦除过程中的进度回调从这里发出。
+/// `cancel` 由会话共享，Ctrl+C 触发的取消标志在写入长循环里能被读到。
+pub fn open_raw(port: &str, flash_br: u32, cancel: Arc<AtomicBool>, on_progress: ProgressCallback) -> Result<Box<dyn crate::raw::RawFlashDevice>> {
+    cancel.store(false, Ordering::Relaxed);
+    let serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
+    Ok(Box::new(Bk7258Raw {
+        port: serial,
+        cancel,
+        on_progress,
+    }))
+}
+
+impl crate::raw::RawFlashDevice for Bk7258Raw {
+    fn chip(&self) -> crate::raw::RawChip {
+        crate::raw::RawChip::Bk7258
+    }
+
+    fn erase_granularity(&self) -> u64 {
+        SECTOR_SIZE as u64
+    }
+
+    fn write_alignment(&self) -> u64 {
+        crate::raw::RawChip::Bk7258.write_alignment()
+    }
+
+    fn progress(&self) -> &ProgressCallback {
+        &self.on_progress
+    }
+
+    fn write(&mut self, addr: u32, data: &[u8]) -> Result<()> {
+        let num_sectors = data.len().div_ceil(SECTOR_SIZE);
+        for i in 0..num_sectors {
+            if self.cancel.load(Ordering::Relaxed) {
+                bail!("Flash cancelled by user");
+            }
+            let offset = i * SECTOR_SIZE;
+            let end_off = (offset + SECTOR_SIZE).min(data.len());
+            let addr_i = addr
+                .checked_add(offset as u32)
+                .ok_or_else(|| anyhow::anyhow!("Flash 地址溢出: start={addr:#x} offset={offset:#x}"))?;
+
+            // 尾扇区不足 4K 时补 0xFF —— 与 flash_data 保持一致
+            let mut sector = [0xFFu8; SECTOR_SIZE];
+            sector[..end_off - offset].copy_from_slice(&data[offset..end_off]);
+
+            let mut ok = false;
+            for attempt in 0..3 {
+                match write_sector_4k(&mut *self.port, addr_i, &sector)? {
+                    true => {
+                        ok = true;
+                        break;
+                    }
+                    false => {
+                        log::warn!("raw: retry write sector {} attempt {}", i, attempt + 1);
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                }
+            }
+            if !ok {
+                bail!("Write failed at 0x{addr_i:08x} after 3 retries");
+            }
+
+            let pct = 35.0 + 55.0 * ((i + 1) as f32 / num_sectors as f32);
+            (self.on_progress)(&FlashProgress::info("RawWrite", pct, &format!("raw 写入扇区 {}/{} @ 0x{addr_i:08x}", i + 1, num_sectors)).with_region("raw"));
+        }
+        Ok(())
+    }
+
+    fn erase(&mut self, addr: u32, len: u64) -> Result<()> {
+        let num_sectors = len.div_ceil(SECTOR_SIZE as u64) as usize;
+        erase_range(&mut *self.port, addr, num_sectors, |done, total| {
+            if self.cancel.load(Ordering::Relaxed) {
+                return false;
+            }
+            let pct = 20.0 + 15.0 * (done as f32 / total as f32);
+            (self.on_progress)(&FlashProgress::info("RawErase", pct, &format!("raw 擦除扇区 {done}/{total}")).with_region("raw"));
+            true
+        })
+    }
+
+    fn verify(&mut self, addr: u32, data: &[u8]) -> Result<crate::raw::VerifyResult> {
+        if data.is_empty() {
+            bail!("校验数据为空");
+        }
+        let last = addr.checked_add(data.len() as u32 - 1).ok_or_else(|| anyhow::anyhow!("校验范围地址溢出"))?;
+        // BK7231 ISP 只有设备端 CRC32，主机端无法复现同一算法，
+        // 因此只能记录，不能作为「写对了」的判据。
+        let crc32 = check_crc(&mut *self.port, addr, last)?;
+        Ok(crate::raw::VerifyResult::DeviceCrcOnly { crc32 })
+    }
+
+    fn reset(&mut self) {
+        reboot_port(&mut *self.port);
+    }
 }
 #[cfg(test)]
 mod tests {

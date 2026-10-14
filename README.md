@@ -7,6 +7,7 @@ LuatOS 命令行工具集（纯 Rust）——刷机、日志、项目管理、�
 ## 功能特性
 
 - **多芯片刷机**：Air8101(BK7258)、Air6208(XT804)、Air1601/Air1602(CCM4211)、Air8000(EC718)、SF32LB58、Air724UG(UIS8910DM/RDA8910)；Air8101 走原生 ISP（不调用 `.soc` 内 `air602_flash.exe`），写完 RTS+DTR 复位；`flash run --script` 递归收集子目录，并在 EC718 / CCM4211 / RDA8910 上覆盖 SOC 包内脚本
+- **任意地址刷机**：`flash raw` 绕过 `info.json` 分区定义，按 `--addr` 直接擦写 Flash（Air8101/Air1601），适合单独补刷外置字库/TTS/fs 等分区表覆盖不到的资源。bootloader/core 默认受保护需 `--force`；Air1601 可回读 MD5 真校验，Air8101 仅能记录设备端 CRC32
 - **FOTA 打包**：支持 EC7xx 差分/脚本、CCM4211 全量/脚本、Air8101(BK72XX) 新格式全量/脚本、Air724UG(RDA8910) 差分/脚本；EC7xx 差分时若底层固件相同自动回落到脚本更新包（`--force-par` 可强制走差分）
 - **二级帮助入口**：`--help` 提示型号入口，`guide models` / `guide model --model <型号>` 直接给推荐命令
 - **刷机后继续监听**：`flash run --tail-log-secs <N>` 刷机后自动按型号波特率续接日志，减少开机日志丢失；EC718 / RDA8910 会等待运行模式 log 口重新枚举
@@ -101,6 +102,10 @@ luatos-cli guide model --model air1601
 
 # 常规刷机
 luatos-cli flash run --soc firmware.soc --port COM10
+
+# 往任意 Flash 地址刷机（低阶操作，bootloader/core 需 --force）
+luatos-cli flash raw --soc firmware.soc --port COM10 \
+  --addr 0x200000 --file font.bin --erase --verify
 
 # 刷机后继续监听启动日志（30 秒）
 luatos-cli flash run --soc firmware.soc --port COM10 --tail-log-secs 30
@@ -234,15 +239,15 @@ luatos-cli doctor --help
 
 ## 支持的模组（摘要）
 
-| 模组 | 芯片 | 刷机 | 脚本区 | 文件系统 | FSKV | FOTA | 日志 | 闭环测试 | trun |
-|------|------|:----:|:------:|:--------:|:----:|:----:|:----:|:--------:|:--------:|
-| Air8101 | BK7258 (bk72xx) | ✅ | ✅ | ✅ | ✅ | ✅（新格式全量/脚本） | 文本 | ✅ | ✅ |
-| Air6208 | XT804 (air6208) | ✅ | ✅ | ✅ | ✅ | ✅（全量） | 二进制 | ✅ | ✅ |
-| Air101/103 | XT804 | ✅ | ✅ | — | — | ✅（全量） | 二进制 | ✅ | ✅ |
-| Air1601 / Air1602 | CCM4211 | ✅ | ✅ | ✅ | ✅ | ✅（全量/脚本） | 二进制 (`--probe`) | ✅ | ✅ |
-| Air8000 / Air780E | EC718 (ec7xx) | ✅ | ✅ | — | — | ✅（差分/脚本） | 二进制 (`--probe`) | ✅ | ✅ |
-| Air8101(SF32) | SF32LB58 | ✅ | ✅ | — | ✅ | — | 文本 | — | — |
-| Air724UG | UIS8910DM (rda8910) | ✅ | ✅ | — | — | ✅（差分/脚本） | 二进制 (`--probe`) | — | — |
+| 模组 | 芯片 | 刷机 | 脚本区 | 文件系统 | FSKV | FOTA | 日志 | 任意地址<br>`flash raw` | 闭环测试 | trun |
+|------|------|:----:|:------:|:--------:|:----:|:----:|:----:|:------:|:--------:|:--------:|
+| Air8101 | BK7258 (bk72xx) | ✅ | ✅ | ✅ | ✅ | ✅（新格式全量/脚本） | 文本 | ✅（仅 CRC 记录） | ✅ | ✅ |
+| Air6208 | XT804 (air6208) | ✅ | ✅ | ✅ | ✅ | ✅（全量） | 二进制 | — | ✅ | ✅ |
+| Air101/103 | XT804 | ✅ | ✅ | — | — | ✅（全量） | 二进制 | — | ✅ | ✅ |
+| Air1601 / Air1602 | CCM4211 | ✅ | ✅ | ✅ | ✅ | ✅（全量/脚本） | 二进制 (`--probe`) | ✅（MD5 真校验） | ✅ | ✅ |
+| Air8000 / Air780E | EC718 (ec7xx) | ✅ | ✅ | — | — | ✅（差分/脚本） | 二进制 (`--probe`) | — | ✅ | ✅ |
+| Air8101(SF32) | SF32LB58 | ✅ | ✅ | — | ✅ | — | 文本 | — | — | — |
+| Air724UG | UIS8910DM (rda8910) | ✅ | ✅ | — | — | ✅（差分/脚本） | 二进制 (`--probe`) | — | — | — |
 
 ## 结构化输出
 

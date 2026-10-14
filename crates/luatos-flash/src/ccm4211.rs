@@ -893,24 +893,8 @@ pub fn flash_script_ccm4211(soc_path: &str, port_name: &str, script_data: &[u8],
     let tmpdir = tempfile::tempdir().context("Create temp dir")?;
     let unpacked = luatos_soc::unpack_soc(soc_path, tmpdir.path())?;
     let info = &unpacked.info;
-    let soc_dir = tmpdir.path();
 
-    let ramrun_path = soc_dir.join("ramrun.bin");
-    let ramrun_data = if ramrun_path.exists() {
-        std::fs::read(&ramrun_path)?
-    } else {
-        let soc_parent = std::path::Path::new(soc_path).parent();
-        let default_path = soc_parent.map(|p| p.join("ccm4211_ramrun_default.bin"));
-        if let Some(ref dp) = default_path {
-            if dp.exists() {
-                std::fs::read(dp)?
-            } else {
-                bail!("No ramrun.bin found");
-            }
-        } else {
-            bail!("No ramrun.bin found");
-        }
-    };
+    let ramrun_data = load_ramrun_data(soc_path, tmpdir.path())?;
 
     if cancel.load(Ordering::Relaxed) {
         bail!("Cancelled");
@@ -960,24 +944,8 @@ pub fn erase_partition_ccm4211(soc_path: &str, port_name: &str, partition_addr: 
     let tmpdir = tempfile::tempdir().context("Create temp dir")?;
     let unpacked = luatos_soc::unpack_soc(soc_path, tmpdir.path())?;
     let info = &unpacked.info;
-    let soc_dir = tmpdir.path();
 
-    let ramrun_path = soc_dir.join("ramrun.bin");
-    let ramrun_data = if ramrun_path.exists() {
-        std::fs::read(&ramrun_path)?
-    } else {
-        let soc_parent = std::path::Path::new(soc_path).parent();
-        let default_path = soc_parent.map(|p| p.join("ccm4211_ramrun_default.bin"));
-        if let Some(ref dp) = default_path {
-            if dp.exists() {
-                std::fs::read(dp)?
-            } else {
-                bail!("No ramrun.bin found");
-            }
-        } else {
-            bail!("No ramrun.bin found");
-        }
-    };
+    let ramrun_data = load_ramrun_data(soc_path, tmpdir.path())?;
 
     if cancel.load(Ordering::Relaxed) {
         bail!("Cancelled");
@@ -1028,6 +996,171 @@ pub fn clear_fskv(soc_path: &str, port_name: &str, on_progress: &ProgressCallbac
     let info = luatos_soc::read_soc_info(soc_path)?;
     let addr = info.nvm_addr().context("Air1601 SOC has no nvm_addr defined")?;
     erase_partition_ccm4211(soc_path, port_name, addr, "fskv", on_progress, cancel)
+}
+
+// ─── Raw flash (任意地址) ────────────────────────────────────────────────────
+
+/// 读取 ramrun 字节：优先用 SOC 包内的 `ramrun.bin`，否则回退到同目录
+/// 的 `ccm4211_ramrun_default.bin`。
+fn load_ramrun_data(soc_path: &str, soc_dir: &Path) -> Result<Vec<u8>> {
+    let bundled = soc_dir.join("ramrun.bin");
+    if bundled.exists() {
+        return std::fs::read(&bundled).context("read ramrun.bin");
+    }
+    let fallback = Path::new(soc_path).parent().map(|p| p.join("ccm4211_ramrun_default.bin"));
+    match fallback {
+        Some(ref p) if p.exists() => std::fs::read(p).context("read ccm4211_ramrun_default.bin"),
+        _ => bail!("No ramrun.bin found (checked bundled SOC and sibling ccm4211_ramrun_default.bin)"),
+    }
+}
+
+/// CCM4211 上的 raw flash 会话。
+///
+/// 复用 `soc_download_file` / `SOC_CMD_FLASH_ERASE_BLOCK` / `SOC_CMD_CHECK_CODE`，
+/// 只是把 info.json 里的固定分区地址换成用户给定的地址。
+pub struct Ccm4211Raw {
+    port: Box<dyn SerialPort>,
+    parser: SocFrameParser,
+    sn: u16,
+    block_len: u32,
+    cancel: Arc<AtomicBool>,
+    on_progress: ProgressCallback,
+}
+
+/// 进入 CCM4211 SOC 协议会话并返回 raw 句柄（ISP → ramrun → SOC 帧协议）。
+pub fn open_raw(soc_path: &str, port_name: &str, cancel: Arc<AtomicBool>, on_progress: ProgressCallback) -> Result<Box<dyn crate::raw::RawFlashDevice>> {
+    on_progress(&FlashProgress::info("Extract", 0.0, "Unpacking .soc file"));
+    let tmpdir = tempfile::tempdir().context("Create temp dir")?;
+    let unpacked = luatos_soc::unpack_soc(soc_path, tmpdir.path())?;
+    let dl_baud = unpacked.info.flash_baud_rate();
+    let ramrun_data = load_ramrun_data(soc_path, tmpdir.path())?;
+    // ramrun 已读入内存，SOC 包可以立即释放
+    drop(tmpdir);
+
+    crate::raw::check_cancel(&cancel)?;
+    let mut port = isp_load_ramrun(port_name, &ramrun_data, &on_progress)?;
+    crate::raw::check_cancel(&cancel)?;
+
+    switch_to_soc_protocol(&mut *port, dl_baud)?;
+
+    let mut parser = SocFrameParser::new();
+    let mut sn: u16 = 0;
+    let mut block_len: u32 = 0;
+    for _ in 0..3 {
+        if let Ok(resp) = soc_send_cmd(&mut port, &mut parser, SOC_CMD_GET_DOWNLOAD_INFO, 0, &[], &mut sn, Duration::from_millis(100)) {
+            if resp.data.len() >= 4 {
+                block_len = u32::from_le_bytes(resp.data[0..4].try_into().unwrap());
+            }
+            break;
+        }
+    }
+    if block_len == 0 {
+        bail!("Failed to get download block size");
+    }
+
+    Ok(Box::new(Ccm4211Raw {
+        port,
+        parser,
+        sn,
+        block_len,
+        cancel,
+        on_progress,
+    }))
+}
+
+impl crate::raw::RawFlashDevice for Ccm4211Raw {
+    fn chip(&self) -> crate::raw::RawChip {
+        crate::raw::RawChip::Ccm4211
+    }
+
+    /// `FLASH_ERASE_BLOCK` 是分区级命令，粒度由固件决定，
+    /// 用设备返回的 block_len（通常 256KB）作为保守估计。
+    fn erase_granularity(&self) -> u64 {
+        self.block_len as u64
+    }
+
+    /// `SET_CODE_DATA_START` 携带任意起始地址，无需对齐。
+    fn write_alignment(&self) -> u64 {
+        crate::raw::RawChip::Ccm4211.write_alignment()
+    }
+
+    fn progress(&self) -> &ProgressCallback {
+        &self.on_progress
+    }
+
+    fn write(&mut self, addr: u32, data: &[u8]) -> Result<()> {
+        // soc_download_file 自带 CMD 0x0D 的 MD5 校验，写入即校验。
+        crate::raw::check_cancel(&self.cancel)?;
+        soc_download_file(
+            &mut self.port,
+            &mut self.parser,
+            &mut self.sn,
+            addr,
+            data,
+            self.block_len,
+            &self.on_progress,
+            "Raw",
+            35.0,
+            90.0,
+        )
+    }
+
+    fn erase(&mut self, addr: u32, len: u64) -> Result<()> {
+        // 分区级擦除：逐块发 CMD 0x08，每次擦除一块。
+        // 注意实际擦除范围由固件决定，可能略大于请求区间。
+        let gran = self.block_len as u64;
+        let blocks = len.div_ceil(gran).max(1);
+        for i in 0..blocks {
+            crate::raw::check_cancel(&self.cancel)?;
+            let a = addr.checked_add((i * gran) as u32).ok_or_else(|| anyhow::anyhow!("擦除地址溢出"))?;
+            let mut ok = false;
+            for attempt in 0..3 {
+                match soc_send_cmd(&mut self.port, &mut self.parser, SOC_CMD_FLASH_ERASE_BLOCK, a, &[], &mut self.sn, Duration::from_secs(10)) {
+                    Ok(_) => {
+                        ok = true;
+                        break;
+                    }
+                    Err(e) => {
+                        log::debug!("raw erase block {} attempt {}: {}", i, attempt + 1, e);
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                }
+            }
+            if !ok {
+                bail!("擦除 0x{a:08x} 失败（重试 3 次）");
+            }
+            let pct = 20.0 + 15.0 * ((i + 1) as f32 / blocks as f32);
+            (self.on_progress)(&FlashProgress::info("RawErase", pct, &format!("raw 擦除块 {}/{} @ 0x{a:08x}", i + 1, blocks)).with_region("raw"));
+        }
+        Ok(())
+    }
+
+    fn verify(&mut self, addr: u32, data: &[u8]) -> Result<crate::raw::VerifyResult> {
+        if data.is_empty() {
+            bail!("校验数据为空");
+        }
+        let total_len = (data.len() as u32).to_le_bytes();
+        let resp = soc_send_cmd(
+            &mut self.port,
+            &mut self.parser,
+            SOC_CMD_CHECK_CODE,
+            addr,
+            &total_len,
+            &mut self.sn,
+            Duration::from_secs(10),
+        )
+        .context("SOC MD5 check failed")?;
+        let device_md5_hex = resp.data.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let expected_md5_hex = format!("{:x}", md5::compute(data));
+        if device_md5_hex != expected_md5_hex {
+            bail!("MD5 mismatch: device={device_md5_hex}, expected={expected_md5_hex}");
+        }
+        Ok(crate::raw::VerifyResult::DigestMatched { digest: device_md5_hex })
+    }
+
+    fn reset(&mut self) {
+        let _ = soc_reset_device(&mut self.port);
+    }
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────

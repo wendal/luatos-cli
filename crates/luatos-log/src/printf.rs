@@ -118,11 +118,7 @@ pub(crate) fn parse(chars: &mut Peekable<Chars<'_>>) -> Option<Parsed> {
                 break;
             }
             chars.next();
-            w = Some(
-                w.unwrap_or(0)
-                    .saturating_mul(10)
-                    .saturating_add(c as usize - '0' as usize),
-            );
+            w = Some(w.unwrap_or(0).saturating_mul(10).saturating_add(c as usize - '0' as usize));
         }
         sp.width = w;
     }
@@ -187,8 +183,7 @@ pub(crate) fn parse(chars: &mut Peekable<Chars<'_>>) -> Option<Parsed> {
 
     let conv = chars.next()?;
     match conv {
-        'd' | 'i' | 'u' | 'o' | 'x' | 'X' | 'f' | 'F' | 'e' | 'E' | 'g' | 'G' | 'a' | 'A' | 'c'
-        | 's' | 'S' | 'p' | 'n' => {
+        'd' | 'i' | 'u' | 'o' | 'x' | 'X' | 'f' | 'F' | 'e' | 'E' | 'g' | 'G' | 'a' | 'A' | 'c' | 's' | 'S' | 'p' | 'n' => {
             sp.conv = conv;
             Some(Parsed::Spec(sp))
         }
@@ -235,9 +230,7 @@ pub(crate) fn narrow(raw: u64, length: Length, signed: bool) -> IntVal {
             Length::Hh => raw as u8 as i8 as i64,
             Length::H => raw as u16 as i16 as i64,
             Length::Ll => raw as i64,
-            Length::None | Length::L | Length::Z | Length::J | Length::T | Length::BigL => {
-                raw as u32 as i32 as i64
-            }
+            Length::None | Length::L | Length::Z | Length::J | Length::T | Length::BigL => raw as u32 as i32 as i64,
         };
         IntVal::Signed(v)
     } else {
@@ -245,9 +238,7 @@ pub(crate) fn narrow(raw: u64, length: Length, signed: bool) -> IntVal {
             Length::Hh => raw as u8 as u64,
             Length::H => raw as u16 as u64,
             Length::Ll => raw,
-            Length::None | Length::L | Length::Z | Length::J | Length::T | Length::BigL => {
-                raw as u32 as u64
-            }
+            Length::None | Length::L | Length::Z | Length::J | Length::T | Length::BigL => raw as u32 as u64,
         };
         IntVal::Unsigned(v)
     }
@@ -308,9 +299,17 @@ pub(crate) fn render_float(spec: &FmtSpec, v: f64) -> String {
     let prec = spec.prec;
 
     let body = if v.is_nan() {
-        if upper { "NAN".to_string() } else { "nan".to_string() }
+        if upper {
+            "NAN".to_string()
+        } else {
+            "nan".to_string()
+        }
     } else if v.is_infinite() {
-        if upper { "INF".to_string() } else { "inf".to_string() }
+        if upper {
+            "INF".to_string()
+        } else {
+            "inf".to_string()
+        }
     } else {
         let a = v.abs();
         let s = match spec.conv.to_ascii_lowercase() {
@@ -320,7 +319,11 @@ pub(crate) fn render_float(spec: &FmtSpec, v: f64) -> String {
             'a' => fmt_hex_float(a, prec, spec.hash),
             _ => fmt_fixed(a, prec.unwrap_or(6), spec.hash),
         };
-        if upper { s.to_uppercase() } else { s }
+        if upper {
+            s.to_uppercase()
+        } else {
+            s
+        }
     };
 
     // NaN 不带符号（除非显式要求）；其余按符号位 + `+`/` ` 标志
@@ -479,11 +482,7 @@ fn fmt_hex_float(v: f64, prec: Option<usize>, hash: bool) -> String {
     let frac = bits & 0x000f_ffff_ffff_ffff;
 
     // 规格化数前导位为 1、真实指数 = raw_exp - 1023；非规格化数为 0、指数固定 -1022
-    let (lead, exp) = if raw_exp == 0 {
-        (0, -1022)
-    } else {
-        (1, raw_exp - 1023)
-    };
+    let (lead, exp) = if raw_exp == 0 { (0, -1022) } else { (1, raw_exp - 1023) };
 
     let mut digits = format!("{frac:013x}");
     match prec {
@@ -512,9 +511,7 @@ fn fmt_hex_float(v: f64, prec: Option<usize>, hash: bool) -> String {
 /// 用最短表示求出 `v`（正数）的十进制指数，避免 `log10()` 的边界误差。
 fn decimal_exponent(v: f64) -> i32 {
     let s = format!("{v:e}");
-    s.split_once('e')
-        .and_then(|(_, e)| e.parse::<i32>().ok())
-        .unwrap_or(0)
+    s.split_once('e').and_then(|(_, e)| e.parse::<i32>().ok()).unwrap_or(0)
 }
 
 /// 去掉尾随零，必要时连小数点一起去掉。`in_exp` 表示 `s` 形如 `mant e±XX`。

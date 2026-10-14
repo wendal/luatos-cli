@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 新增
+
+#### `flash raw`：任意 Flash 地址刷机（Air8101 / Air1601）
+
+- 新增 `luatos_flash::raw` 抽象层：`RawFlashDevice` trait 只描述「任意地址擦/写/校验/复位」，不含任何协议实现，护栏校验与「擦→写→校验→复位」公共流程集中在该模块，芯片协议实现留在各自模块
+- 新增 `luatos-cli flash raw --soc --port --addr --file [--erase] [--verify] [--force] [--flash-size] [--no-reboot]`，绕过 `info.json` 分区定义按地址直接擦写。适用于单独补刷分区表覆盖不到的外置资源（如 `include.txt` 声明了 `LUAT_FONT_ADDRESS` 但 `.soc` 内缺字库文件）
+- BK7258 复用 `erase_range` / `write_sector_4k` / `check_crc`；CCM4211 复用 `soc_download_file` / `FLASH_ERASE_BLOCK` / `CHECK_CODE`。均未新增协议帧解析
+- **护栏**（全部在连硬件之前生效，不占用串口）：bootloader+core 区间默认拒绝写入需 `--force`、BK7258 写入地址强制 4K 对齐、`--flash-size` 容量越界检查、空文件拒绝
+- **校验能力如实区分**：CCM4211 用 `CHECK_CODE` 回读 MD5 可真校验；BK7258 只能拿到设备端 CRC32，主机端无法复现该算法，因此 `--verify` 仅记录数值、加 `--verify` 时主动告警、JSON 输出用 `"verified": false` 标注，不把"拿到一个数"误报为"校验通过"
+- 新增 `docs/flash-raw-design.md`，并在 `docs/air8101-flash-protocol.md` / `docs/ccm4211-flash-protocol.md` 补充 raw 路径与能力边界
+
 ### 变更
 
 #### 资源分区格式改为帧化 romfs（需配套新固件）
@@ -21,6 +32,17 @@ All notable changes to this project will be documented in this file.
 - `sf32lb52/55/56/57` 为纯 stub 数据 feature（供外部工具使用），刷机代码仅随 `sf32lb58` 编译（luatos-soc 把 sf32lb52~58 全部映射到 Sf32lb58 族，刷机实现固定使用 SF32LB58）
 - feature 未启用时：`flash run/script/clear-kv` 遇到 SF32LB SOC 给出明确错误提示；`guide models` 不列出 SF32LB 条目
 - `luatos-mcp` 改为 `luatos-flash` 的 `default-features = false`，避免 workspace 构建时 feature 统一导致 SF32LB 被隐式拉入
+
+### 重构
+
+- 全仓排版按 rustfmt 1.10.0 归一化（`cargo fmt --all`）：`cmd_guide.rs`、`luatos-log/src/lib.rs`、`luatos-log/src/printf.rs` 等此前按旧版 rustfmt 排版的文件已更新，`cargo fmt --all -- --check` 现全仓通过
+- `ccm4211` 的 ramrun 加载逻辑（`ramrun.bin` → 同目录 `ccm4211_ramrun_default.bin` 回退）抽取为 `load_ramrun_data()`，消除 `flash_script_ccm4211` 与 `erase_partition_ccm4211` 中的重复实现
+- `bk7258` 的 `reboot_and_close` 拆出 `reboot_port()`（不含关串口），供 raw 路径借用句柄调用，行为与原路径一致
+
+### 维护
+
+- 适配 Rust 1.99.0 工具链：修复 clippy 新增 lint `chunks_exact_to_as_chunks`（`sftool-lib/src/common/sifli_debug.rs`，`chunks_exact(4)` 改为 `as_chunks::<4>()`）
+- CI action 版本更新：`actions/checkout` v6 → **v7**（v7 默认拒绝 checkout fork PR 代码，v6 及更早版本已在 2026-07-20 回移植同等防护）、`codecov/codecov-action` v4 → **v5**；`actions/cache` 保持 v5（已是最新）。Rust 工具链继续用 `dtolnay/rust-toolchain@stable` 跟随最新 stable
 
 ## [1.12.0] - 2026-09-21
 
