@@ -74,6 +74,16 @@ All notable changes to this project will be documented in this file.
 
 ### 变更
 
+#### `flash` 刷脚本支持 `--luac-debug`
+
+- `flash run` / `flash script` / `flash test` 新增 `--luac-debug 0|1|2|99`（默认 `99`=全部），控制 `--script` 目录编译成 LuaDB 时的调试信息保留级别。此前该级别被硬编码为 `99`，导致带完整调试信息的较大脚本集超出脚本分区（如 Air780EHM 512KB 分区装不下 572KB 镜像），只能报「脚本镜像大小超过分区容量」；降到 `0`/`1` 可显著缩小镜像
+- 补齐 BK7258 / XT804 / SF32LB58 后端的调试级别透传，修复参数被接受却仍按 SOC 配置编译的问题；原有 Rust 刷机入口保留并继续遵循 SOC 配置，新增可选调试级别覆盖入口供 CLI 使用
+- 三个命令在参数解析时严格校验 `0/1/2/99`，非法值直接报错，不再静默回退为 99
+- XT804 的 `flash run/test --script` 在连接硬件前明确拒绝，提示使用独立 `flash script`；避免未实现的覆盖路径静默丢弃用户脚本
+- 新增 CLI 合法/非法级别解析、BK7258 编译参数透传、XT804 镜像大小与不支持组合的回归测试
+- 合并后的 release 版在 Windows + Air780EPM V2054 上完成脚本 99 档烧录与 0 档 `flash test` JSONL 闭环（PASS），并恢复 SOC 自带脚本；全工作区测试与 clippy 同时覆盖 SF32LB58 feature。macOS 专项实机测试仍待相应主机验证
+- `trun` 保持现有编译策略，暂不暴露该开关
+
 #### 资源分区格式改为帧化 romfs（需配套新固件）
 
 - `flash flash-res` 写入资源分区的镜像从**原始 Luadb** 改为**标准 romfs（`-rom1fs-`，与核心 `tools/romfs/mkromfs.py` 逐字节一致）**，并按 BK CRC 每 32 字节数据 + 2 字节 CRC 帧化；设备端经 CPU flash 窗口指针直读镜像（`luat_fs_mmap` 零拷贝可用），不再把资源拷入 RAM。**必须使用固件侧已支持 romfs 挂载的新固件**，旧固件会因元数据不匹配直接报错

@@ -803,6 +803,21 @@ pub fn flash_bk7258(
     on_progress: ProgressCallback,
     capture_boot_log: bool,
 ) -> Result<Vec<String>> {
+    flash_bk7258_with_debug(soc_path, script_folders, port, baud_rate, cancel, on_progress, capture_boot_log, None)
+}
+
+/// 全量刷机并可覆盖 Lua 调试级别；未指定时保持 SOC 配置。
+#[allow(clippy::too_many_arguments)]
+pub fn flash_bk7258_with_debug(
+    soc_path: &str,
+    script_folders: Option<&[&str]>,
+    port: &str,
+    baud_rate: Option<u32>,
+    cancel: Arc<AtomicBool>,
+    on_progress: ProgressCallback,
+    capture_boot_log: bool,
+    luac_debug: Option<u8>,
+) -> Result<Vec<String>> {
     cancel.store(false, Ordering::Relaxed);
 
     on_progress(&FlashProgress::info("Preparing", 1.0, "Extracting .soc…"));
@@ -849,7 +864,7 @@ pub fn flash_bk7258(
         if any_valid {
             on_progress(&FlashProgress::info("Building", 3.0, "Building script.bin from Lua files…"));
             let valid_paths: Vec<&Path> = paths.into_iter().filter(|p| p.is_dir()).collect();
-            match build_script_bin(&valid_paths, &info) {
+            match build_script_bin(&valid_paths, &info, luac_debug) {
                 Ok(data) => {
                     let sa = parse_addr(info.download.script_addr.as_deref().unwrap_or("0x200000")).unwrap_or(0x200000) as u32;
                     on_progress(&FlashProgress::info("Building", 5.0, &format!("Script: {} bytes @ 0x{:x}", data.len(), sa)));
@@ -969,11 +984,11 @@ fn collect_script_files_recursive(folders: &[&Path]) -> Result<Vec<std::path::Pa
 ///
 /// Subdirectories are included. LuaDB 按文件名查找（`require("lcd_drv")`），
 /// 因此入口名用 basename；同名文件后者覆盖前者。
-fn build_script_bin(folders: &[&Path], info: &SocInfo) -> Result<Vec<u8>> {
+fn build_script_bin(folders: &[&Path], info: &SocInfo, luac_debug: Option<u8>) -> Result<Vec<u8>> {
     let use_bkcrc = info.use_bkcrc();
     let use_luac = info.script_use_luac();
     let bitw = info.script_bitw();
-    let debug_mode = info.script_debug_mode();
+    let debug_mode = luac_debug.unwrap_or_else(|| info.script_debug_mode());
 
     let mut by_name: std::collections::BTreeMap<String, std::path::PathBuf> = std::collections::BTreeMap::new();
     for path in collect_script_files_recursive(folders)? {
@@ -1079,6 +1094,18 @@ fn connect_bootloader(port: &str, flash_br: u32, cancel: &AtomicBool, on_progres
 /// This is the most common operation during development:
 ///   get_bus → set_baud → unprotect → build LuaDB → erase+write at script_addr
 pub fn flash_script_only(soc_path: &str, script_folders: &[&str], port: &str, cancel: Arc<AtomicBool>, on_progress: &ProgressCallback) -> Result<()> {
+    flash_script_only_with_debug(soc_path, script_folders, port, cancel, on_progress, None)
+}
+
+/// 仅刷脚本并可覆盖 Lua 调试级别；原入口继续遵循 SOC 配置。
+pub fn flash_script_only_with_debug(
+    soc_path: &str,
+    script_folders: &[&str],
+    port: &str,
+    cancel: Arc<AtomicBool>,
+    on_progress: &ProgressCallback,
+    luac_debug: Option<u8>,
+) -> Result<()> {
     cancel.store(false, Ordering::Relaxed);
     on_progress(&FlashProgress::info("Preparing", 1.0, "Parsing SOC info…"));
 
@@ -1099,7 +1126,7 @@ pub fn flash_script_only(soc_path: &str, script_folders: &[&str], port: &str, ca
     on_progress(&FlashProgress::info("Building", 5.0, "Packing script LuaDB…"));
     let script_data = {
         let paths: Vec<&Path> = script_folders.iter().map(|f| Path::new(*f)).collect();
-        build_script_bin(&paths, &info)?
+        build_script_bin(&paths, &info, luac_debug)?
     };
     let script_size = info.script_size();
     if script_data.len() > script_size {
@@ -1179,7 +1206,7 @@ pub fn flash_filesystem(soc_path: &str, script_folders: &[&str], port: &str, can
     on_progress(&FlashProgress::info("Building", 3.0, "Packing filesystem LuaDB…"));
     let fs_data = {
         let paths: Vec<&Path> = script_folders.iter().map(|f| Path::new(*f)).collect();
-        build_script_bin(&paths, &info)?
+        build_script_bin(&paths, &info, None)?
     };
     if fs_data.len() > fs_size {
         bail!("Filesystem data ({} bytes) exceeds partition ({} bytes)", fs_data.len(), fs_size);

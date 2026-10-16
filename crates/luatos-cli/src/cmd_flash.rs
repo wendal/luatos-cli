@@ -32,19 +32,26 @@ fn script_folders_present(folders: Option<&[String]>) -> bool {
     folders.is_some_and(|dirs| !dirs.is_empty())
 }
 
-fn build_script_overlay(script_folders: Option<&[String]>, info: &luatos_soc::SocInfo) -> anyhow::Result<Option<Vec<u8>>> {
+fn build_script_overlay(script_folders: Option<&[String]>, info: &luatos_soc::SocInfo, luac_debug: u8) -> anyhow::Result<Option<Vec<u8>>> {
     let Some(folders) = script_folders.filter(|dirs| !dirs.is_empty()) else {
         return Ok(None);
     };
-    Ok(Some(build_script_image_checked(folders, info)?))
+    Ok(Some(build_script_image_checked(folders, info, luac_debug)?))
 }
 
-fn build_script_image_checked(folders: &[String], info: &luatos_soc::SocInfo) -> anyhow::Result<Vec<u8>> {
+fn build_script_image_checked(folders: &[String], info: &luatos_soc::SocInfo, luac_debug: u8) -> anyhow::Result<Vec<u8>> {
     let folder_paths: Vec<std::path::PathBuf> = folders.iter().map(std::path::PathBuf::from).collect();
     let path_refs: Vec<&std::path::Path> = folder_paths.iter().map(|p| p.as_path()).collect();
-    let script_data = luatos_luadb::build::build_script_image(&path_refs, info.script_use_luac(), info.script_bitw(), info.use_bkcrc(), luatos_luadb::LUAC_DEBUG_ALL)?;
+    let script_data = luatos_luadb::build::build_script_image(&path_refs, info.script_use_luac(), info.script_bitw(), info.use_bkcrc(), luac_debug)?;
     check_script_size(script_data.len(), info.script_size())?;
     Ok(script_data)
+}
+
+fn check_full_flash_script_support(family: ChipFamily, script_folders: Option<&[String]>) -> anyhow::Result<()> {
+    if family == ChipFamily::Xt804 && script_folders.is_some_and(|folders| !folders.is_empty()) {
+        anyhow::bail!("XT804 全量刷机暂不支持 --script 覆盖，请先执行 flash run，再使用 flash script --script <目录> --luac-debug <级别>");
+    }
+    Ok(())
 }
 
 fn tail_log_after_flash(soc: &str, port: &str, timeout_secs: u64, format: &OutputFormat) -> anyhow::Result<()> {
@@ -184,6 +191,7 @@ pub fn cmd_flash_run(
     port: &str,
     baud: Option<u32>,
     script_folders: Option<&[String]>,
+    luac_debug: u8,
     step: u8,
     format: &OutputFormat,
     reset: &ResetArgs,
@@ -213,11 +221,12 @@ pub fn cmd_flash_run(
             info.chip.chip_type
         );
     }
+    check_full_flash_script_support(family, script_folders)?;
 
     match family {
         ChipFamily::Bk72xx => {
             let folders_refs: Option<Vec<&str>> = script_folders.map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
-            let lines = luatos_flash::bk7258::flash_bk7258(soc, folders_refs.as_deref(), port, baud, cancel, on_progress, true)?;
+            let lines = luatos_flash::bk7258::flash_bk7258_with_debug(soc, folders_refs.as_deref(), port, baud, cancel, on_progress, true, Some(luac_debug))?;
             match format {
                 OutputFormat::Text => {
                     if !lines.is_empty() {
@@ -241,7 +250,7 @@ pub fn cmd_flash_run(
             }
         }
         ChipFamily::Ccm4211 => {
-            let overlay = build_script_overlay(script_folders, &info)?;
+            let overlay = build_script_overlay(script_folders, &info, luac_debug)?;
             if overlay.is_some() {
                 event::emit_message(format, "flash.run", MessageLevel::Info, "Applying script overlay from --script folders...")?;
             }
@@ -255,7 +264,7 @@ pub fn cmd_flash_run(
         }
         ChipFamily::Ec718 => {
             // EC718 series: auto-detect boot mode, reboot if needed
-            let overlay = build_script_overlay(script_folders, &info)?;
+            let overlay = build_script_overlay(script_folders, &info, luac_debug)?;
             if overlay.is_some() {
                 event::emit_message(format, "flash.run", MessageLevel::Info, "Applying script overlay from --script folders...")?;
             }
@@ -271,7 +280,7 @@ pub fn cmd_flash_run(
         #[cfg(sf32lb)]
         ChipFamily::Sf32lb58 => {
             let folders_refs: Option<Vec<&str>> = script_folders.map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
-            luatos_flash::sf32lb5x::flash_sf32lb5x(soc, port, folders_refs.as_deref(), on_progress, cancel, reset_config.as_ref(), baud)?;
+            luatos_flash::sf32lb5x::flash_sf32lb5x_with_debug(soc, port, folders_refs.as_deref(), on_progress, cancel, reset_config.as_ref(), baud, Some(luac_debug))?;
             match format {
                 OutputFormat::Text => {
                     println!("SF32LB58 flash completed successfully.");
@@ -283,7 +292,7 @@ pub fn cmd_flash_run(
             // --port auto 支持：自动探测下载口（SPRD U2S Diag, VID 0525:PID a4a7）
             let boot_port = luatos_flash::rda8910::auto_enter_boot_mode(Some(port), &on_progress)?;
             // --script 覆盖：全量刷机时把用户脚本写入 LUA 分区（与 EC718/CCM4211 行为一致）
-            let overlay = build_script_overlay(script_folders, &info)?;
+            let overlay = build_script_overlay(script_folders, &info, luac_debug)?;
             if overlay.is_some() {
                 event::emit_message(format, "flash.run", MessageLevel::Info, "Applying script overlay from --script folders...")?;
             }
@@ -348,6 +357,7 @@ pub fn cmd_flash_partition(
     soc: &str,
     port: &str,
     script_folders: Option<&[String]>,
+    luac_debug: u8,
     step: u8,
     format: &OutputFormat,
     reset: &ResetArgs,
@@ -376,7 +386,7 @@ pub fn cmd_flash_partition(
             "script" => {
                 let folders = script_folders.expect("script folder required");
                 let refs: Vec<&str> = folders.iter().map(|s| s.as_str()).collect();
-                luatos_flash::bk7258::flash_script_only(soc, &refs, port, cancel, &on_progress)?;
+                luatos_flash::bk7258::flash_script_only_with_debug(soc, &refs, port, cancel, &on_progress, Some(luac_debug))?;
             }
             "clear-fs" => {
                 luatos_flash::bk7258::clear_filesystem(soc, port, cancel, on_progress)?;
@@ -405,7 +415,7 @@ pub fn cmd_flash_partition(
                 "script" => {
                     let folders = script_folders.expect("script folder required");
                     let files = collect_script_files(folders)?;
-                    luatos_flash::xt804::flash_script_only(soc, port, &files, on_progress, cancel)?;
+                    luatos_flash::xt804::flash_script_only_with_debug(soc, port, &files, on_progress, cancel, Some(luac_debug))?;
                 }
                 "clear-fs" => {
                     luatos_flash::xt804::clear_filesystem(soc, port, on_progress, cancel)?;
@@ -424,7 +434,7 @@ pub fn cmd_flash_partition(
         ChipFamily::Ccm4211 => match op {
             "script" => {
                 let folders = script_folders.expect("script folder required");
-                let script_data = build_script_image_checked(folders, &info)?;
+                let script_data = build_script_image_checked(folders, &info, luac_debug)?;
                 luatos_flash::ccm4211::flash_script_ccm4211(soc, port, &script_data, &on_progress, cancel)?;
             }
             "clear-fs" => {
@@ -438,7 +448,7 @@ pub fn cmd_flash_partition(
         ChipFamily::Ec718 => match op {
             "script" => {
                 let folders = script_folders.expect("script folder required");
-                let script_data = build_script_image_checked(folders, &info)?;
+                let script_data = build_script_image_checked(folders, &info, luac_debug)?;
                 let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress)?;
                 luatos_flash::ec718::flash_script_ec718(soc, &boot_port, &script_data, &on_progress, cancel)?;
             }
@@ -454,7 +464,7 @@ pub fn cmd_flash_partition(
             "script" => {
                 let folders = script_folders.expect("script folder required");
                 let refs: Vec<&str> = folders.iter().map(|s| s.as_str()).collect();
-                luatos_flash::sf32lb5x::flash_script_sf32lb5x(soc, port, &refs, on_progress, cancel, reset_config.as_ref(), baud)?;
+                luatos_flash::sf32lb5x::flash_script_sf32lb5x_with_debug(soc, port, &refs, on_progress, cancel, reset_config.as_ref(), baud, Some(luac_debug))?;
             }
             "clear-kv" => {
                 luatos_flash::sf32lb5x::clear_kv_sf32lb5x(soc, port, on_progress, cancel, reset_config.as_ref(), baud)?;
@@ -471,7 +481,7 @@ pub fn cmd_flash_partition(
         ChipFamily::Rda8910 => match op {
             "script" => {
                 let folders = script_folders.expect("script folder required");
-                let script_data = build_script_image_checked(folders, &info)?;
+                let script_data = build_script_image_checked(folders, &info, luac_debug)?;
                 // --port auto 支持：自动探测下载口（SPRD U2S Diag, VID 0525:PID a4a7）
                 let boot_port = luatos_flash::rda8910::auto_enter_boot_mode(Some(port), &on_progress)?;
                 luatos_flash::rda8910::flash_script_rda8910(soc, &boot_port, &script_data, &on_progress, cancel)?;
@@ -833,6 +843,7 @@ pub fn cmd_flash_test(
     port: &str,
     baud: Option<u32>,
     script_folders: Option<&[String]>,
+    luac_debug: u8,
     timeout_secs: u64,
     keywords: &[String],
     fail_keywords: &[String],
@@ -855,11 +866,12 @@ pub fn cmd_flash_test(
     let chip = info.chip.chip_type.clone();
     let family = info.family();
     let (_, _, log_br) = cmd_log::resolve_log_mode(chip.as_str(), info.log_baud_rate());
+    check_full_flash_script_support(family, script_folders)?;
 
     let boot_lines_from_flash: Vec<String> = match family {
         ChipFamily::Bk72xx => {
             let folders_refs: Option<Vec<&str>> = script_folders.map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
-            luatos_flash::bk7258::flash_bk7258(soc, folders_refs.as_deref(), port, baud, cancel.clone(), on_progress, true)?
+            luatos_flash::bk7258::flash_bk7258_with_debug(soc, folders_refs.as_deref(), port, baud, cancel.clone(), on_progress, true, Some(luac_debug))?
         }
         ChipFamily::Xt804 => {
             let on_progress2 = make_progress_callback(format, "flash.test", step);
@@ -868,7 +880,7 @@ pub fn cmd_flash_test(
         }
         ChipFamily::Ccm4211 => {
             let on_progress2 = make_progress_callback(format, "flash.test", step);
-            let overlay = build_script_overlay(script_folders, &info)?;
+            let overlay = build_script_overlay(script_folders, &info, luac_debug)?;
             if overlay.is_some() {
                 event::emit_message(format, "flash.test", MessageLevel::Info, "Applying script overlay from --script folders...")?;
             }
@@ -877,7 +889,7 @@ pub fn cmd_flash_test(
         }
         ChipFamily::Ec718 => {
             let on_progress2 = make_progress_callback(format, "flash.test", step);
-            let overlay = build_script_overlay(script_folders, &info)?;
+            let overlay = build_script_overlay(script_folders, &info, luac_debug)?;
             if overlay.is_some() {
                 event::emit_message(format, "flash.test", MessageLevel::Info, "Applying script overlay from --script folders...")?;
             }
@@ -1206,6 +1218,90 @@ pub fn print_script_result(format: &OutputFormat) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_zero_capacity_soc(dir: &std::path::Path, chip: &str) -> std::path::PathBuf {
+        let path = dir.join(format!("{chip}.soc"));
+        let info = serde_json::json!({
+            "version": 1,
+            "chip": {"type": chip},
+            "rom": {"file": "rom.bin", "fs": {"script": {"size": 0, "bkcrc": false}}},
+            "script": {"file": "script.bin", "bitw": 32, "use-luac": true, "use-debug": true},
+            "download": {"script_addr": "2B1000"}
+        });
+        let source = dir.join("soc-source");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("info.json"), info.to_string()).unwrap();
+        luatos_soc::pack_soc_zip(&source, path.to_str().unwrap()).unwrap();
+        path
+    }
+
+    #[test]
+    fn bk7258_script_debug_override_reaches_compiler_before_serial_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let soc = write_zero_capacity_soc(dir.path(), "bk72xx");
+        let source = "local named_debug_variable = 42\nlocal function named_debug_function(value)\n return value + named_debug_variable\nend\nreturn named_debug_function(1)\n";
+        let scripts = dir.path().join("lua");
+        std::fs::create_dir(&scripts).unwrap();
+        std::fs::write(scripts.join("main.lua"), source).unwrap();
+        let folders = vec![scripts.to_str().unwrap().to_string()];
+        let mut sizes = Vec::new();
+        for mode in [0, 99] {
+            let error = cmd_flash_partition(
+                "script",
+                soc.to_str().unwrap(),
+                "PR_TEST_NO_SERIAL_PORT",
+                Some(&folders),
+                mode,
+                10,
+                &OutputFormat::Text,
+                &ResetArgs::default(),
+                None,
+                None,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("exceeds partition size (0 bytes)"), "{error}");
+            let size = error.strip_prefix("Script data (").unwrap().split(' ').next().unwrap().parse::<usize>().unwrap();
+            sizes.push(size);
+        }
+        assert!(sizes[0] < sizes[1], "CLI 的 0/99 级别必须到达 BK7258 编译后端: {sizes:?}");
+    }
+
+    #[test]
+    fn xt804_full_flash_rejects_script_overlay_before_serial_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let soc = write_zero_capacity_soc(dir.path(), "air6208");
+        let folders = vec!["missing-script-folder".to_string()];
+        let reset = ResetArgs::default();
+        let error = cmd_flash_run(
+            soc.to_str().unwrap(),
+            "PR_TEST_NO_SERIAL_PORT",
+            None,
+            Some(&folders),
+            0,
+            10,
+            &OutputFormat::Text,
+            &reset,
+            None,
+            0,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("XT804 全量刷机暂不支持 --script"));
+        let error = cmd_flash_test(
+            soc.to_str().unwrap(),
+            "PR_TEST_NO_SERIAL_PORT",
+            None,
+            Some(&folders),
+            0,
+            1,
+            &[],
+            &[],
+            10,
+            &OutputFormat::Text,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("XT804 全量刷机暂不支持 --script"));
+    }
 
     #[test]
     fn script_folders_present_requires_non_empty_list() {

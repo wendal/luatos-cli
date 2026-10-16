@@ -276,6 +276,22 @@ pub fn flash_sf32lb5x(
     reset_config: Option<&Sf32ResetConfig>,
     baud: Option<u32>,
 ) -> Result<()> {
+    flash_sf32lb5x_with_debug(soc, port, script_dirs, on_progress, _cancel, reset_config, baud, None)
+}
+
+/// 全量刷机并可覆盖 Lua 调试级别；原入口继续遵循 SOC 配置。
+#[cfg(sf32lb)]
+#[allow(clippy::too_many_arguments)]
+pub fn flash_sf32lb5x_with_debug(
+    soc: &str,
+    port: &str,
+    script_dirs: Option<&[&str]>,
+    on_progress: ProgressCallback,
+    _cancel: Arc<AtomicBool>,
+    reset_config: Option<&Sf32ResetConfig>,
+    baud: Option<u32>,
+    luac_debug: Option<u8>,
+) -> Result<()> {
     // 先读取 SOC 地址信息，用于构建地址→区域名映射
     let soc_info = luatos_soc::read_soc_info(soc).context("读取 SOC 信息失败")?;
     let address_regions: Vec<(u32, String)> = {
@@ -321,7 +337,8 @@ pub fn flash_sf32lb5x(
         sink_impl.emit("build", 3.0, "编译 Lua 脚本...");
         let dir_paths: Vec<std::path::PathBuf> = dirs.iter().map(std::path::PathBuf::from).collect();
         let path_refs: Vec<&std::path::Path> = dir_paths.iter().map(|p| p.as_path()).collect();
-        let script_data = luatos_luadb::build::build_script_image(&path_refs, info.script_use_luac(), info.script_bitw(), info.use_bkcrc(), info.script_debug_mode())?;
+        let debug_mode = luac_debug.unwrap_or_else(|| info.script_debug_mode());
+        let script_data = luatos_luadb::build::build_script_image(&path_refs, info.script_use_luac(), info.script_bitw(), info.use_bkcrc(), debug_mode)?;
         std::fs::write(&script_path, &script_data).context("写入 script.bin 失败")?;
     }
 
@@ -399,6 +416,22 @@ pub fn flash_script_sf32lb5x(
     reset_config: Option<&Sf32ResetConfig>,
     baud: Option<u32>,
 ) -> Result<()> {
+    flash_script_sf32lb5x_with_debug(soc, port, script_dirs, on_progress, _cancel, reset_config, baud, None)
+}
+
+/// 仅刷脚本并可覆盖 Lua 调试级别；未指定时保持 SOC 配置。
+#[cfg(sf32lb)]
+#[allow(clippy::too_many_arguments)]
+pub fn flash_script_sf32lb5x_with_debug(
+    soc: &str,
+    port: &str,
+    script_dirs: &[&str],
+    on_progress: ProgressCallback,
+    _cancel: Arc<AtomicBool>,
+    reset_config: Option<&Sf32ResetConfig>,
+    baud: Option<u32>,
+    luac_debug: Option<u8>,
+) -> Result<()> {
     let info = luatos_soc::read_soc_info(soc).context("读取 SOC 信息失败")?;
     let script_addr = info.script_addr();
 
@@ -409,7 +442,8 @@ pub fn flash_script_sf32lb5x(
     sink_impl.emit("build", 0.0, "编译 Lua 脚本...");
     let dir_paths: Vec<std::path::PathBuf> = script_dirs.iter().map(std::path::PathBuf::from).collect();
     let path_refs: Vec<&std::path::Path> = dir_paths.iter().map(|p| p.as_path()).collect();
-    let script_data = luatos_luadb::build::build_script_image(&path_refs, info.script_use_luac(), info.script_bitw(), info.use_bkcrc(), info.script_debug_mode())?;
+    let debug_mode = luac_debug.unwrap_or_else(|| info.script_debug_mode());
+    let script_data = luatos_luadb::build::build_script_image(&path_refs, info.script_use_luac(), info.script_bitw(), info.use_bkcrc(), debug_mode)?;
 
     let tempdir = tempfile::tempdir().context("创建临时目录失败")?;
     let script_path = tempdir.path().join("script.bin");

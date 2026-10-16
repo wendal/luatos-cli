@@ -12,6 +12,7 @@ LuatOS 命令行工具集（纯 Rust）——刷机、日志、项目管理、�
 - **FOTA 打包**：支持 EC7xx 差分/脚本、CCM4211 全量/脚本、Air8101(BK72XX) 新格式全量/脚本、Air724UG(RDA8910) 差分/脚本；EC7xx 差分时若底层固件相同自动回落到脚本更新包（`--force-par` 可强制走差分）
 - **二级帮助入口**：`--help` 提示型号入口，`guide models` / `guide model --model <型号>` 直接给推荐命令
 - **刷机后继续监听**：`flash run --tail-log-secs <N>` 刷机后自动按型号波特率续接日志，减少开机日志丢失；EC718 / RDA8910 会等待运行模式 log 口重新枚举
+- **脚本调试信息可控**：用 `--script <dir>` 打包脚本时支持 `--luac-debug 0|1|2|99`（默认 `99`=全部调试信息，非法值直接报错），覆盖 BK7258 / XT804 / CCM4211 / EC718 / RDA8910 / SF32LB58 的脚本编译路径；脚本偏大时可降到 `0`/`1` 缩小镜像。XT804 请使用 `flash script`，其 `flash run/test` 暂不支持 `--script` 覆盖
 - **trun 单点调试**：`trun <name> --soc base.soc --port COM6` 一站式完成 testcase 合成 → 刷机 → 抓日志 → 关键字校验，取代 luatos-autotest-v2 在开发期的临时合成
 - **日志系统**：文本 / 二进制日志查看、录制、解析，支持智能诊断；`--port auto` 按 USB 接口号自动识别 EC718 / RDA8910 的 log 口；`log view-binary` 按实际打开的口选 0x7E（EC718 USB CDC）或 0xA5（CH340 / SOC UART），不因同机插着 4G USB 而误切协议
 - **项目与构建**：项目向导、配置管理、Lua 依赖分析、luac/LuaDB 构建
@@ -117,6 +118,13 @@ luatos-cli flash dump --soc firmware.soc --port COM10 \
 
 # 刷机后继续监听启动日志（30 秒）
 luatos-cli flash run --soc firmware.soc --port COM10 --tail-log-secs 30
+
+# 仅刷脚本分区；脚本偏大超出脚本分区时，用 --luac-debug 0 去掉调试信息（默认 99）
+luatos-cli flash script --soc firmware.soc --port auto --script lua/ --luac-debug 0
+
+# Air6208 / XT804：全量刷机与脚本编译分两步执行
+luatos-cli flash run --soc air6208.soc --port COM7
+luatos-cli flash script --soc air6208.soc --port COM7 --script lua/ --luac-debug 0
 
 # 文本日志（EC718 可用 --port auto 自动识别 log 口）
 luatos-cli log view --port auto --baud 921600

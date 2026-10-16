@@ -695,13 +695,25 @@ pub fn flash_via_subprocess(soc_path: &str, port: &str, on_progress: ProgressCal
 /// Builds a LuaDB image from the given script files, wraps it in an XT804
 /// image header pointing at the script address, and flashes via XMODEM.
 pub fn flash_script_only(soc_path: &str, port: &str, script_files: &[String], on_progress: ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
+    flash_script_only_with_debug(soc_path, port, script_files, on_progress, cancel, None)
+}
+
+/// 仅刷脚本并可覆盖 Lua 调试级别；未指定时保持 SOC 配置。
+pub fn flash_script_only_with_debug(
+    soc_path: &str,
+    port: &str,
+    script_files: &[String],
+    on_progress: ProgressCallback,
+    cancel: Arc<AtomicBool>,
+    luac_debug: Option<u8>,
+) -> Result<()> {
     // Parse SOC for addresses and compilation settings
     let info = luatos_soc::read_soc_info(soc_path)?;
     let script_addr = info.script_addr();
     let flash_br = info.flash_baud_rate();
     let use_luac = info.script_use_luac();
     let bitw = info.script_bitw();
-    let debug_mode = info.script_debug_mode();
+    let debug_mode = luac_debug.unwrap_or_else(|| info.script_debug_mode());
 
     on_progress(&FlashProgress::info("Build", 0.0, &format!("Building LuaDB for {} files", script_files.len())));
 
@@ -1070,6 +1082,46 @@ fn copy_dir_contents(src: &std::path::Path, dst: &std::path::Path) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn script_debug_override_changes_image_before_serial_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let soc_dir = dir.path().join("soc");
+        std::fs::create_dir(&soc_dir).unwrap();
+        let info = serde_json::json!({
+            "chip": {"type": "air6208"},
+            "rom": {"file": "firmware.fls"},
+            "script": {"file": "script.bin", "bitw": 64, "use-luac": true, "use-debug": true},
+            "download": {"script_addr": "08430000"}
+        });
+        std::fs::write(soc_dir.join("info.json"), info.to_string()).unwrap();
+        let soc = dir.path().join("firmware.soc");
+        luatos_soc::pack_soc_zip(&soc_dir, soc.to_str().unwrap()).unwrap();
+        let script = dir.path().join("main.lua");
+        std::fs::write(&script, "local named_debug_variable = 42\nreturn named_debug_variable\n").unwrap();
+        let mut sizes = Vec::new();
+        for mode in [0, 99] {
+            let observed = Arc::new(std::sync::Mutex::new(None));
+            let observed_cb = observed.clone();
+            let on_progress: ProgressCallback = Box::new(move |p| {
+                if let Some(message) = p.message.strip_prefix("Script image: ") {
+                    *observed_cb.lock().unwrap() = Some(message.split(' ').next().unwrap().parse::<usize>().unwrap());
+                }
+            });
+            let error = flash_script_only_with_debug(
+                soc.to_str().unwrap(),
+                "PR_TEST_NO_SERIAL_PORT",
+                &[script.to_str().unwrap().to_string()],
+                on_progress,
+                Arc::new(AtomicBool::new(false)),
+                Some(mode),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("PR_TEST_NO_SERIAL_PORT"), "{error:#}");
+            sizes.push(observed.lock().unwrap().expect("连接串口前应完成脚本编译"));
+        }
+        assert!(sizes[0] < sizes[1], "XT804 必须应用调试级别覆盖: {sizes:?}");
+    }
 
     // 厂商命令表里尚未接入的只读命令，仅用于验证帧构造器对整张表都成立。
     const CMD_GET_FLASH_ID: u8 = 0x3C;
