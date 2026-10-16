@@ -15,7 +15,7 @@ use clap::{Args, Subcommand};
 use serde::Serialize;
 
 use luatos_soc::ChipFamily;
-use luatos_testcase::{build_ctx, build_script_bin, inject_identifiers, resolve_testcase, scan_testcases, write_ctx_to_temp, ResolvedTestcase};
+use luatos_testcase::{build_ctx, build_script_bin, inject_identifiers, resolve_testcase, scan_testcases, write_ctx_to_temp, ResolvedTestcase, ScriptBinParams};
 
 use crate::cmd_flash;
 use crate::cmd_log;
@@ -343,7 +343,17 @@ pub fn cmd_trun_run(args: &TrunRunArgs, format: &OutputFormat) -> Result<Verdict
     // 2. 读取 soc info
     let soc_info = luatos_soc::read_soc_info(&args.soc).with_context(|| format!("无法读取 soc: {}", args.soc))?;
     let chip = soc_info.chip.chip_type.clone();
-    event::emit_message(format, "testcase.run", MessageLevel::Info, format!("chip = {chip}"))?;
+    event::emit_message(
+        format,
+        "testcase.run",
+        MessageLevel::Info,
+        format!(
+            "chip = {chip} (script bitw={}, bkcrc={}, luac={})",
+            soc_info.script_bitw(),
+            soc_info.use_bkcrc() || matches!(soc_info.family(), ChipFamily::Bk72xx),
+            soc_info.script_use_luac()
+        ),
+    )?;
 
     // 3. 合并关键字（metas.keywords + CLI --keyword）
     let mut keywords = resolved.metas.keywords.clone().unwrap_or_default();
@@ -364,7 +374,7 @@ pub fn cmd_trun_run(args: &TrunRunArgs, format: &OutputFormat) -> Result<Verdict
 
     // 5. 阶段：build（自动把 ctx.json 烧入 script.bin）
     let start = Instant::now();
-    let script_bin = build_script_image_with_ctx(args, &resolved, &chip, &ctx_tmp)?;
+    let script_bin = build_script_image_with_ctx(args, &resolved, &soc_info, &ctx_tmp)?;
     let script_bin_path = write_script_bin(&script_bin, args.keep_soc.as_deref())?;
     // 仅非 bk72xx 在全量模式时才需要合成 combined.soc
     let combined_soc = if args.full && !matches!(soc_info.family(), ChipFamily::Bk72xx) {
@@ -502,10 +512,19 @@ fn install_ctrlc(format: &OutputFormat, cancel: Arc<AtomicBool>) {
     });
 }
 
-fn build_script_image_with_ctx(args: &TrunRunArgs, resolved: &ResolvedTestcase, chip: &str, ctx_tmp: &tempfile::TempDir) -> Result<Vec<u8>> {
+fn build_script_image_with_ctx(args: &TrunRunArgs, resolved: &ResolvedTestcase, soc_info: &luatos_soc::SocInfo, ctx_tmp: &tempfile::TempDir) -> Result<Vec<u8>> {
     let common = resolve_common_scripts(args, &resolve_luatos_root(args.luatos_root.as_deref())?);
     let script_dirs: Vec<&Path> = vec![resolved.scripts_dir.as_path()];
-    build_script_bin(&script_dirs, common.as_deref(), Some(ctx_tmp.path()), chip).context("build script.bin 失败")
+    // 编译参数一律取自 SOC 包元数据(与 flash 路径同源). 不能按芯片名查表:
+    // ccm4211 家族(air1601/1602/1603/1604)是 64 位 Lua VM, 漏一个型号就会刷出
+    // "lua_Integer size mismatch in precompiled chunk"(Lua VM 起不来).
+    let params = ScriptBinParams::from_soc(
+        soc_info.script_bitw(),
+        soc_info.script_use_luac(),
+        // soc 没写 bkcrc 时, BK72xx 家族仍按 BK 格式加 CRC16(历史行为, 只增不减)
+        soc_info.use_bkcrc() || matches!(soc_info.family(), ChipFamily::Bk72xx),
+    );
+    build_script_bin(&script_dirs, common.as_deref(), Some(ctx_tmp.path()), params).context("build script.bin 失败")
 }
 
 fn write_script_bin(image: &[u8], keep_dir: Option<&str>) -> Result<PathBuf> {

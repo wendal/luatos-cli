@@ -19,5 +19,5 @@ pub mod metas;
 
 pub use ctx::{build_ctx, inject_identifiers, merge_deep, CtxBuildResult, CtxMergeWarning};
 pub use discovery::{resolve_testcase, scan_testcases, DiscoverySource, ResolvedTestcase};
-pub use lua_bin::{build_script_bin, script_bin_params_for_chip, write_ctx_to_temp, ScriptBinParams};
+pub use lua_bin::{build_script_bin, write_ctx_to_temp, ScriptBinParams};
 pub use metas::MetasFile;

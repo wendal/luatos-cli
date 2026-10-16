@@ -2,8 +2,7 @@
 //!
 //! 包装 `luatos_luadb::build::build_script_image`，加入：
 //! - 多源合并（公共脚本 + testcase scripts + ctx 目录）
-//! - 64bit 检测（按 chip 类型）
-//! - BK CRC16 自动开关
+//! - 位宽 / BK CRC16 由 **SOC 包元数据**决定（见 `ScriptBinParams::from_soc`）
 
 use std::path::{Path, PathBuf};
 
@@ -22,22 +21,21 @@ pub struct ScriptBinParams {
     pub debug_mode: u8,
 }
 
-/// 根据 chip 类型决定编译参数
-///
-/// - `air8101` / `bk72xx` 使用 64bit + BK CRC16
-/// - `air6208` / `air101` / `air103` 使用 64bit
-/// - 其余默认 32bit
-pub fn script_bin_params_for_chip(chip: &str) -> ScriptBinParams {
-    let bitw = match chip {
-        "air8101" | "bk72xx" | "air6208" | "air101" | "air103" => 64,
-        _ => 32,
-    };
-    let use_bkcrc = matches!(chip, "air8101" | "bk72xx");
-    ScriptBinParams {
-        bitw,
-        use_luac: true,
-        use_bkcrc,
-        debug_mode: luatos_luadb::LUAC_DEBUG_ALL,
+impl ScriptBinParams {
+    /// 由 SOC 包元数据推导编译参数（`SocInfo::script_bitw()` / `script_use_luac()` /
+    /// `use_bkcrc()`），与 `flash` 路径同源。
+    ///
+    /// ⚠️ 不要再按 chip 名字硬编码查表：ccm4211 家族（Air1601/Air1602/Air1603/Air1604）
+    /// 与 bk72xx（Air8101）都是 64 位 Lua VM，表里漏掉一个型号就会刷出
+    /// `lua_Integer size mismatch in precompiled chunk`（真机实测，Lua VM 直接起不来）。
+    /// 位宽的唯一权威来源是 SOC 包，不要在下游再抄一份。
+    pub fn from_soc(bitw: u32, use_luac: bool, use_bkcrc: bool) -> Self {
+        Self {
+            bitw,
+            use_luac,
+            use_bkcrc,
+            debug_mode: luatos_luadb::LUAC_DEBUG_ALL,
+        }
     }
 }
 
@@ -58,10 +56,8 @@ pub fn write_ctx_to_temp(ctx: &serde_json::Value) -> Result<(tempfile::TempDir, 
 /// - `script_dirs`: 多个源码目录，按数组顺序合并（**后写覆盖前写**）
 /// - `common_scripts`: 公共脚本目录（若不存在则忽略）
 /// - `ctx_tmp_dir`: 含 ctx.json 的临时目录（若 Some 则加入）
-/// - `chip`: 芯片类型（决定 bitw / bkcrc）
-pub fn build_script_bin(script_dirs: &[&Path], common_scripts: Option<&Path>, ctx_tmp_dir: Option<&Path>, chip: &str) -> Result<Vec<u8>> {
-    let params = script_bin_params_for_chip(chip);
-
+/// - `params`: 编译参数（由 SOC 包元数据推导，见 [`ScriptBinParams::from_soc`]）
+pub fn build_script_bin(script_dirs: &[&Path], common_scripts: Option<&Path>, ctx_tmp_dir: Option<&Path>, params: ScriptBinParams) -> Result<Vec<u8>> {
     let mut ordered: Vec<PathBuf> = Vec::new();
     // 顺序：公共脚本（先）→ testcase scripts（中）→ ctx 临时目录（最后，最高优先级）
     if let Some(c) = common_scripts {
@@ -112,33 +108,22 @@ mod tests {
     }
 
     #[test]
-    fn params_air8101_64bit_bkcrc() {
-        let p = script_bin_params_for_chip("air8101");
+    fn params_from_soc_keeps_bitw_and_bkcrc() {
+        // ccm4211 家族(Air1601/1602/1603/1604)的真机 soc 元数据: bitw=64, 无 bkcrc
+        let p = ScriptBinParams::from_soc(64, true, false);
         assert_eq!(p.bitw, 64);
-        assert!(p.use_bkcrc);
+        assert!(!p.use_bkcrc);
         assert!(p.use_luac);
         assert_eq!(p.debug_mode, 99);
-    }
 
-    #[test]
-    fn params_ec718_32bit_no_bkcrc() {
-        let p = script_bin_params_for_chip("ec7xx");
-        assert_eq!(p.bitw, 32);
-        assert!(!p.use_bkcrc);
-    }
-
-    #[test]
-    fn params_air6208_64bit_no_bkcrc() {
-        let p = script_bin_params_for_chip("air6208");
+        // bk72xx(Air8101): bitw=64 + BK CRC16
+        let p = ScriptBinParams::from_soc(64, true, true);
         assert_eq!(p.bitw, 64);
-        assert!(!p.use_bkcrc);
-    }
+        assert!(p.use_bkcrc);
 
-    #[test]
-    fn params_unknown_defaults_32bit() {
-        let p = script_bin_params_for_chip("xxx");
+        // ec718(Air8000) 仍是 32 位
+        let p = ScriptBinParams::from_soc(32, true, false);
         assert_eq!(p.bitw, 32);
-        assert!(!p.use_bkcrc);
     }
 
     #[test]
@@ -154,7 +139,7 @@ mod tests {
         fs::create_dir_all(&scripts).unwrap();
         write_lua(&scripts, "main.lua", "local lib = require 'lib' print(lib)");
 
-        let image = build_script_bin(&[scripts.as_path()], Some(common.as_path()), None, "ec7xx").unwrap();
+        let image = build_script_bin(&[scripts.as_path()], Some(common.as_path()), None, ScriptBinParams::from_soc(32, true, false)).unwrap();
         assert!(!image.is_empty());
         // 验证 image 至少包含 main.lua 内容（虽然是被 luac 编译，但 magic 一定在）
         assert!(image.len() > 100);
@@ -170,19 +155,19 @@ mod tests {
         let ctx = serde_json::json!({"test_id": "x", "foo": 1});
         let (ctx_tmp, _ctx_path) = write_ctx_to_temp(&ctx).unwrap();
 
-        let image = build_script_bin(&[scripts.as_path()], None, Some(ctx_tmp.path()), "ec7xx").unwrap();
+        let image = build_script_bin(&[scripts.as_path()], None, Some(ctx_tmp.path()), ScriptBinParams::from_soc(32, true, false)).unwrap();
         assert!(!image.is_empty());
     }
 
     #[test]
     fn build_no_dirs_errors() {
-        let r = build_script_bin(&[], None, None, "ec7xx");
+        let r = build_script_bin(&[], None, None, ScriptBinParams::from_soc(32, true, false));
         assert!(r.is_err());
     }
 
     #[test]
     fn build_missing_dir_errors() {
-        let r = build_script_bin(&[Path::new("nonexistent_xyz")], None, None, "ec7xx");
+        let r = build_script_bin(&[Path::new("nonexistent_xyz")], None, None, ScriptBinParams::from_soc(32, true, false));
         assert!(r.is_err());
     }
 }
