@@ -601,6 +601,7 @@ fn flash_device(
                         &args.port,
                         args.baud,
                         Some(&script_folders),
+                        luatos_luadb::LUAC_DEBUG_ALL,
                         args.progress_step,
                         format,
                         &args.reset,
@@ -616,6 +617,7 @@ fn flash_device(
                     soc_for_flash,
                     &args.port,
                     Some(&script_folders),
+                    luatos_luadb::LUAC_DEBUG_ALL,
                     args.progress_step,
                     format,
                     &args.reset,
@@ -628,7 +630,19 @@ fn flash_device(
         _ => {
             if combined_soc.is_some() {
                 // 冷路径：刷整个 soc
-                cmd_flash::cmd_flash_run(soc_for_flash, &args.port, args.baud, None, args.progress_step, format, &args.reset, None, 0).context("flash run failed")?;
+                cmd_flash::cmd_flash_run(
+                    soc_for_flash,
+                    &args.port,
+                    args.baud,
+                    None,
+                    luatos_luadb::LUAC_DEBUG_ALL,
+                    args.progress_step,
+                    format,
+                    &args.reset,
+                    None,
+                    0,
+                )
+                .context("flash run failed")?;
             } else {
                 // 快路径：刷 script.bin
                 let bin_str = script_bin_path.to_str().context("script_bin_path is not valid utf-8")?;

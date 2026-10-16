@@ -64,6 +64,11 @@ All notable changes to this project will be documented in this file.
 
 ### 变更
 
+#### `flash` 刷脚本支持 `--luac-debug`
+
+- `flash run` / `flash script` / `flash test` 新增 `--luac-debug 0|1|2|99`（默认 `99`=全部），控制 `--script` 目录编译成 LuaDB 时的调试信息保留级别。此前该级别被硬编码为 `99`，导致带完整调试信息的较大脚本集超出脚本分区（如 Air780EHM 512KB 分区装不下 572KB 镜像），只能报「脚本镜像大小超过分区容量」；降到 `0`/`1` 可显著缩小镜像
+- `trun` 流程保持 `LUAC_DEBUG_ALL`（暂不暴露该开关）
+
 #### 资源分区格式改为帧化 romfs（需配套新固件）
 
 - `flash flash-res` 写入资源分区的镜像从**原始 Luadb** 改为**标准 romfs（`-rom1fs-`，与核心 `tools/romfs/mkromfs.py` 逐字节一致）**，并按 BK CRC 每 32 字节数据 + 2 字节 CRC 帧化；设备端经 CPU flash 窗口指针直读镜像（`luat_fs_mmap` 零拷贝可用），不再把资源拷入 RAM。**必须使用固件侧已支持 romfs 挂载的新固件**，旧固件会因元数据不匹配直接报错

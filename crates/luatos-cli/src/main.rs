@@ -228,6 +228,9 @@ enum FlashCommands {
         /// Script folder (optional, can specify multiple)
         #[arg(long)]
         script: Vec<String>,
+        /// luac 调试信息保留级别: 0=无, 1=仅行号, 2=仅变量名, 99=全部
+        #[arg(long, default_value = "99")]
+        luac_debug: u8,
         /// RTS reset and boot-wait options
         #[command(flatten)]
         reset: reset_args::ResetArgs,
@@ -252,6 +255,9 @@ enum FlashCommands {
         /// Script folders containing .lua files (can specify multiple)
         #[arg(long)]
         script: Vec<String>,
+        /// luac 调试信息保留级别: 0=无, 1=仅行号, 2=仅变量名, 99=全部
+        #[arg(long, default_value = "99")]
+        luac_debug: u8,
         /// Pre-compiled script.bin (skip Lua compilation, use external tool like Luatools)
         #[arg(long)]
         bin: Option<String>,
@@ -423,6 +429,9 @@ enum FlashCommands {
         /// Script folders (optional, can specify multiple)
         #[arg(long)]
         script: Vec<String>,
+        /// luac 调试信息保留级别: 0=无, 1=仅行号, 2=仅变量名, 99=全部
+        #[arg(long, default_value = "99")]
+        luac_debug: u8,
         /// Timeout in seconds for boot log capture (default: 15)
         #[arg(long, default_value = "15")]
         timeout: u64,
@@ -790,19 +799,21 @@ fn main() {
                 port,
                 baud,
                 script,
+                luac_debug,
                 reset,
                 reset_sf32,
                 tail_log_secs,
             } => {
                 let script_opt = if script.is_empty() { None } else { Some(script.as_slice()) };
                 let reset_config = reset_sf32.to_reset_config();
-                cmd_flash::cmd_flash_run(&soc, &port, baud, script_opt, progress_step, &cli.format, &reset, reset_config, tail_log_secs)
+                cmd_flash::cmd_flash_run(&soc, &port, baud, script_opt, luac_debug, progress_step, &cli.format, &reset, reset_config, tail_log_secs)
             }
             FlashCommands::Script {
                 soc,
                 port,
                 baud,
                 script,
+                luac_debug,
                 bin,
                 reset,
                 reset_sf32,
@@ -813,16 +824,36 @@ fn main() {
                 } else {
                     let reset_config = reset_sf32.to_reset_config();
                     let script_opt: Option<&[String]> = if script.is_empty() { None } else { Some(script.as_slice()) };
-                    cmd_flash::cmd_flash_partition("script", &soc, &port, script_opt, progress_step, &cli.format, &reset, reset_config, baud)
+                    cmd_flash::cmd_flash_partition("script", &soc, &port, script_opt, luac_debug, progress_step, &cli.format, &reset, reset_config, baud)
                 }
             }
-            FlashCommands::ClearFs { soc, port, reset } => cmd_flash::cmd_flash_partition("clear-fs", &soc, &port, None, progress_step, &cli.format, &reset, None, None),
-            FlashCommands::FlashFs { soc, port, script, reset } => {
-                cmd_flash::cmd_flash_partition("flash-fs", &soc, &port, Some(&script), progress_step, &cli.format, &reset, None, None)
+            FlashCommands::ClearFs { soc, port, reset } => {
+                cmd_flash::cmd_flash_partition("clear-fs", &soc, &port, None, luatos_luadb::LUAC_DEBUG_ALL, progress_step, &cli.format, &reset, None, None)
             }
-            FlashCommands::FlashRes { soc, port, resource, reset } => {
-                cmd_flash::cmd_flash_partition("flash-res", &soc, &port, Some(&resource), progress_step, &cli.format, &reset, None, None)
-            }
+            FlashCommands::FlashFs { soc, port, script, reset } => cmd_flash::cmd_flash_partition(
+                "flash-fs",
+                &soc,
+                &port,
+                Some(&script),
+                luatos_luadb::LUAC_DEBUG_ALL,
+                progress_step,
+                &cli.format,
+                &reset,
+                None,
+                None,
+            ),
+            FlashCommands::FlashRes { soc, port, resource, reset } => cmd_flash::cmd_flash_partition(
+                "flash-res",
+                &soc,
+                &port,
+                Some(&resource),
+                luatos_luadb::LUAC_DEBUG_ALL,
+                progress_step,
+                &cli.format,
+                &reset,
+                None,
+                None,
+            ),
             FlashCommands::ClearKv {
                 soc,
                 port,
@@ -831,7 +862,18 @@ fn main() {
                 reset_sf32,
             } => {
                 let reset_config = reset_sf32.to_reset_config();
-                cmd_flash::cmd_flash_partition("clear-kv", &soc, &port, None, progress_step, &cli.format, &reset, reset_config, baud)
+                cmd_flash::cmd_flash_partition(
+                    "clear-kv",
+                    &soc,
+                    &port,
+                    None,
+                    luatos_luadb::LUAC_DEBUG_ALL,
+                    progress_step,
+                    &cli.format,
+                    &reset,
+                    reset_config,
+                    baud,
+                )
             }
             FlashCommands::ExtFlash {
                 port,
@@ -870,6 +912,7 @@ fn main() {
                 port,
                 baud,
                 script,
+                luac_debug,
                 timeout,
                 keyword,
                 fail_keyword,
@@ -877,7 +920,7 @@ fn main() {
                 let script_opt = if script.is_empty() { None } else { Some(script.as_slice()) };
                 let keywords = resolve_flash_test_keywords(keyword);
                 let fail_keywords = fail_keyword.unwrap_or_default();
-                match cmd_flash::cmd_flash_test(&soc, &port, baud, script_opt, timeout, &keywords, &fail_keywords, progress_step, &cli.format) {
+                match cmd_flash::cmd_flash_test(&soc, &port, baud, script_opt, luac_debug, timeout, &keywords, &fail_keywords, progress_step, &cli.format) {
                     Ok(true) => Ok(()),
                     Ok(false) => {
                         // 保持原 CLI 行为：FAIL 时以退出码 1 结束进程

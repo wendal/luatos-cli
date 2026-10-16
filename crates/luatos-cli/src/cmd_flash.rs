@@ -32,17 +32,17 @@ fn script_folders_present(folders: Option<&[String]>) -> bool {
     folders.is_some_and(|dirs| !dirs.is_empty())
 }
 
-fn build_script_overlay(script_folders: Option<&[String]>, info: &luatos_soc::SocInfo) -> anyhow::Result<Option<Vec<u8>>> {
+fn build_script_overlay(script_folders: Option<&[String]>, info: &luatos_soc::SocInfo, luac_debug: u8) -> anyhow::Result<Option<Vec<u8>>> {
     let Some(folders) = script_folders.filter(|dirs| !dirs.is_empty()) else {
         return Ok(None);
     };
-    Ok(Some(build_script_image_checked(folders, info)?))
+    Ok(Some(build_script_image_checked(folders, info, luac_debug)?))
 }
 
-fn build_script_image_checked(folders: &[String], info: &luatos_soc::SocInfo) -> anyhow::Result<Vec<u8>> {
+fn build_script_image_checked(folders: &[String], info: &luatos_soc::SocInfo, luac_debug: u8) -> anyhow::Result<Vec<u8>> {
     let folder_paths: Vec<std::path::PathBuf> = folders.iter().map(std::path::PathBuf::from).collect();
     let path_refs: Vec<&std::path::Path> = folder_paths.iter().map(|p| p.as_path()).collect();
-    let script_data = luatos_luadb::build::build_script_image(&path_refs, info.script_use_luac(), info.script_bitw(), info.use_bkcrc(), luatos_luadb::LUAC_DEBUG_ALL)?;
+    let script_data = luatos_luadb::build::build_script_image(&path_refs, info.script_use_luac(), info.script_bitw(), info.use_bkcrc(), luac_debug)?;
     check_script_size(script_data.len(), info.script_size())?;
     Ok(script_data)
 }
@@ -184,6 +184,7 @@ pub fn cmd_flash_run(
     port: &str,
     baud: Option<u32>,
     script_folders: Option<&[String]>,
+    luac_debug: u8,
     step: u8,
     format: &OutputFormat,
     reset: &ResetArgs,
@@ -241,7 +242,7 @@ pub fn cmd_flash_run(
             }
         }
         ChipFamily::Ccm4211 => {
-            let overlay = build_script_overlay(script_folders, &info)?;
+            let overlay = build_script_overlay(script_folders, &info, luac_debug)?;
             if overlay.is_some() {
                 event::emit_message(format, "flash.run", MessageLevel::Info, "Applying script overlay from --script folders...")?;
             }
@@ -255,7 +256,7 @@ pub fn cmd_flash_run(
         }
         ChipFamily::Ec718 => {
             // EC718 series: auto-detect boot mode, reboot if needed
-            let overlay = build_script_overlay(script_folders, &info)?;
+            let overlay = build_script_overlay(script_folders, &info, luac_debug)?;
             if overlay.is_some() {
                 event::emit_message(format, "flash.run", MessageLevel::Info, "Applying script overlay from --script folders...")?;
             }
@@ -283,7 +284,7 @@ pub fn cmd_flash_run(
             // --port auto 支持：自动探测下载口（SPRD U2S Diag, VID 0525:PID a4a7）
             let boot_port = luatos_flash::rda8910::auto_enter_boot_mode(Some(port), &on_progress)?;
             // --script 覆盖：全量刷机时把用户脚本写入 LUA 分区（与 EC718/CCM4211 行为一致）
-            let overlay = build_script_overlay(script_folders, &info)?;
+            let overlay = build_script_overlay(script_folders, &info, luac_debug)?;
             if overlay.is_some() {
                 event::emit_message(format, "flash.run", MessageLevel::Info, "Applying script overlay from --script folders...")?;
             }
@@ -348,6 +349,7 @@ pub fn cmd_flash_partition(
     soc: &str,
     port: &str,
     script_folders: Option<&[String]>,
+    luac_debug: u8,
     step: u8,
     format: &OutputFormat,
     reset: &ResetArgs,
@@ -424,7 +426,7 @@ pub fn cmd_flash_partition(
         ChipFamily::Ccm4211 => match op {
             "script" => {
                 let folders = script_folders.expect("script folder required");
-                let script_data = build_script_image_checked(folders, &info)?;
+                let script_data = build_script_image_checked(folders, &info, luac_debug)?;
                 luatos_flash::ccm4211::flash_script_ccm4211(soc, port, &script_data, &on_progress, cancel)?;
             }
             "clear-fs" => {
@@ -438,7 +440,7 @@ pub fn cmd_flash_partition(
         ChipFamily::Ec718 => match op {
             "script" => {
                 let folders = script_folders.expect("script folder required");
-                let script_data = build_script_image_checked(folders, &info)?;
+                let script_data = build_script_image_checked(folders, &info, luac_debug)?;
                 let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress)?;
                 luatos_flash::ec718::flash_script_ec718(soc, &boot_port, &script_data, &on_progress, cancel)?;
             }
@@ -471,7 +473,7 @@ pub fn cmd_flash_partition(
         ChipFamily::Rda8910 => match op {
             "script" => {
                 let folders = script_folders.expect("script folder required");
-                let script_data = build_script_image_checked(folders, &info)?;
+                let script_data = build_script_image_checked(folders, &info, luac_debug)?;
                 // --port auto 支持：自动探测下载口（SPRD U2S Diag, VID 0525:PID a4a7）
                 let boot_port = luatos_flash::rda8910::auto_enter_boot_mode(Some(port), &on_progress)?;
                 luatos_flash::rda8910::flash_script_rda8910(soc, &boot_port, &script_data, &on_progress, cancel)?;
@@ -833,6 +835,7 @@ pub fn cmd_flash_test(
     port: &str,
     baud: Option<u32>,
     script_folders: Option<&[String]>,
+    luac_debug: u8,
     timeout_secs: u64,
     keywords: &[String],
     fail_keywords: &[String],
@@ -868,7 +871,7 @@ pub fn cmd_flash_test(
         }
         ChipFamily::Ccm4211 => {
             let on_progress2 = make_progress_callback(format, "flash.test", step);
-            let overlay = build_script_overlay(script_folders, &info)?;
+            let overlay = build_script_overlay(script_folders, &info, luac_debug)?;
             if overlay.is_some() {
                 event::emit_message(format, "flash.test", MessageLevel::Info, "Applying script overlay from --script folders...")?;
             }
@@ -877,7 +880,7 @@ pub fn cmd_flash_test(
         }
         ChipFamily::Ec718 => {
             let on_progress2 = make_progress_callback(format, "flash.test", step);
-            let overlay = build_script_overlay(script_folders, &info)?;
+            let overlay = build_script_overlay(script_folders, &info, luac_debug)?;
             if overlay.is_some() {
                 event::emit_message(format, "flash.test", MessageLevel::Info, "Applying script overlay from --script folders...")?;
             }
