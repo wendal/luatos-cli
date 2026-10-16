@@ -5,7 +5,7 @@ use std::fmt;
 pub enum ChipFamily {
     Bk72xx,   // Air8101
     Xt804,    // Air6208 / Air101 / Air103 / Air601
-    Ccm4211,  // Air1601 / Air1602
+    Ccm4211,  // Air1601 / Air1602 / Air1603 / Air1604
     Ec718,    // Air8000 / Air780E* / EC7xx / EC618
     Sf32lb58, // SF32LB5x
     Rda8910,  // Air724UG / UIS8910DM
@@ -19,7 +19,7 @@ impl ChipFamily {
         match s.to_ascii_lowercase().as_str() {
             "bk72xx" | "air8101" => ChipFamily::Bk72xx,
             "air6208" | "air101" | "air103" | "air601" => ChipFamily::Xt804,
-            "air1601" | "air1602" | "ccm4211" => ChipFamily::Ccm4211,
+            "air1601" | "air1602" | "air1603" | "air1604" | "ccm4211" => ChipFamily::Ccm4211,
             "ec7xx" | "ec618" | "ec718" | "air8000" | "air780epm" | "air780ehm" | "air780ehv" | "air780ehg" | "air780epv" | "air8000m" => ChipFamily::Ec718,
             "sf32lb58" | "sf32lb52" | "sf32lb55" | "sf32lb56" | "sf32lb57" => ChipFamily::Sf32lb58,
             "uis8910" | "rda8910" | "air724ug" | "8910dm" => ChipFamily::Rda8910,
@@ -75,6 +75,8 @@ mod tests {
         assert_eq!(ChipFamily::from_chip_type("air601"), ChipFamily::Xt804);
         assert_eq!(ChipFamily::from_chip_type("air1601"), ChipFamily::Ccm4211);
         assert_eq!(ChipFamily::from_chip_type("air1602"), ChipFamily::Ccm4211);
+        assert_eq!(ChipFamily::from_chip_type("air1603"), ChipFamily::Ccm4211);
+        assert_eq!(ChipFamily::from_chip_type("air1604"), ChipFamily::Ccm4211);
         assert_eq!(ChipFamily::from_chip_type("ccm4211"), ChipFamily::Ccm4211);
         assert_eq!(ChipFamily::from_chip_type("ec7xx"), ChipFamily::Ec718);
         assert_eq!(ChipFamily::from_chip_type("ec618"), ChipFamily::Ec718);

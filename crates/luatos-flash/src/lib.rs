@@ -3,7 +3,7 @@
 // Currently supports:
 //   - BK7258 (Air8101): native UART ISP protocol
 //   - XT804 (Air6208/Air101): XMODEM-1K flash protocol
-//   - CCM4211 (Air1601/Air1602): ISP + SOC framed download protocol
+//   - CCM4211 (Air1601/Air1602/Air1603/Air1604): ISP + SOC framed download protocol
 //   - RDA8910 (Air724UG/UIS8910DM): FDL1/FDL2 staged download protocol
 //   - Air6201: external SPI flash UART protocol
 //   - SF32LB58 (Air8101 SF32): sftool-lib based protocol, requires a sf32lbXX

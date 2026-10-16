@@ -145,6 +145,8 @@ pub fn chip_from_soc_filename(filename: &str) -> &'static str {
         || lower.contains("ec618")
         || lower.contains("air1601")
         || lower.contains("air1602")
+        || lower.contains("air1603")
+        || lower.contains("air1604")
         || lower.contains("air201")
     {
         "ec7xx"
@@ -174,6 +176,8 @@ pub fn fallback_models() -> Vec<ModelInfo> {
         ("Air780E", "ec7xx"),
         ("Air1601", "ec7xx"),
         ("Air1602", "ec7xx"),
+        ("Air1603", "ec7xx"),
+        ("Air1604", "ec7xx"),
         ("Air201", "ec7xx"),
         ("Air6208", "air6208"),
         ("Air101", "air101"),
@@ -201,6 +205,9 @@ mod tests {
         assert_eq!(chip_from_soc_filename("LuatOS-SoC_Air101.soc"), "air101");
         assert_eq!(chip_from_soc_filename("LuatOS-SoC_V1001_Air1601.soc"), "ec7xx");
         assert_eq!(chip_from_soc_filename("LuatOS-SoC_V1001_Air1602.soc"), "ec7xx");
+        // Air1603/Air1604 与 Air1601/1602 同分支（CCM4211 刷机族）
+        assert_eq!(chip_from_soc_filename("LuatOS-SoC_V1027_Air1603_101.soc"), "ec7xx");
+        assert_eq!(chip_from_soc_filename("LuatOS-SoC_V1027_Air1604_101.soc"), "ec7xx");
         assert_eq!(chip_from_soc_filename("LuatOS-SoC_V1001_Air201.soc"), "ec7xx");
         assert_eq!(chip_from_soc_filename("LuatOS-SoC_V1001_Air780EHM.soc"), "ec7xx");
         // air1016 不应匹配 air101
@@ -254,6 +261,8 @@ mod tests {
         assert!(models.iter().any(|m| m.name == "Air8101"));
         assert!(models.iter().any(|m| m.name == "Air780EPM"));
         assert!(models.iter().any(|m| m.name == "Air1602"));
+        assert!(models.iter().any(|m| m.name == "Air1603"));
+        assert!(models.iter().any(|m| m.name == "Air1604"));
         // 验证 bitw 正确设置
         let air101 = models.iter().find(|m| m.name == "Air101").unwrap();
         assert_eq!(air101.bitw, 64);

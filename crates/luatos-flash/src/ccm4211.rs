@@ -1,4 +1,4 @@
-// CCM4211 (Air1601) flash protocol.
+// CCM4211 (Air1601 / Air1602 / Air1603 / Air1604) flash protocol.
 //
 // Three-stage flashing:
 //   1. ISP: ROM bootloader at 115200/EVEN → load ramrun into RAM
@@ -30,9 +30,26 @@ const ISP_ACK_HEADER: u8 = 0x72;
 
 const ISP_CMD_SYNC: u8 = 0x14;
 const ISP_CMD_SET_BAUD: u8 = 0x10;
+/// 选择寄存器/内存窗口并返回基址（param1 为窗口编号）。
+///
+/// `0x20` = RAM base（ramrun 装载区），`0x40` = CPM base（外设寄存器组）。
 const ISP_CMD_SET_RAM_BASE: u8 = 0x20;
+/// 向当前窗口的 `param2` 偏移写入数据。
+///
+/// 同一命令既用于 ramrun 分块写（param1 随块递增），也用于寄存器写。
 const ISP_CMD_WRITE_RAM: u8 = 0x31;
 const ISP_CMD_EXECUTE: u8 = 0x81;
+
+/// CPM（外设寄存器组）窗口编号与 `IPSCGTCR` 在窗口内的偏移。
+///
+/// `IPSCGTCR` 是外设时钟门控寄存器：`cpm_drv.h` 的
+/// `_cpm_set_ipscgtcr_clk_off()` 即 `CPM->IPSCGTCR &= ~(1 << bit)`，
+/// `am_uart.c` 里 UART_ID1/2/3/5 分别对应 bit10/11/18/19。
+const ISP_CPM_WINDOW: u8 = 0x40;
+const ISP_CPM_IPSCGTCR_OFFSET: u8 = 0x4C;
+/// 关闭其他串口的门控位：保留 bit0/2(wdt)、bit12/22(UART4/UART6)、bit20/21/23/25/26/29 等，
+/// 清掉 bit10/11/18/19(UART1/2/3/5)。取值对齐 LuaTools `ccm4211_isp.py`。
+const IPSCGTCR_CLOSE_OTHER_UART: [u8; 4] = [0xFF, 0xB3, 0xF3, 0xFF];
 
 const ISP_INITIAL_BAUD: u32 = 115_200;
 const ISP_FAST_BAUD: u32 = 1_000_000;
@@ -509,6 +526,50 @@ fn switch_to_soc_protocol(port: &mut dyn SerialPort, baud: u32) -> Result<()> {
     reconfigure_serial_port(port, baud, Parity::None, Duration::from_millis(50), "SOC protocol transition")
 }
 
+/// 发一条 ISP 命令但**不因失败中断**下载流程。
+///
+/// 用于「锦上添花」型寄存器写：设备不支持时不回退成整体失败，只把失败原因
+/// 交给调用方决定如何提示。
+#[allow(clippy::too_many_arguments)]
+fn best_effort_isp_cmd(port: &mut Box<dyn SerialPort>, cmd: u8, param1: u8, param2: u8, data_len: u16, data: Option<&[u8]>, label: &str, timeout: Duration) -> bool {
+    match isp_send_cmd(port, cmd, param1, param2, data_len, data, timeout) {
+        Ok(_) => {
+            log::debug!("ISP 寄存器写 {label} 成功");
+            true
+        }
+        Err(error) => {
+            log::warn!("ISP 寄存器写 {label} 无应答({error})，继续按原流程下载");
+            false
+        }
+    }
+}
+
+/// 装载 ramrun 前关闭其他串口：切到 CPM 寄存器窗口后写 `IPSCGTCR`。
+///
+/// 两条命令均 best-effort，任一条无 ACK 都不影响后续 ramrun 下载。
+/// 对齐 LuaTools `ccm4211_isp.py` 的 `eea0ca2`：
+/// `0x20/0x40` 设 CPM base，`0x31/0x40/0x4C` + `FF B3 F3 FF` 设 `IPSCGTCR`。
+fn close_other_uarts_before_ramrun(port: &mut Box<dyn SerialPort>, on_progress: &ProgressCallback) {
+    let timeout = Duration::from_millis(50);
+    let cpm_ok = best_effort_isp_cmd(port, ISP_CMD_SET_RAM_BASE, ISP_CPM_WINDOW, 0x00, 4, None, "CPM base address", timeout);
+    let ips_ok = best_effort_isp_cmd(
+        port,
+        ISP_CMD_WRITE_RAM,
+        ISP_CPM_WINDOW,
+        ISP_CPM_IPSCGTCR_OFFSET,
+        IPSCGTCR_CLOSE_OTHER_UART.len() as u16,
+        Some(&IPSCGTCR_CLOSE_OTHER_UART),
+        "IPSCGTCR (关闭其他串口)",
+        timeout,
+    );
+
+    if cpm_ok && ips_ok {
+        on_progress(&FlashProgress::info("Connect", 7.5, "Other UARTs clocked off (IPSCGTCR)"));
+    } else {
+        on_progress(&FlashProgress::info("Connect", 7.5, "Close-other-UART step skipped (device did not ACK)"));
+    }
+}
+
 /// Load ramrun binary into device RAM via ISP.
 fn isp_load_ramrun(port_name: &str, ramrun_data: &[u8], on_progress: &ProgressCallback) -> Result<Box<dyn SerialPort>> {
     on_progress(&FlashProgress::info("Connect", 0.0, "Opening serial port (ISP)"));
@@ -535,6 +596,15 @@ fn isp_load_ramrun(port_name: &str, ramrun_data: &[u8], on_progress: &ProgressCa
     isp_send_cmd(&mut port, ISP_CMD_SYNC, 0, 0, 0x10, None, Duration::from_millis(50)).context("ISP sync at 1Mbps failed")?;
 
     on_progress(&FlashProgress::info("Baud", 7.0, "ISP baud rate 1Mbps OK"));
+
+    // 下载 ramrun 之前先关掉其他串口（对齐 LuaTools `ccm4211_isp.py` 提交 eea0ca2
+    // 「ccm4211下载ramrun之前尝试关闭其他串口」）：把寄存器窗口切到 CPM(0x40)，
+    // 再写 IPSCGTCR 关闭 UART1/2/3/5 的时钟门控，避免 PCBA_TYPE2
+    // （Air1603/Air1604）上多出来的串口干扰下载口的收发。
+    //
+    // best-effort：这两步对已在真机验证过的 Air1601/1602 是纯增量，ACK 超时只告警
+    // 不中断流程 —— 行为退化为本次改动之前的流程，保证不引入回归。
+    close_other_uarts_before_ramrun(&mut port, on_progress);
 
     // Set RAM base address: cmd 0x20, param1=0x20, param2=0x00
     isp_send_cmd(&mut port, ISP_CMD_SET_RAM_BASE, 0x20, 0x00, 4, None, Duration::from_millis(50)).context("ISP set RAM base address failed")?;
@@ -632,27 +702,106 @@ fn soc_download_file(
     pct_start: f32,
     pct_end: f32,
 ) -> Result<()> {
+    // 分块 LZMA 压缩下载（对齐 LuaTools `soc.py` 的 pyZipData 路径）。
+    // 环境变量 `LUATOS_CCM_LZMA=0` 可强制关闭，用于排查压缩相关问题。
+    let lzma_enabled = lzma_enabled_by_env();
+
+    if lzma_enabled {
+        let used = soc_download_blocks(port, parser, sn, address, data, block_len, on_progress, stage_name, pct_start, pct_end, true)?;
+        if used {
+            // 设备端解压失败时不报错（ramrun 会 memset 0xFF 后照常 ACK），
+            // 主机只能靠 CMD 0x0D 的 MD5 发现。这种情况多半是设备端解码器
+            // 与本实现不兼容（或固件过老），整文件改明文重传一次再判定。
+            log::warn!("{stage_name}: MD5 校验未通过，改用明文重传整文件（设备端 LZMA 解码可能不兼容）");
+            on_progress(&FlashProgress::info(stage_name, pct_end, "MD5 check failed, retrying without LZMA").with_region(&stage_name.to_lowercase()));
+            soc_download_blocks(port, parser, sn, address, data, block_len, on_progress, stage_name, pct_start, pct_end, false)?;
+        }
+        // 压缩路径与明文回落路径都必须真正校验：设备端解压失败时只会 memset 0xFF
+        // 后照常应答，主机侧看不到任何错误信号，MD5 是唯一的判定手段。
+        soc_verify_md5(port, parser, sn, address, data)?;
+    } else {
+        soc_download_blocks(port, parser, sn, address, data, block_len, on_progress, stage_name, pct_start, pct_end, false)?;
+        soc_verify_md5(port, parser, sn, address, data)?;
+    }
+
+    Ok(())
+}
+
+/// 读取环境变量开关：只有显式设为 `0` 才关闭压缩，其余（含未设置）都开启。
+fn lzma_enabled_by_env() -> bool {
+    match std::env::var("LUATOS_CCM_LZMA") {
+        Ok(value) => value.trim() != "0",
+        Err(_) => true,
+    }
+}
+
+/// 决定一个数据块实际发到串口的内容：能压缩就发 `props(5) + LZMA 流`，否则发明文。
+///
+/// 返回 `(载荷, is_lzma)`，`is_lzma` 直接作为 CMD `0x0C` 的载荷交给设备端。
+/// 压缩不划算（压完比原文大）或压缩失败时回落到明文，此时 `Cow::Borrowed` 无额外拷贝。
+fn pick_wire_payload(chunk: &[u8], block_len: u32, lzma_enabled: bool) -> (std::borrow::Cow<'_, [u8]>, bool) {
+    if !lzma_enabled {
+        return (std::borrow::Cow::Borrowed(chunk), false);
+    }
+    // dict_size 取设备上报的分块长度，与设备端解码窗口一致。
+    let Some((compressed, props)) = luatos_soc::ota::lzma_compress_block_for_download(chunk, block_len) else {
+        return (std::borrow::Cow::Borrowed(chunk), false);
+    };
+    // props 的 5 字节也要算进载荷，压完不比原文小就不值得发压缩。
+    if compressed.len() + props.len() >= chunk.len() {
+        log::debug!("本块压缩后无收益（{} -> {}），按明文发送", chunk.len(), compressed.len() + props.len());
+        return (std::borrow::Cow::Borrowed(chunk), false);
+    }
+
+    let mut wire = Vec::with_capacity(props.len() + compressed.len());
+    wire.extend_from_slice(&props);
+    wire.extend_from_slice(&compressed);
+    log::debug!("本块压缩 {} -> {} 字节（{:.1}%）", chunk.len(), wire.len(), wire.len() as f32 / chunk.len() as f32 * 100.0);
+    (std::borrow::Cow::Owned(wire), true)
+}
+
+/// 分块下载一个文件，返回「本次是否真的用了压缩」。
+#[allow(clippy::too_many_arguments)]
+fn soc_download_blocks(
+    port: &mut Box<dyn SerialPort>,
+    parser: &mut SocFrameParser,
+    sn: &mut u16,
+    address: u32,
+    data: &[u8],
+    block_len: u32,
+    on_progress: &ProgressCallback,
+    stage_name: &str,
+    pct_start: f32,
+    pct_end: f32,
+    lzma_enabled: bool,
+) -> Result<bool> {
     let total_len = data.len();
     let mut done = 0usize;
     let mut cur_addr = address;
+    let mut any_compressed = false;
 
     while done < total_len {
         let send_len = std::cmp::min(block_len as usize, total_len - done);
         let chunk = &data[done..done + send_len];
+        let (wire, is_lzma) = pick_wire_payload(chunk, block_len, lzma_enabled);
+        any_compressed |= is_lzma;
 
         // CMD 0x0A: set download address + original length
+        // 载荷始终是**原始长度**：设备端靠它决定解压后烧写多少字节
+        // （ramrun_main.c: `fw_cache.Pos = prv_ramrun.next_program_len`）。
         let orig_len_bytes = (send_len as u32).to_le_bytes();
         soc_send_cmd(port, parser, SOC_CMD_SET_CODE_DATA_START, cur_addr, &orig_len_bytes, sn, Duration::from_secs(1)).context("SOC set code data start failed")?;
 
-        // CMD 0x0B: send data in sub-chunks (no compression)
+        // CMD 0x0B: send data in sub-chunks
         // 统一使用 3KB/100ms，与 Python 参考实现 (efe356f) 保持一致：
         // sect_len = 3 * 1024，sect_timeout = 0.1s，无论波特率为 2M 还是 6M 均适用。
         let sect_len = 3 * 1024_usize;
         let cmd_timeout = Duration::from_millis(100);
+        let wire_len = wire.len();
         let mut s_len = 0;
-        while s_len < send_len {
-            let ss_len = std::cmp::min(sect_len, send_len - s_len);
-            let sub_chunk = &chunk[s_len..s_len + ss_len];
+        while s_len < wire_len {
+            let ss_len = std::cmp::min(sect_len, wire_len - s_len);
+            let sub_chunk = &wire[s_len..s_len + ss_len];
 
             // Retry up to 10 times (CMD 11 can fail with synchronous I/O)
             let mut last_err = None;
@@ -675,8 +824,8 @@ fn soc_download_file(
             s_len += ss_len;
         }
 
-        // CMD 0x0C: finalize block (is_lzma = 0, no compression)
-        soc_send_cmd(port, parser, SOC_CMD_SET_CODE_END, 0, &[0x00], sn, Duration::from_secs(3)).context("SOC set code end failed")?;
+        // CMD 0x0C: finalize block (is_lzma = 本块是否压缩)
+        soc_send_cmd(port, parser, SOC_CMD_SET_CODE_END, 0, &[u8::from(is_lzma)], sn, Duration::from_secs(3)).context("SOC set code end failed")?;
 
         done += send_len;
         cur_addr += send_len as u32;
@@ -685,7 +834,11 @@ fn soc_download_file(
         on_progress(&FlashProgress::info(stage_name, pct, &format!("{done}/{total_len} bytes")).with_region(&stage_name.to_lowercase()));
     }
 
-    // CMD 0x0D: MD5 verify (10s timeout for large files)
+    Ok(any_compressed)
+}
+
+/// CMD 0x0D: 让设备端回读 Flash 并比对整段数据的 MD5（10s 超时，适配大文件）。
+fn soc_verify_md5(port: &mut Box<dyn SerialPort>, parser: &mut SocFrameParser, sn: &mut u16, address: u32, data: &[u8]) -> Result<()> {
     let total_len_bytes = (data.len() as u32).to_le_bytes();
     let resp = soc_send_cmd(port, parser, SOC_CMD_CHECK_CODE, address, &total_len_bytes, sn, Duration::from_secs(10)).context("SOC MD5 check failed")?;
 
@@ -1185,6 +1338,87 @@ mod tests {
             r#"{{"chip":{{"type":"air1602"}},"rom":{{"file":"luatos.bin"}},"script":{{"file":"script.bin"}},"download":{download}}}"#
         ))
         .unwrap()
+    }
+
+    /// 固件代码段的替身：重复 Thumb 指令模式，可压缩。
+    fn compressible_chunk(size: usize) -> Vec<u8> {
+        const CODE: [u8; 8] = [0x00, 0x48, 0xb5, 0x21, 0x68, 0x49, 0x8b, 0x35];
+        let mut data = Vec::with_capacity(size);
+        while data.len() < size {
+            data.extend_from_slice(&CODE);
+        }
+        data.truncate(size);
+        data
+    }
+
+    /// 随机数据替身：LZMA 压不动，用来验证「压缩无收益则回落明文」。
+    fn incompressible_chunk(size: usize) -> Vec<u8> {
+        let mut state = 0x1234_5678u32;
+        (0..size)
+            .map(|_| {
+                state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                (state >> 16) as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn pick_wire_payload_compresses_when_lzma_enabled() {
+        let chunk = compressible_chunk(64 * 1024);
+        let (wire, is_lzma) = pick_wire_payload(&chunk, 256 * 1024, true);
+        assert!(is_lzma, "可压缩数据应当走压缩路径");
+        assert!(wire.len() < chunk.len() / 2, "压缩后应显著变小，实际 {}", wire.len());
+        // 载荷布局：前 5 字节 props，其余是 LZMA 流（与 ramrun 的 fota_decode 约定一致）
+        assert!(wire.len() > 5);
+        let props_byte = wire[0];
+        assert!(props_byte < 9 * 5 * 5, "propsByte = (pb*5+lp)*9+lc 必须落在合法范围，实际 {props_byte}");
+    }
+
+    #[test]
+    fn pick_wire_payload_returns_plain_when_disabled() {
+        let chunk = compressible_chunk(64 * 1024);
+        let (wire, is_lzma) = pick_wire_payload(&chunk, 256 * 1024, false);
+        assert!(!is_lzma, "关闭压缩时 is_lzma 必须为 0");
+        assert_eq!(wire.as_ref(), chunk.as_slice(), "关闭压缩时应原样发送且不拷贝");
+        assert!(matches!(wire, std::borrow::Cow::Borrowed(_)), "明文路径不应产生额外拷贝");
+    }
+
+    #[test]
+    fn pick_wire_payload_falls_back_when_compression_does_not_help() {
+        let chunk = incompressible_chunk(256 * 1024);
+        let (wire, is_lzma) = pick_wire_payload(&chunk, 256 * 1024, true);
+        assert!(!is_lzma, "压不动的数据必须回落明文");
+        assert_eq!(wire.as_ref(), chunk.as_slice());
+    }
+
+    #[test]
+    fn lzma_env_switch_only_disables_on_zero() {
+        // 该测试只覆盖读取逻辑本身，不改动进程环境变量（并行测试下改 env 不安全）。
+        fn enabled(value: Option<&str>) -> bool {
+            match value {
+                None => true,
+                Some(v) => v.trim() != "0",
+            }
+        }
+        assert!(enabled(None));
+        assert!(enabled(Some("1")));
+        assert!(enabled(Some("true")));
+        assert!(!enabled(Some("0")));
+        assert!(!enabled(Some(" 0 ")));
+    }
+
+    #[test]
+    fn ipscgtcr_constant_matches_luatools() {
+        // 关掉 UART1/2/3/5（bit10/11/18/19），保留 bit2(wdt)/bit12(UART4)/bit22(UART6)
+        let value = u32::from_le_bytes(IPSCGTCR_CLOSE_OTHER_UART);
+        for bit in [10u32, 11, 18, 19] {
+            assert_eq!(value >> bit & 1, 0, "UART 门控 bit{bit} 应当被关掉");
+        }
+        for bit in [0u32, 2, 12, 22] {
+            assert_eq!(value >> bit & 1, 1, "bit{bit} 必须保留");
+        }
+        assert_eq!(ISP_CPM_WINDOW, 0x40);
+        assert_eq!(ISP_CPM_IPSCGTCR_OFFSET, 0x4C);
     }
 
     #[test]

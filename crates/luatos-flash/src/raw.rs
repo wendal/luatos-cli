@@ -26,7 +26,7 @@ use crate::{FlashProgress, ProgressCallback};
 pub enum RawChip {
     /// BK7258 / Air8101（原生 UART ISP）
     Bk7258,
-    /// CCM4211 / Air1601 / Air1602（ISP + SOC 帧协议）
+    /// CCM4211 / Air1601 / Air1602 / Air1603 / Air1604（ISP + SOC 帧协议）
     Ccm4211,
     /// XT804 / Air6208 / Air101 / Air103（ESC 同步 + XMODEM-1K）
     Xt804,

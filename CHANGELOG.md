@@ -16,6 +16,43 @@ All notable changes to this project will be documented in this file.
 
 ### 新增
 
+#### Air1603 / Air1604 刷机支持（CCM4211 族）
+
+- **型号归一化**：`air1603` / `air1604` 并入 `ChipFamily::Ccm4211`，因此
+  `log view-binary --chip`、`device boot/reset --chip`、`guide model`、`project wizard/import`
+  的型号推断全部自动生效（这些入口本来就由 `ChipFamily` 单一分发）
+- **不需要新的刷机分支**：SDK `csdk.lua` 把 `.soc` 内 `info.json` 的 `chip.type` 硬编码为
+  `"air1601"`（Air1601/1602/1603 共用同一次编译产物），所以 `flash run/script/clear-fs/clear-kv/fota`
+  拿 Air1603 的 `.soc` 直接就能刷，本次只是补齐命令行型号字符串与文档
+- **型号文档**：`docs/models/air1601-air1602.md` 重命名为 `air1601-air1604.md`，
+  补充「同 die 不同 PCBA」的说明（SDK `platform_define.h`：
+  `MODEL_AIR1603 = CHIP_68P_16M + PCBA_TYPE2`）
+- **待补**：Air1603 固件尚未上架 CDN（实测 `files.json` 中 `Air1603` 0 命中），
+  Air1604 固件 SDK 侧尚未产出（`efe80c3`「Air1604暂时不生成」），
+  两者目前只能先用本地产物做真机验证
+
+#### CCM4211 下载提速与稳定性（对齐 LuaTools）
+
+- **分块 LZMA 压缩下发**：SOC 协议下载按设备上报的块长（通常 256KB）逐块压缩，
+  `CMD 0x0C` 的 `is_lzma` 按块置位；压缩格式与设备端 ramrun 的 `fota_decode` 输入一致
+  （前 5 字节 props + LZMA 流），复用仓库内置 LZMA SDK，不引入新依赖
+  （`luatos_soc::ota::lzma_compress_block_for_download`，lc=3/lp=0/pb=2/level 9）
+  - 出处：LuaTools `soc.py` 的 `pyZipData` 路径（自 `2816272` 起一直开压缩，本仓库此前从未移植）
+  - 压不划算（`压缩后 + 5 >= 原始长度`）或压缩失败 → 该块自动回落明文，不报错
+  - `CMD 0x0A` 的长度字段**始终是原始长度**（设备端按它决定解压后烧写多少字节）
+- **MD5 失败自动回落**：设备端解压失败时不报错（memset `0xFF` 后照常 ACK），主机只能靠
+  `CMD 0x0D` 的 MD5 发现；因此用压缩下发后校验不过，会自动改明文把该文件整个重传一次再判定
+- **环境变量 `LUATOS_CCM_LZMA=0`** 可强制全程明文，用于排查压缩相关问题
+- **ISP 阶段关闭其他串口**：装载 ramrun 之前先 `CMD 0x20`(Param1=`0x40`) 切到 CPM 窗口，
+  再 `CMD 0x31`(`0x40`,`0x4C`,`FF B3 F3 FF`) 写 `IPSCGTCR`，关掉 UART1/2/3/5 的时钟门控，
+  避免 PCBA_TYPE2 板子上多出的串口干扰下载口
+  - 出处：LuaTools `ccm4211_isp.py` 提交 `eea0ca2`（2026-10-14）
+  - **best-effort**：无 ACK 只记日志并继续，退化为改动前的流程，保证对已验证的
+    Air1601/1602 不引入回归；如需回退，删掉 `close_other_uarts_before_ramrun` 的调用即可
+- **不移植 LuaTools 的「关串口后 close/reopen 到 1M」**：与 CH343 原地切波特率的既定修复冲突
+- 文档：`docs/ccm4211-flash-protocol.md` 补 CPM/IPSCGTCR 命令表与位含义、
+  分块压缩的载荷布局与 256KB 缓冲约束
+
 #### XT804：QFlash 按扇区擦除，并修正命令帧 CRC
 
 - **修正错误结论**：XT804 **支持按 4KB 扇区擦除**。此前依据开源

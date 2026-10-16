@@ -12,11 +12,11 @@ pub struct ModelGuide {
 const GUIDES: &[ModelGuide] = &[
     ModelGuide {
         key: "air1601",
-        aliases: &["air1601", "air1602", "ccm4211"],
-        description: "Air1601/Air1602/CCM4211（SOC 二进制日志，建议 --probe）",
+        aliases: &["air1601", "air1602", "air1603", "air1604", "ccm4211"],
+        description: "Air1601/Air1602/Air1603/Air1604/CCM4211（SOC 二进制日志，建议 --probe）",
         flash_example: "luatos-cli flash run --soc firmware.soc --port COM10",
         log_example: "luatos-cli log view-binary --port COM10 --baud 6000000 --probe",
-        docs_path: "docs\\models\\air1601-air1602.md",
+        docs_path: "docs\\models\\air1601-air1604.md",
     },
     ModelGuide {
         key: "air8000",
@@ -145,6 +145,14 @@ mod tests {
     fn guide_alias_air1602_maps_to_air1601_family() {
         let guide = super::find_model_guide("Air1602").expect("expected guide");
         assert_eq!(guide.key, "air1601");
+    }
+
+    #[test]
+    fn guide_alias_air1603_air1604_map_to_air1601_family() {
+        for model in ["Air1603", "Air1604", "ccm4211"] {
+            let guide = super::find_model_guide(model).expect("expected guide");
+            assert_eq!(guide.key, "air1601", "{model} 应当归到 air1601 族");
+        }
     }
 
     #[test]

@@ -217,7 +217,7 @@ pub fn cmd_flash_run(
 
     if !family_flash_supported(family) {
         anyhow::bail!(
-            "Unsupported chip type: {}. Supported: bk72xx, air6208, air101, air1601, air1602, ec7xx, uis8910",
+            "Unsupported chip type: {}. Supported: bk72xx, air6208, air101, air1601, air1602, air1603, air1604, ec7xx, uis8910",
             info.chip.chip_type
         );
     }
@@ -572,7 +572,7 @@ pub fn cmd_flash_raw_dump(soc: &str, port: &str, addr: &str, len: &str, output: 
         ChipFamily::Bk72xx => RawChip::Bk7258,
         ChipFamily::Ccm4211 => RawChip::Ccm4211,
         other => anyhow::bail!(
-            "flash raw dump 目前仅支持 Air8101(BK7258) 与 Air1601/Air1602(CCM4211)，当前芯片: {} ({other:?})",
+            "flash raw dump 目前仅支持 Air8101(BK7258) 与 Air1601/Air1602/Air1603/Air1604(CCM4211)，当前芯片: {} ({other:?})",
             info.chip.chip_type
         ),
     };
@@ -691,7 +691,7 @@ pub fn cmd_flash_raw(
             )
         }
         other => anyhow::bail!(
-            "flash raw 目前仅支持 Air8101(BK7258)、Air6208/Air101(XT804) 与 Air1601/Air1602(CCM4211)，当前芯片: {} ({other:?})",
+            "flash raw 目前仅支持 Air8101(BK7258)、Air6208/Air101(XT804) 与 Air1601/Air1602/Air1603/Air1604(CCM4211)，当前芯片: {} ({other:?})",
             info.chip.chip_type
         ),
     };

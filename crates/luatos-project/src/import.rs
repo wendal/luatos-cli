@@ -138,6 +138,8 @@ fn detect_chip_from_soc_path(soc_path: &str) -> String {
         || filename.contains("ec618")
         || filename.contains("air1601")
         || filename.contains("air1602")
+        || filename.contains("air1603")
+        || filename.contains("air1604")
         || filename.contains("air201")
     {
         "ec7xx".to_string()
@@ -289,6 +291,9 @@ sys.lua =
         assert_eq!(detect_chip_from_soc_path("LuatOS-SoC_V1001_Air6208.soc"), "air6208");
         assert_eq!(detect_chip_from_soc_path("D:\\path\\to\\LuatOS-SoC_Air101.soc"), "air101");
         assert_eq!(detect_chip_from_soc_path("LuatOS-SoC_V1001_Air1602.soc"), "ec7xx");
+        // Air1603/Air1604 与 Air1601/1602 同分支（CCM4211 刷机族）
+        assert_eq!(detect_chip_from_soc_path("LuatOS-SoC_V1027_Air1603_101.soc"), "ec7xx");
+        assert_eq!(detect_chip_from_soc_path("LuatOS-SoC_V1027_Air1604_101.soc"), "ec7xx");
     }
 
     #[test]
