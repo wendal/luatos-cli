@@ -41,3 +41,5 @@ luatos-cli log view-binary --port auto --baud 921600 --probe
 - 运行时重启：`luatos-cli device reboot --chip air8000`（优先 x.2 DIAG `7E 00 01 7E`，不是进下载模式）
 - 刷机与日志端口可能重枚举，`auto` 更稳妥
 - `flash run --script` 会递归收集所选目录并生成 script.bin，覆盖 SOC 包内自带脚本
+- Air780EPM ROM rev3 需使用新版 EC718M USB AgentBoot（已内置）；旧版会在下载 AgentBoot 后掉线并报 Windows 错误 121。USB 下载使用 921600，与 SOC 中的 UART `force_br` 无关
+- 量产 SOC 可能同时包含 `core.binpkg` 与 `luatos.binpkg`，刷机严格按 `info.json` 中的 `rom.file` 选取底层固件

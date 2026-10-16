@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 修复
+
+#### Air780EPM：修复 USB 烧录失败
+
+- 更新内置 EC718M USB AgentBoot，与 LuaTools 当前使用版本一致，修复 Air780EPM ROM rev3 在下载旧 AgentBoot 后 USB 掉线、报 `Serial write failed` / Windows 错误 121 的问题；USB 下载波特率固定为 921600，不再套用 SOC 中的 UART `force_br`
+- 补齐每个 64KB 数据块之前的镜像选择与校验握手，同步前后清理串口残留数据
+- 修正分区目标：Bootloader 的协议地址为 0，AP/CP 去掉 `0x800000` XIP 基址，完整烧录中的脚本使用 FlexFile 类型与带基址地址，与单独刷脚本路径一致
+- SOC 同时包含 `core.binpkg` 与 `luatos.binpkg` 时，严格使用 `info.json` 的 `rom.file`；脚本同样按 `script.file` 读取，避免受目录枚举顺序影响
+- 新增固件文件选择和 Air780EPM 分区目标回归测试；使用 V2054 Air780EPM 量产 SOC 真机完成四分区全量烧录、设备端校验和复位，启动日志确认 `LuatOS@Air780EPM`、`luatos_helloworld_app 001.999.000` 与持续 `hello world`
+
 ### 新增
 
 #### XT804：QFlash 按扇区擦除，并修正命令帧 CRC

@@ -17,13 +17,14 @@
 - info.json 关键字段:
   - `chip.type = "ec7xx"`
   - `download.script_addr = "48E000"` (脚本区起始地址)
-  - `download.force_br = "1152000"` (强制波特率, 注意不是1152000, 实际USB用921600)
+  - `download.force_br = "1152000"`（UART 参数，USB 下载与 AgentBoot 镜像头均使用 921600）
   - `download.log_br = "2000000"` (日志波特率)
   - `download.bitw = "64"` (位宽)
   - `download.bl_addr = "4000"` (bootloader地址)
 - binpkg 使用 `pkgmode` 格式:
   - 头部偏移 0x1D8, 芯片名在 0x190
   - 每个entry: 364字节元数据 + 数据
+- 按 `rom.file` 选择 binpkg，不能枚举后取任意一个 `.binpkg`；量产包可同时含 `core.binpkg` 与 `luatos.binpkg`
 
 ## USB端口识别
 
@@ -178,14 +179,19 @@ AT+ECRST=delay,799\r\n
 
 | 命令 | 值 | 模式 | 用途 |
 |------|----|------|------|
-| BASE_INFO | 0x00 | DLBOOT | 基本信息 (HEAD=0x00, BL=0x01) |
-| IMAGE_HEAD | 0x01 | DLBOOT | 镜像头 (272字节) |
-| DOWNLOAD_DATA | 0x02 | DLBOOT/AGBOOT | 下载数据块 |
-| DOWNLOAD_END | 0x03 | DLBOOT | 下载结束 |
-| PACKAGE_DATA | 0x05 | AGBOOT | 分区数据块 (64KB) |
-| LPC_BURN_ONE | 0x10 | LPC | 烧录一个分区 |
-| LPC_GET_BURN_STATUS | 0x11 | LPC | 查询烧录状态 |
-| LPC_SYS_RESET | 0x12 | LPC | 系统复位 |
+| GET_VERSION | 0x20 | DLBOOT/AGBOOT | 查询版本 |
+| SEL_IMAGE | 0x21 | DLBOOT/AGBOOT | 选择镜像，响应返回镜像标识 |
+| VERIFY_IMAGE | 0x22 | DLBOOT/AGBOOT | 校验当前镜像状态 |
+| DATA_HEAD | 0x31 | DLBOOT/AGBOOT | 协商本次传输长度 |
+| DOWNLOAD_DATA | 0x32 | DLBOOT/AGBOOT | 下载数据块或 272 字节镜像头 |
+| DONE | 0x3A | DLBOOT/AGBOOT | 当前传输结束 |
+| LPC_FLASH_ERASE | 0x10 | LPC | 擦除 Flash |
+| LPC_BURN_ONE | 0x42 | LPC | 烧录一个分区 |
+| LPC_GET_BURN_STATUS | 0x44 | LPC | 查询烧录状态 |
+| LPC_SYS_RESET | 0xAA | LPC | 系统复位 |
+
+`base_info` 是 `GET_VERSION → SEL_IMAGE → VERIFY_IMAGE` 三条命令的组合。
+LPC 帧的 `order_id/norder_id` 为 `0x4C/0xB3`，与 DLBOOT/AGBOOT 的 `0xCD/0x32` 不同。
 
 ### 校验算法
 
@@ -199,7 +205,7 @@ AT+ECRST=delay,799\r\n
 - AGBOOT模式下, 每个命令+数据后追加4字节CRC32
 
 #### self_def_check1 (用于DLBOOT数据下载)
-- 简单加法校验和: 逐字节累加, 取低16位
+- 简单加法校验和：命令头与数据逐字节累加，按 u32 小端追加
 - 仅用于 DOWNLOAD_DATA 命令
 
 #### SHA256 (用于镜像头)
@@ -208,16 +214,23 @@ AT+ECRST=delay,799\r\n
 ### 镜像头格式 (272字节)
 
 ```
-偏移  长度   内容
-0x00  4     magic: "IMGH" / "AGBT" / "AIMG" / "CIMG" / "FLEX"
-0x04  4     image_len (数据长度)
-0x08  4     image_type (0=boot, 1=cp, 2=app, 3=flash)
-0x0C  4     flags
-0x10  4     baud_rate (新波特率, 0=不改变)
-0x14  4     reserved
-0x18  32    sha256_hash
-0x38  ...   padding to 272 bytes
+偏移  长度   内容（整数均为小端）
+0x00  16    VersionInfo：0x10000001、0x54494D48、0x20180507、0
+0x10  4     imgnum = 1
+0x14  4     CtlInfo：hashtype=0xEE；后两字节为波特率控制值
+0x18  4     rsvd0：AgentBoot 时 pullup_qspi=1，USB 分区烧录时为 0
+0x1C  4     rsvd1
+0x20  32    hashih：先将此字段置零，对完整 272 字节头计算 SHA256
+0x40  4     ImgBody.id：BL/AgentBoot=0x4F424D49、AP=0x444B4249、CP=0x43504249、FlexFile=0x464C5849
+0x44  4     ImgBody.burnaddr
+0x48  4     ImgBody.ldloc = 0x04010000
+0x4C  4     ImgBody.img_size
+0x50  16    保留控制区
+0x60  32    镜像数据 SHA256
+0x80  144   保留区，补零至 272 字节
 ```
+
+波特率非零时，控制值为 `0x8000 + baud / 100`；分区烧录时传 0。
 
 ### 完整烧录序列
 
@@ -235,10 +248,23 @@ AT+ECRST=delay,799\r\n
    c. AGBOOT sync x2 → 进入AGBOOT模式
    d. base_info(HEAD) → 获取信息
    e. image_head(type, baud=0) → 发送分区镜像头
-   f. 循环: AGBOOT sync + package_data(64KB块)
+   f. 循环: AGBOOT sync + base_info(当前镜像类型) + package_data(64KB块)
    g. lpc_get_burn_status → 确认烧录完成
 4. LPC sync → lpc_sys_reset → 复位模组
 ```
+
+每次同步前后清理串口输入缓冲，避免同步回声残留被当作命令响应。
+
+### 分区地址与类型
+
+| 分区 | 镜像类型 | 协议地址 |
+|------|----------|----------|
+| Bootloader | BL | 固定为 0，实际目标位置由镜像自身决定 |
+| AP | AP | binpkg 地址去掉 `0x800000` XIP 基址（若有） |
+| CP（EC7xx） | CP，AP_FLASH | binpkg 地址去掉 `0x800000` XIP 基址（若有） |
+| script | FlexFile，AP_FLASH | `download.script_addr` 加 `0x800000`（若尚未带基址） |
+
+V2054 Air780EPM 示例：BL `0x803000 → 0`、AP `0x882000 → 0x82000`、CP `0x81E000 → 0x1E000`、script `0x2B1000 → 0xAB1000`。
 
 ### EC7xx CP分区特殊处理
 
@@ -255,9 +281,10 @@ AT+ECRST=delay,799\r\n
 ### AgentBoot二进制
 
 - 存放路径: `refs/origin_tools/ec_download/agentboot/`
-- ec718m_usb.bin: 40696字节 (USB模式)
+- ec718m_usb.bin: 50788字节（USB 模式，与当前 LuaTools 版本一致）
 - ec718m_uart.bin: 47890字节 (UART模式)
-- 来源: https://github.com/yuzhan-tech/luatos-tools
+- USB 版本来源：`luatools_py3/_temp/ec_download/product_sets/ec718m_products/common_data/agentboot_usb/agentboot.bin`，SHA256：`0db9e8f3462140c7c368723aa144b976ac033ae45fc6d37db5d959b1c9238019`
+- 旧 USB 版本为 40696 字节，在 Air780EPM ROM rev3 上下载完成后掉线，导致后续 LPC 同步报串口写入错误；仅收到下载完成 ACK 不能证明 AgentBoot 已正常运行
 
 ## 日志输出
 

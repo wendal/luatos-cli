@@ -495,6 +495,7 @@ fn burn_sync(port: &mut dyn SerialPort, sync_type: SyncType, counter: u32) -> Re
     let send_buf = handshake.to_le_bytes();
 
     for _i in 0..50 {
+        port.clear(serialport::ClearBuffer::Input).context("清理同步前串口缓冲失败")?;
         for _j in 0..counter {
             com_write(port, &send_buf)?;
             std::thread::sleep(Duration::from_millis(2));
@@ -514,6 +515,7 @@ fn burn_sync(port: &mut dyn SerialPort, sync_type: SyncType, counter: u32) -> Re
                 }
             }
             if recv_buf == send_buf {
+                port.clear(serialport::ClearBuffer::Input).context("清理同步后串口缓冲失败")?;
                 log::debug!("sync done");
                 return Ok(());
             }
@@ -901,6 +903,10 @@ fn burn_img(
 
     while remain > 0 {
         burn_sync(port, SyncType::AgBoot, 2)?;
+        // 每个数据块都要重新选择并校验镜像，不能直接发送 DATA_HEAD。
+        if package_base_info(port, img_type.identifier(), false)? != 0 {
+            bail!("数据块镜像选择失败: {}", tag);
+        }
 
         let data_len = if remain > MAX_DATA_BLOCK_SIZE { MAX_DATA_BLOCK_SIZE } else { remain };
 
@@ -945,7 +951,10 @@ fn extract_and_parse_soc(soc_path: &str) -> Result<(BinpkgResult, Option<Vec<u8>
     let temppath = tempdir.path();
 
     extract_soc_7z(soc_path, temppath)?;
+    parse_extracted_soc(temppath)
+}
 
+fn parse_extracted_soc(temppath: &std::path::Path) -> Result<(BinpkgResult, Option<Vec<u8>>, u32)> {
     // Read info.json for script_addr
     let info_path = temppath.join("info.json");
     let info: serde_json::Value = serde_json::from_reader(std::fs::File::open(&info_path).context("info.json missing")?).context("Parse info.json")?;
@@ -958,22 +967,13 @@ fn extract_and_parse_soc(soc_path: &str) -> Result<(BinpkgResult, Option<Vec<u8>
 
     let force_br = info.pointer("/download/force_br").and_then(|v| v.as_str()).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
 
-    // Find and parse binpkg
-    let mut binpkg_result: Option<BinpkgResult> = None;
-    let mut script_data: Option<Vec<u8>> = None;
-
-    for entry in std::fs::read_dir(temppath)? {
-        let entry = entry?;
-        let fname = entry.file_name().to_string_lossy().to_string();
-        if fname.ends_with(".binpkg") {
-            let fdata = std::fs::read(entry.path())?;
-            binpkg_result = Some(parse_binpkg(&fdata)?);
-        } else if fname.ends_with("script.bin") {
-            script_data = Some(std::fs::read(entry.path())?);
-        }
-    }
-
-    let mut result = binpkg_result.ok_or_else(|| anyhow::anyhow!("No .binpkg in SOC"))?;
+    // 量产 SOC 可能同时含 core.binpkg 与 luatos.binpkg，必须按元数据选取。
+    let rom_file = info.pointer("/rom/file").and_then(|v| v.as_str()).context("SOC 缺少 rom.file")?;
+    let rom_data = std::fs::read(temppath.join(rom_file)).with_context(|| format!("读取 SOC 固件文件失败: {rom_file}"))?;
+    let mut result = parse_binpkg(&rom_data)?;
+    let script_file = info.pointer("/script/file").and_then(|v| v.as_str()).unwrap_or("script.bin");
+    let script_path = temppath.join(script_file);
+    let script_data = if script_path.exists() { Some(std::fs::read(script_path)?) } else { None };
 
     // Add script entry from SOC if present
     if let Some(sdata) = script_data {
@@ -1006,22 +1006,34 @@ fn entry_to_burn_type(entry: &BinpkgEntry) -> Option<(BurnImageType, u8, u32)> {
     let name = entry.name.to_lowercase();
     let itype = entry.image_type.to_uppercase();
 
-    if name.contains("bootloader") || name.contains("bl") {
-        Some((BurnImageType::Bootloader, STYPE_AP_FLASH, entry.addr))
+    if name == "script" {
+        // 脚本是任意地址数据，走 FlexFile；该协议使用带 AP XIP 基址的地址。
+        Some((BurnImageType::FlexFile, STYPE_AP_FLASH, script_burn_addr(entry.addr)))
+    } else if itype == "BL" || name.contains("bootloader") || name.contains("bl") {
+        // Bootloader 的目标位置由镜像自身决定，协议头的 burnaddr 必须为 0。
+        Some((BurnImageType::Bootloader, STYPE_AP_FLASH, 0))
     } else if itype == "CP" || name.contains("cp") {
-        // EC7xx: CP uses AP_FLASH storage type with adjusted address
-        let mut addr = entry.addr;
-        if addr >= 0x800000 {
-            addr -= 0x800000;
-        }
-        Some((BurnImageType::Cp, STYPE_AP_FLASH, addr))
-    } else if name == "script" || itype == "AP" || name.contains("ap") || name.contains("system") {
-        Some((BurnImageType::Ap, STYPE_AP_FLASH, entry.addr))
+        // EC7xx 的 AP/CP 都写入 AP Flash，镜像地址需去掉 XIP 基址。
+        Some((BurnImageType::Cp, STYPE_AP_FLASH, ap_flash_offset(entry.addr)))
+    } else if itype == "AP" || name.contains("ap") || name.contains("system") {
+        Some((BurnImageType::Ap, STYPE_AP_FLASH, ap_flash_offset(entry.addr)))
     } else if name.contains("flex") || name.contains("rf") {
         let stor = if entry.addr >= 0x800000 { STYPE_AP_FLASH } else { STYPE_CP_FLASH };
         Some((BurnImageType::FlexFile, stor, entry.addr))
     } else {
         Some((BurnImageType::Ap, STYPE_AP_FLASH, entry.addr))
+    }
+}
+
+fn ap_flash_offset(addr: u32) -> u32 {
+    addr.checked_sub(0x800000).unwrap_or(addr)
+}
+
+fn script_burn_addr(addr: u32) -> u32 {
+    if addr < 0x800000 {
+        addr + 0x800000
+    } else {
+        addr
     }
 }
 
@@ -1408,7 +1420,9 @@ pub fn flash_ec718(soc_path: &str, port: &str, on_progress: &ProgressCallback, c
     // Stage 2: Download agentboot
     on_progress(&FlashProgress::info("AgentBoot", 6.0, &format!("Downloading agentboot ({} bytes)...", agentboot.len())));
 
-    burn_agboot(serial.as_mut(), agentboot, force_br)?;
+    // USB 下载使用厂商配置的 921600，不能套用 SOC 中面向 UART 的 force_br。
+    let agent_baud = if port_type == Ec718PortType::Usb { baudrate } else { force_br };
+    burn_agboot(serial.as_mut(), agentboot, agent_baud)?;
 
     on_progress(&FlashProgress::info("AgentBoot", 15.0, "AgentBoot loaded"));
 
@@ -1479,7 +1493,7 @@ pub fn flash_script_ec718(soc_path: &str, port: &str, script_data: &[u8], on_pro
 
     // Script addr in info.json is relative (e.g. 0x48E000).
     // Hardware needs absolute addr with 0x800000 base for AP flash.
-    let burn_addr = if script_addr < 0x800000 { script_addr + 0x800000 } else { script_addr };
+    let burn_addr = script_burn_addr(script_addr);
 
     let port_type = detect_port_type(port);
     let agentboot = match port_type {
@@ -1518,7 +1532,8 @@ pub fn flash_script_ec718(soc_path: &str, port: &str, script_data: &[u8], on_pro
     }
 
     on_progress(&FlashProgress::info("AgentBoot", 10.0, "Downloading agentboot..."));
-    burn_agboot(serial.as_mut(), agentboot, force_br)?;
+    let agent_baud = if port_type == Ec718PortType::Usb { baudrate } else { force_br };
+    burn_agboot(serial.as_mut(), agentboot, agent_baud)?;
 
     if cancel.load(Ordering::Relaxed) {
         bail!("Cancelled");
@@ -1758,6 +1773,59 @@ mod tests {
         buf.extend_from_slice(&meta);
         buf.extend_from_slice(data);
         buf
+    }
+
+    #[test]
+    fn soc_uses_declared_rom_and_script_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let info = serde_json::json!({
+            "rom": {"file": "core.binpkg"},
+            "script": {"file": "app.bin"},
+            "download": {"script_addr": "2B1000", "force_br": "1152000"}
+        });
+        std::fs::write(temp.path().join("info.json"), info.to_string()).unwrap();
+        std::fs::write(temp.path().join("core.binpkg"), build_legacy_binpkg("ap", 0x882000, 4, b"core")).unwrap();
+        std::fs::write(temp.path().join("luatos.binpkg"), build_legacy_binpkg("ap", 0x882000, 5, b"other")).unwrap();
+        std::fs::write(temp.path().join("app.bin"), b"script").unwrap();
+        std::fs::write(temp.path().join("script.bin"), b"wrong").unwrap();
+
+        let (result, _, force_br) = parse_extracted_soc(temp.path()).unwrap();
+        assert_eq!(force_br, 1152000);
+        assert_eq!(result.entries.len(), 2);
+        assert_eq!(result.entries[0].data.as_deref(), Some(b"core".as_slice()));
+        assert_eq!(result.entries[1].name, "script");
+        assert_eq!(result.entries[1].addr, 0x2B1000);
+        assert_eq!(result.entries[1].data.as_deref(), Some(b"script".as_slice()));
+
+        // 指定文件缺失时必须报错，不能静默改刷包内另一份底层固件。
+        std::fs::remove_file(temp.path().join("core.binpkg")).unwrap();
+        let err = parse_extracted_soc(temp.path()).unwrap_err();
+        assert!(err.to_string().contains("core.binpkg"));
+    }
+
+    #[test]
+    fn air780epm_partition_targets_match_vendor_protocol() {
+        // 地址来自 V2054 Air780EPM 量产包，BL/AP/CP 与 FlexFile 的语义不同。
+        for (name, image_type, addr, expected_type, expected_addr) in [
+            ("ap_bootloader", "BL", 0x803000, BurnImageType::Bootloader, 0),
+            ("ap", "AP", 0x882000, BurnImageType::Ap, 0x82000),
+            ("ap", "AP", 0x82000, BurnImageType::Ap, 0x82000),
+            ("cp-demo-flash", "CP", 0x81E000, BurnImageType::Cp, 0x1E000),
+            ("cp-demo-flash", "CP", 0x1E000, BurnImageType::Cp, 0x1E000),
+            ("script", "AP", 0x2B1000, BurnImageType::FlexFile, 0xAB1000),
+            ("script", "AP", 0xAB1000, BurnImageType::FlexFile, 0xAB1000),
+        ] {
+            let entry = BinpkgEntry {
+                name: name.into(),
+                addr,
+                flash_size: 0,
+                image_size: 0,
+                hash: String::new(),
+                image_type: image_type.into(),
+                data: None,
+            };
+            assert_eq!(entry_to_burn_type(&entry), Some((expected_type, STYPE_AP_FLASH, expected_addr)), "{name} @ 0x{addr:X}");
+        }
     }
 
     #[test]
