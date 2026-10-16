@@ -72,6 +72,12 @@ All notable changes to this project will be documented in this file.
 - 新增打包限制与告警：单级文件名 ≤ **64 字节**（超限直接报错），旧 Luadb 资源路径的 31 字节名与 1–1024 文件数限制随格式一并取消；目录最多 **4 层**，第 5 层及更深的文件打印 `Skipped (目录深度超过 4 层): <路径>` 告警后跳过（不报错）
 - 测试与文档：`tests/air8101_resource_download/` 生成脚本与验收脚本改为 romfs 口径（干净镜像 1MiB，帧化后 1114112 字节正好填满临时布局的 1088KiB 资源分区）
 
+#### EC718（Air8000/Air780x）刷机端口识别修复（macOS/Linux）
+
+- 修复 macOS/Linux 下 `serialport` 上报的是 CDC **数据接口号**（3/5/7）而非通信接口号（2/4/6），导致 x.2 SOC/DIAG 口始终匹配失败、回退到首个同 VID 端口（常是用户 AT 口 x.6），`AT+ECRST` + DIAG `7E 00 02 7E` 无法触发下载模式重启，刷机在等待 30s 后超时
+- `find_ec718_port_by_interface` 现同时接受 `target` 与 `target + 1`（通信/数据接口交替占用 2..=7，不会冲突）；macOS 同时暴露 `/dev/cu.*` 与 `/dev/tty.*` 时优先 `cu`（打开不等载波，更稳定）
+- `auto_enter_boot_mode` 将 `--port auto` / 空串归一为「未指定」，避免进入下载模式失败后回退去打开名为 `auto` 的设备
+
 #### SF32LB 系列改为默认关闭（feature 裁剪）
 
 - `luatos-cli` / `luatos-flash` 的 `sf32lb52`~`sf32lb58` feature **默认全部关闭**，默认构建不再编译 SF32LB 刷机代码，`sftool-lib` 依赖变为 optional；release exe 由 9.60 MiB 降至 7.00 MiB（省约 2.6 MiB）

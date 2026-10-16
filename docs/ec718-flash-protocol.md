@@ -36,7 +36,11 @@
   - `x.6` (interface=6) → 用户 AT 口（`AT+RESET` / `AT+ECRST` 兜底；LuatOS 上常无 modem AT 解析）
 - **重要**: COM端口号与USB接口号的映射在不同PC上可能不同!
   例如: COM3=x.6, COM4=x.2, COM5=x.4 (非按COM号顺序)
-- 代码中使用 `serialport` crate 的 `usb_info.interface` 字段匹配
+- 每个 CDC 功能占用一对 USB 接口（**通信接口** + **数据接口**，如 x.2/x.3）。串口设备节点绑定在数据接口上，而各平台 `serialport` 上报的接口号口径不同：
+  - Windows: 上报通信接口号 (2/4/6)
+  - macOS / Linux(libudev): 上报数据接口号 (3/5/7 = 通信接口号 + 1)
+- 代码中 `find_ec718_port_by_interface` 同时接受 `target` 与 `target + 1`，兼容两种口径
+- macOS 同时暴露 `/dev/cu.*` 与 `/dev/tty.*`，应优先打开 `cu`（打开时不等待载波，更稳定）
 
 ### 下载模式 (Boot Mode)
 - **VID:** `0x17D1` (Eigencomm Download)
