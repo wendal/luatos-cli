@@ -1107,25 +1107,49 @@ pub fn try_reboot_to_download(on_progress: &ProgressCallback) -> bool {
 
 /// Find an EC718 port by USB interface number.
 ///
-/// EC718 USB composite device (VID=0x19D1, PID=0x0001) exposes 3 interfaces:
-///   interface 2 (x.2) = SOC log + AT command port
-///   interface 4 (x.4) = AP log port
-///   interface 6 (x.6) = User COM port
+/// EC718 USB composite device (VID=0x19D1, PID=0x0001) exposes 3 CDC functions,
+/// each occupying a pair of USB interfaces (通信接口 + 数据接口):
 ///
-/// COM port numbers do NOT necessarily correspond to interface order,
-/// so we must match by USB interface number, not by sorting COM names.
+/// ```text
+/// x.2/x.3 = SOC log + AT command port
+/// x.4/x.5 = AP log port
+/// x.6/x.7 = User COM port
+/// ```
+///
+/// 串口设备节点实际绑定在 **数据接口** 上，而各平台上报的接口号口径不同：
+///
+/// - Windows: 上报通信接口号 (2/4/6)
+/// - macOS/Linux/libudev: 上报数据接口号，即通信接口号 + 1 (3/5/7)
+///
+/// 因此这里同时接受 `target` 与 `target + 1`。由于通信/数据接口交替占用 2..=7，
+/// 接受 {target, target+1} 不会与其它逻辑口冲突。
+///
+/// COM 端口号与接口序无关，因此必须按 USB interface 匹配，不能按 COM 名排序。
+///
+/// `ec718_iface_matches` 负责将 `serialport` 上报的接口号归一到逻辑口。
 fn find_ec718_port_by_interface(target_interface: u8) -> Option<String> {
     let ports = serialport::available_ports().ok()?;
 
+    // macOS 同时暴露 /dev/cu.* 与 /dev/tty.*：优先 cu（打开时不等待载波，更稳定），
+    // 仅在找不到 cu 时才退回 tty。
+    let mut tty_fallback: Option<String> = None;
     for port in &ports {
         if let serialport::SerialPortType::UsbPort(usb_info) = &port.port_type {
-            if usb_info.vid == LOG_VID && usb_info.pid == LOG_PID && usb_info.interface == Some(target_interface) {
-                return Some(port.port_name.clone());
+            if usb_info.vid == LOG_VID && usb_info.pid == LOG_PID && ec718_iface_matches(usb_info.interface, target_interface) {
+                if port.port_name.contains("cu.") {
+                    return Some(port.port_name.clone());
+                }
+                if tty_fallback.is_none() {
+                    tty_fallback = Some(port.port_name.clone());
+                }
             }
         }
     }
+    if tty_fallback.is_some() {
+        return tty_fallback;
+    }
 
-    // Fallback: if interface info unavailable, return any matching port
+    // Fallback: 接口号完全不可用（老驱动/非 CDC）时返回任意匹配端口
     for port in &ports {
         if let serialport::SerialPortType::UsbPort(usb_info) = &port.port_type {
             if usb_info.vid == LOG_VID && usb_info.pid == LOG_PID {
@@ -1136,6 +1160,16 @@ fn find_ec718_port_by_interface(target_interface: u8) -> Option<String> {
     }
 
     None
+}
+
+/// 判断 `serialport` 上报的 USB 接口号是否对应目标 EC718 逻辑口。
+///
+/// - Windows 上报通信接口号：`reported == target`
+/// - macOS/Linux 上报数据接口号：`reported == target + 1`
+///
+/// 接口号不可用 (`None`) 时返回 `false`，交由调用方走兜底逻辑。
+fn ec718_iface_matches(reported: Option<u8>, target: u8) -> bool {
+    matches!(reported, Some(i) if i == target || i == target.saturating_add(1))
 }
 
 /// Find the EC718 AP log port (running mode, USB interface 4 = x.4).
@@ -1233,7 +1267,16 @@ pub fn wait_for_log_port(timeout_secs: u32) -> Option<String> {
 ///   4. If user-specified port is given, try it directly as UART fallback
 ///
 /// Returns the boot port name to use for flashing.
+///
+/// `user_port` 为 `None`、空串或 `"auto"` 时表示未指定端口，交由自动探测处理。
 pub fn auto_enter_boot_mode(user_port: Option<&str>, on_progress: &ProgressCallback) -> Result<String> {
+    // `--port auto`（或空串）只是「自动探测」的占位符，不能当作真实设备名去打开；
+    // 否则探测失败时会回退到打开名为 "auto" 的串口并报 "No such file or directory"。
+    let user_port = user_port.filter(|p| {
+        let p = p.trim();
+        !p.is_empty() && !p.eq_ignore_ascii_case("auto")
+    });
+
     // If user specified a port, check if it's already a boot mode port
     if let Some(port) = user_port {
         if let Ok(ports) = serialport::available_ports() {
@@ -1682,6 +1725,25 @@ mod tests {
 
         let packed = hd.pack();
         assert_eq!(packed.len(), IMG_HEAD_SIZE);
+    }
+
+    #[test]
+    fn ec718_iface_matches_comm_and_data_interface_numbers() {
+        // Windows 上报通信接口号，macOS/Linux 上报数据接口号（通信号 + 1）
+        assert!(ec718_iface_matches(Some(2), 2), "Windows x.2 通信口");
+        assert!(ec718_iface_matches(Some(3), 2), "macOS x.2 数据口");
+        assert!(ec718_iface_matches(Some(4), 4));
+        assert!(ec718_iface_matches(Some(5), 4));
+        assert!(ec718_iface_matches(Some(6), 6));
+        assert!(ec718_iface_matches(Some(7), 6));
+
+        // 不能把其它逻辑口误判为目标口
+        assert!(!ec718_iface_matches(Some(4), 2), "AP 口不能当作 SOC/DIAG 口");
+        assert!(!ec718_iface_matches(Some(7), 2), "用户 AT 口不能当作 SOC/DIAG 口");
+        assert!(!ec718_iface_matches(Some(5), 2));
+
+        // 接口号不可用 → 走兜底逻辑，不能当作匹配
+        assert!(!ec718_iface_matches(None, 2));
     }
 
     #[test]
