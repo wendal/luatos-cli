@@ -487,7 +487,13 @@ fn build_bk72xx_fota(new_soc: &str, out_path: &Path, script_only: bool) -> Resul
         .ok_or_else(|| anyhow::anyhow!("info.json missing download.script_addr"))?;
     let script_addr = parse_hex_addr(script_addr_str).ok_or_else(|| anyhow::anyhow!("invalid download.script_addr: {script_addr_str}"))? as u32;
 
-    luatos_soc::ota::build_bk72xx_full_fota_new(&cp_bin, &ap_bin, &script_bin, ap_offset, script_addr, out_path)?;
+    // .soc 的 script.bin 是 CRC 帧化形态；全量 FOTA 的 bootloader 会统一再做一次
+    // 帧化写入，所以这里先解帧成裸 luadb 数据，避免升级后脚本区被二次帧化而无法挂载。
+    let framed_script = fs::read(&script_bin).with_context(|| format!("read {}", script_bin.display()))?;
+    let raw_script = tmp.path().join("script_raw.bin");
+    fs::write(&raw_script, luatos_soc::ota::bk72xx_deframe_framed(&framed_script)).with_context(|| format!("write {}", raw_script.display()))?;
+
+    luatos_soc::ota::build_bk72xx_full_fota_new(&cp_bin, &ap_bin, &raw_script, ap_offset, script_addr, out_path)?;
     Ok(())
 }
 

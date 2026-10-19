@@ -332,11 +332,33 @@ fn add_bk_crc_to_data(data: &[u8]) -> Vec<u8> {
     out
 }
 
+/// 去掉 BK CRC 帧化（`add_bk_crc_to_data` 的逆操作）：每 34 物理字节取前 32 字节数据，
+/// 丢弃 2 字节 CRC。尾部不足 34 字节的残帧丢弃（合法帧化输入总是 34 的整数倍）。
+///
+/// 全量 FOTA 的 bootloader 会把包内 cp/ap/脚本统一做一次 CRC 帧化再写入 Flash，
+/// 而 .soc 里的 script.bin 本身已是帧化形态，所以打包前必须先解帧，否则脚本区被
+/// 二次帧化（每 32 字节数据多 2 字节），CPU 窗口按 34 字节解帧后整体漂移，导致
+/// 升级后 /luadb/ 挂载失败（main.lua 找不到）。cp.bin/ap.bin 是裸二进制，无需处理。
+pub fn bk72xx_deframe_framed(framed: &[u8]) -> Vec<u8> {
+    let groups = framed.len() / 34;
+    let mut out = Vec::with_capacity(groups * 32);
+    for g in 0..groups {
+        let start = g * 34;
+        out.extend_from_slice(&framed[start..start + 32]);
+    }
+    out
+}
+
 /// Build BK72XX new-format script-only FOTA package.
 /// Format: 1KB 0xFF + magic(u32 LE) + payload_len(u32 LE) + script_with_crc16
+///
+/// 注意 payload 必须是**单重** CRC 帧化的脚本：设备端 `luat_fota_move_script_from_ota`
+/// 经 `bk_flash_write_fast` 原样写入 AP 尾部（bk_flash 读写均为裸字节，不再加帧），
+/// 写入内容即包内内容。而 .soc 的 script.bin 本身已是帧化形态，若直接对它再
+/// `add_bk_crc_to_data` 会二次帧化，导致升级后 /luadb/ 挂载失败。所以先解帧再帧化一次。
 pub fn build_bk72xx_script_fota_new(script_path: &Path, output_path: &Path) -> Result<()> {
-    let script_raw = fs::read(script_path).with_context(|| format!("read {}", script_path.display()))?;
-    let mut script = trim_trailing_ff(&script_raw).to_vec();
+    let framed = fs::read(script_path).with_context(|| format!("read {}", script_path.display()))?;
+    let mut script = trim_trailing_ff(&bk72xx_deframe_framed(&framed)).to_vec();
     pad_to_alignment_ff(&mut script, 32);
 
     let mut script_with_crc = add_bk_crc_to_data(&script);
@@ -1018,7 +1040,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let script = tmp.path().join("script.bin");
         let out = tmp.path().join("script_fota.bin");
-        fs::write(&script, b"print('hello')\n\xFF\xFF\xFF").unwrap();
+        // 真实输入是 .soc 里 CRC 帧化后的 script.bin，先帧化再交给打包函数
+        fs::write(&script, add_bk_crc_to_data(b"print('hello')\n\xFF\xFF\xFF")).unwrap();
 
         build_bk72xx_script_fota_new(&script, &out).unwrap();
 
@@ -1028,6 +1051,24 @@ mod tests {
         assert_eq!(u32::from_le_bytes(data[1024..1028].try_into().unwrap()), 0x4C554154);
         let payload_len = u32::from_le_bytes(data[1028..1032].try_into().unwrap()) as usize;
         assert_eq!(payload_len, data.len() - 1032);
+        // 解帧后必须还原出原始脚本内容，证明 payload 是单重帧化（二次帧化解帧会漂移）
+        let payload = &data[1032..];
+        let deframed = bk72xx_deframe_framed(payload);
+        assert!(deframed.starts_with(b"print('hello')\n"), "payload must be single-framed");
+    }
+
+    #[test]
+    fn test_bk72xx_deframe_framed_roundtrip() {
+        // 帧化 -> 解帧 必须还原原始数据（含非 32 对齐长度与 0xFF 填充）
+        let raw = b"\x01\x04LuaS framed-payload demo".to_vec();
+        let framed = add_bk_crc_to_data(&raw);
+        assert_eq!(framed.len() % 34, 0, "framed length must be 34-aligned");
+        let deframed = bk72xx_deframe_framed(&framed);
+        assert_eq!(trim_trailing_ff(&deframed), &raw[..]);
+        // 多帧场景: 100 字节原始数据 -> 4 帧 -> 解帧后内容一致
+        let big: Vec<u8> = (0..100u8).map(|i| i.wrapping_mul(7).wrapping_add(3)).collect();
+        let deframed_big = bk72xx_deframe_framed(&add_bk_crc_to_data(&big));
+        assert_eq!(trim_trailing_ff(&deframed_big), &big[..]);
     }
 
     #[test]
