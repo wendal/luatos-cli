@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 新增：HZV 视频转换
+
+- Windows x64 FFmpeg 改为面向 HZV 的源码精简构建，保留常见视频解码、MJPEG/MP3/PCM 输出及必要滤镜，去掉网络、字幕、设备、硬件加速和无关编码器；源码版本与 SHA256、重建脚本均入库。
+- 随包验证改用 12 个固定的合成媒体样本，覆盖 H.264/HEVC/MPEG-4/VP8/VP9/ProRes/WMV 等输入，精简程序无需携带测试图生成器。
+- 新增 `hzv probe` / `hzv convert` / `hzv verify`，提供 AirMaster HZV v1 兼容的 Rust 原生封装与校验，无需 Python。
+- 支持分辨率、整数/分数帧率、JPEG 质量、三种画面适配、MP3/PCM/无音频、片段截取、结尾策略、循环提示、包 CRC32 与 SHA256。
+- 发布包自带静态 FFmpeg、许可证与来源说明，构建自动复制资源，使用时不依赖源码仓库、PATH、Python 或网络；`--ffmpeg` / `LUATOS_FFMPEG` 仍可覆盖。
+- 各平台发布流程按固定地址与 SHA256 准备资源，资源缺失时停止发布；新增脱离源码目录、空 PATH 环境的实际转码验证，macOS universal 包按运行架构选择原生 FFmpeg。
+- 校验无需外部工具；转换成功并通过深度校验后才原子保存输出。
+- 支持全局 text/json/jsonl 输出，新增 `luatos-hzv` 库、容器与媒体解析测试及 `docs/hzv.md` 使用说明。
+
 ### 修复
 
 #### Air780EPM：修复 USB 烧录失败

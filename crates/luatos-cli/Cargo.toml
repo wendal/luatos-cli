@@ -28,6 +28,7 @@ luatos-project = { path = "../luatos-project" }
 luatos-log = { path = "../luatos-log" }
 luatos-resource = { path = "../luatos-resource" }
 luatos-testcase = { path = "../luatos-testcase" }
+luatos-hzv = { path = "../luatos-hzv" }
 md5 = "0.7"
 clap.workspace = true
 serde.workspace = true

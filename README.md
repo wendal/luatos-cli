@@ -18,12 +18,20 @@ LuatOS 命令行工具集（纯 Rust）——刷机、日志、项目管理、�
 - **日志系统**：文本 / 二进制日志查看、录制、解析，支持智能诊断；`--port auto` 按 USB 接口号自动识别 EC718 / RDA8910 的 log 口；`log view-binary` 按实际打开的口选 0x7E（EC718 USB CDC）或 0xA5（CH340 / SOC UART），不因同机插着 4G USB 而误切协议
 - **项目与构建**：项目向导、配置管理、Lua 依赖分析、luac/LuaDB 构建
 - **AI 友好输出**：全局 `--format text|json|jsonl`
+- **HZV 视频转换**：`hzv probe/convert/verify`，兼容 AirMaster HZV v1，支持 MJPEG + MP3/PCM、分辨率/帧率调整、画面适配、音视频交错索引与 CRC32 校验；Rust 原生封装，发布包自带 FFmpeg，运行时无需安装 Python/FFmpeg，详见 [HZV 使用说明](docs/hzv.md)
 
 ## 安装
 
 ```bash
 cargo build --release -p luatos-cli
 ```
+
+HZV 使用的 FFmpeg 随发布包提供，请保留可执行文件旁的 `tools` 目录。自行构建时，
+Windows x64 请拉取本项目 Git LFS 资源；其他平台先按 [随包资源说明](vendor/ffmpeg/README.md)
+准备对应平台 FFmpeg，构建时自动复制到产物旁。
+
+Windows x64 随包 FFmpeg 使用 HZV 精简构建，保留常见视频解码与 MJPEG/MP3/PCM 输出；
+AV1 等未启用编码可通过 `--ffmpeg` 使用完整 FFmpeg，具体范围见 [HZV 使用说明](docs/hzv.md)。
 
 SF32LB 系列刷机功能默认不编译（可省约 2.6MB），需要时显式开启：
 
@@ -99,6 +107,11 @@ python3 crates/luatos-log-ffi/examples/python/demo_ctypes.py
 ## 快速开始
 
 ```bash
+# 普通视频转 HZV（直接使用随包 FFmpeg）
+luatos-cli hzv probe input.mp4
+luatos-cli hzv convert input.mp4 -o output.hzv --width 480 --height 320 --fps 10
+luatos-cli hzv verify output.hzv --deep
+
 # 查看型号二级帮助
 luatos-cli guide models
 luatos-cli guide model --model air1601

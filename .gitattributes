@@ -4,3 +4,11 @@
 *.bin filter=lfs diff=lfs merge=lfs -text
 *.png filter=lfs diff=lfs merge=lfs -text
 *.img -text
+# 第三方声明按上游原始字节保留，避免换行转换影响锁定的 SHA256。
+# 上游声明保留原始缩进和换行，避免空白检查要求改写原文及其 SHA256。
+/vendor/ffmpeg/**/FFmpeg-*.txt -text -whitespace
+/vendor/ffmpeg/GPL-3.0.txt -text -whitespace
+*.mp4 -text
+/scripts/testdata/media/* -text
+# shell 构建脚本必须保持 LF，避免 Windows checkout 后 Bash 无法解析。
+*.sh text eol=lf

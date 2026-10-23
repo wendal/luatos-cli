@@ -1002,6 +1002,7 @@ dependencies = [
  "indicatif",
  "log",
  "luatos-flash",
+ "luatos-hzv",
  "luatos-log",
  "luatos-luadb",
  "luatos-project",
@@ -1041,6 +1042,18 @@ dependencies = [
  "walkdir",
  "windows-sys 0.59.0",
  "zip",
+]
+
+[[package]]
+name = "luatos-hzv"
+version = "1.12.0"
+dependencies = [
+ "anyhow",
+ "crc32fast",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]

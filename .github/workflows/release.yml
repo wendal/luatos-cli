@@ -10,6 +10,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  LUATOS_REQUIRE_BUNDLED_FFMPEG: "1"
 
 jobs:
   build:
@@ -49,7 +50,12 @@ jobs:
             target
           key: release-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build release
+      - name: Prepare bundled FFmpeg
+        # 下载只发生在构建期，程序使用时无需网络或源码仓库。
+        # prepare 会校验锁定的 SHA256，并保留第三方许可证与来源声明。
+        run: python scripts/prepare_ffmpeg.py --target ${{ matrix.target }}
+
+      - name: Compile release
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package (Windows)
@@ -57,6 +63,9 @@ jobs:
         run: |
           mkdir dist
           Copy-Item "target/${{ matrix.target }}/release/luatos-cli.exe" "dist/"
+          Copy-Item -Recurse "target/${{ matrix.target }}/release/tools" "dist/tools"
+          python scripts/smoke_hzv_bundle.py --bin dist/luatos-cli.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Compress-Archive -Path "dist/*" -DestinationPath "luatos-cli-${{ matrix.target }}.zip"
 
       - name: Package (Linux)
@@ -64,6 +73,8 @@ jobs:
         run: |
           mkdir dist
           cp target/${{ matrix.target }}/release/luatos-cli dist/
+          cp -R target/${{ matrix.target }}/release/tools dist/tools
+          python scripts/smoke_hzv_bundle.py --bin dist/luatos-cli
           tar czf luatos-cli-${{ matrix.target }}.tar.gz -C dist .
 
       - name: Upload artifact
@@ -95,6 +106,8 @@ jobs:
 
       - name: Build release (x86_64 + aarch64)
         run: |
+          python scripts/prepare_ffmpeg.py --target x86_64-apple-darwin
+          python scripts/prepare_ffmpeg.py --target aarch64-apple-darwin
           cargo build --release --target x86_64-apple-darwin
           cargo build --release --target aarch64-apple-darwin
 
@@ -107,6 +120,12 @@ jobs:
             -output dist/universal/luatos-cli
           cp target/x86_64-apple-darwin/release/luatos-cli dist/x86_64/
           cp target/aarch64-apple-darwin/release/luatos-cli dist/aarch64/
+          cp -R target/x86_64-apple-darwin/release/tools dist/x86_64/tools
+          cp -R target/aarch64-apple-darwin/release/tools dist/aarch64/tools
+          mkdir -p dist/universal/tools/ffmpeg
+          cp -R target/x86_64-apple-darwin/release/tools/ffmpeg dist/universal/tools/ffmpeg/x86_64
+          cp -R target/aarch64-apple-darwin/release/tools/ffmpeg dist/universal/tools/ffmpeg/aarch64
+          python scripts/smoke_hzv_bundle.py --bin dist/universal/luatos-cli
           tar czf luatos-cli-universal-apple-darwin.tar.gz -C dist/universal .
           tar czf luatos-cli-x86_64-apple-darwin.tar.gz -C dist/x86_64 .
           tar czf luatos-cli-aarch64-apple-darwin.tar.gz -C dist/aarch64 .
