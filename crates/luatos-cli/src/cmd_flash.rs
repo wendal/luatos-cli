@@ -270,11 +270,17 @@ pub fn cmd_flash_run(
             }
             let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress)?;
             luatos_flash::ec718::flash_ec718(soc, &boot_port, &on_progress, cancel, overlay.as_deref())?;
+            let chip_name = if matches!(info.chip.chip_type.to_ascii_lowercase().as_str(), "ec618" | "air780e" | "air780eg") {
+                "ec618"
+            } else {
+                family.name()
+            };
             match format {
                 OutputFormat::Text => {
-                    println!("EC718 flash completed successfully.");
+                    let display_name = if chip_name == "ec618" { "EC618" } else { "EC718" };
+                    println!("{display_name} flash completed successfully.");
                 }
-                OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": family.name() }))?,
+                OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": chip_name }))?,
             }
         }
         #[cfg(sf32lb)]
