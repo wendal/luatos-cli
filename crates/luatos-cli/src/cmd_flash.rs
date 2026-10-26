@@ -211,6 +211,20 @@ pub fn cmd_flash_run(
 
     let on_progress = make_progress_callback(format, "flash.run", step);
 
+    if std::path::Path::new(soc).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("binpkg")) {
+        anyhow::ensure!(
+            script_folders.is_none_or(|folders| folders.is_empty()),
+            "裸 binpkg 不支持 --script；请使用 SOC 固件烧录 Lua 脚本"
+        );
+        anyhow::ensure!(tail_log_secs == 0, "AT binpkg 不支持 --tail-log-secs，请通过 AT 口检查运行状态");
+        anyhow::ensure!(baud.is_none() && !reset.rts_reset, "裸 binpkg 使用自动 USB 下载配置，不支持 --baud 或 --rts-reset");
+        luatos_flash::ec718::flash_binpkg(soc, port, &on_progress, cancel)?;
+        if matches!(format, OutputFormat::Text) {
+            println!("EC716S binpkg 烧录完成。");
+        }
+        return event::emit_result(format, "flash.run", "ok", serde_json::json!({"chip":"ec716s", "firmware_format":"binpkg"}));
+    }
+
     // Detect chip type from SOC info.json
     let info = luatos_soc::read_soc_info(soc)?;
     let family = info.family();
@@ -272,12 +286,18 @@ pub fn cmd_flash_run(
             luatos_flash::ec718::flash_ec718(soc, &boot_port, &on_progress, cancel, overlay.as_deref())?;
             let chip_name = if matches!(info.chip.chip_type.to_ascii_lowercase().as_str(), "ec618" | "air780e" | "air780eg") {
                 "ec618"
+            } else if matches!(info.chip.chip_type.to_ascii_lowercase().as_str(), "ec716s" | "air780el" | "air780et") {
+                "ec716s"
             } else {
                 family.name()
             };
             match format {
                 OutputFormat::Text => {
-                    let display_name = if chip_name == "ec618" { "EC618" } else { "EC718" };
+                    let display_name = match chip_name {
+                        "ec618" => "EC618",
+                        "ec716s" => "EC716S",
+                        _ => "EC718",
+                    };
                     println!("{display_name} flash completed successfully.");
                 }
                 OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": chip_name }))?,
@@ -1224,6 +1244,31 @@ pub fn print_script_result(format: &OutputFormat) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binpkg_rejects_soc_only_options_before_reading_file_or_opening_port() {
+        let folders = vec!["lua".to_string()];
+        for (scripts, tail_secs, baud, expected) in [
+            (Some(folders.as_slice()), 0, None, "--script"),
+            (None, 1, None, "--tail-log-secs"),
+            (None, 0, Some(115200), "--baud"),
+        ] {
+            let error = cmd_flash_run(
+                "missing.binpkg",
+                "NO_SERIAL_PORT",
+                baud,
+                scripts,
+                99,
+                10,
+                &OutputFormat::Text,
+                &ResetArgs::default(),
+                None,
+                tail_secs,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains(expected), "{error:#}");
+        }
+    }
 
     fn write_zero_capacity_soc(dir: &std::path::Path, chip: &str) -> std::path::PathBuf {
         let path = dir.join(format!("{chip}.soc"));

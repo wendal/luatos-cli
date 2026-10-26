@@ -31,11 +31,14 @@ const AGENTBOOT_EC718M_USB: &[u8] = include_bytes!("../../../refs/origin_tools/e
 const AGENTBOOT_EC718M_UART: &[u8] = include_bytes!("../../../refs/origin_tools/ec_download/agentboot/ec718m_uart.bin");
 const AGENTBOOT_EC618_USB: &[u8] = include_bytes!("../../../refs/origin_tools/ec_download/image_ec618/agentboot_usb/agentboot.bin");
 const AGENTBOOT_EC618_UART: &[u8] = include_bytes!("../../../refs/origin_tools/ec_download/image_ec618/agentboot_uart/agentboot.bin");
+const AGENTBOOT_EC716_USB: &[u8] = include_bytes!("../../../refs/origin_tools/ec_download/product_sets/ec716_products/common_data/agentboot_usb/agentboot.bin");
+const AGENTBOOT_EC716_UART: &[u8] = include_bytes!("../../../refs/origin_tools/ec_download/product_sets/ec716_products/common_data/agentboot_uart/agentboot.bin");
 
 /// EC618 与 EC718 共用下载协议，但 AgentBoot 与 CP Flash 拓扑不同。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EigencommChip {
     Ec618,
+    Ec716s,
     Ec718,
 }
 
@@ -43,6 +46,8 @@ impl EigencommChip {
     fn from_soc(chip_type: &str, package_chip: &str) -> Self {
         if matches!(chip_type.to_ascii_lowercase().as_str(), "ec618" | "air780e" | "air780eg") || package_chip.to_ascii_uppercase().starts_with("EC618") {
             Self::Ec618
+        } else if matches!(chip_type.to_ascii_lowercase().as_str(), "ec716s" | "air780el" | "air780et") || package_chip.eq_ignore_ascii_case("EC716S_PRD") {
+            Self::Ec716s
         } else {
             Self::Ec718
         }
@@ -51,6 +56,7 @@ impl EigencommChip {
     fn name(self) -> &'static str {
         match self {
             Self::Ec618 => "EC618",
+            Self::Ec716s => "EC716S",
             Self::Ec718 => "EC718",
         }
     }
@@ -69,6 +75,8 @@ impl SocFirmware {
         match (self.chip, port_type) {
             (EigencommChip::Ec618, Ec718PortType::Usb) => self.usb_agentboot.as_deref().unwrap_or(AGENTBOOT_EC618_USB),
             (EigencommChip::Ec618, Ec718PortType::Uart) => AGENTBOOT_EC618_UART,
+            (EigencommChip::Ec716s, Ec718PortType::Usb) => AGENTBOOT_EC716_USB,
+            (EigencommChip::Ec716s, Ec718PortType::Uart) => AGENTBOOT_EC716_UART,
             (EigencommChip::Ec718, Ec718PortType::Usb) => AGENTBOOT_EC718M_USB,
             (EigencommChip::Ec718, Ec718PortType::Uart) => AGENTBOOT_EC718M_UART,
         }
@@ -469,6 +477,7 @@ pub fn parse_binpkg(fdata: &[u8]) -> Result<BinpkgResult> {
 
     // Detect format: pkgmode vs legacy
     if fsize > 0x3F && &fdata[0x38..0x3F] == PKGMODE_MAGIC {
+        anyhow::ensure!(fsize >= 0x1D8, "binpkg pkgmode 头部不完整");
         foffset = 0x1D8;
         let raw = &fdata[0x190..std::cmp::min(0x1A0, fsize)];
         chip_name = raw
@@ -1074,7 +1083,7 @@ fn entry_to_burn_type(entry: &BinpkgEntry, chip: EigencommChip) -> Option<(BurnI
         match chip {
             // EC618 使用独立 CP Flash，命令载荷必须携带 CP_FLASH_MARKER。
             EigencommChip::Ec618 => Some((BurnImageType::Cp, STYPE_CP_FLASH, entry.addr)),
-            EigencommChip::Ec718 => Some((BurnImageType::Cp, STYPE_AP_FLASH, ap_flash_offset(entry.addr))),
+            EigencommChip::Ec718 | EigencommChip::Ec716s => Some((BurnImageType::Cp, STYPE_AP_FLASH, ap_flash_offset(entry.addr))),
         }
     } else if itype == "AP" || name.contains("ap") || name.contains("system") {
         Some((BurnImageType::Ap, STYPE_AP_FLASH, ap_flash_offset(entry.addr)))
@@ -1477,7 +1486,60 @@ pub fn flash_ec718(soc_path: &str, port: &str, on_progress: &ProgressCallback, c
         overlay_script_entry(&mut firmware.binpkg, overlay, script_addr)?;
         on_progress(&FlashProgress::info("Preparing", 0.5, &format!("Using --script overlay ({} bytes)", overlay.len())));
     }
+    flash_firmware(&firmware, port, on_progress, cancel)
+}
 
+/// 校验裸 binpkg 后进入下载模式；当前仅开放已经适配的 EC716S 产品。
+pub fn flash_binpkg(path: &str, port: &str, on_progress: &ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
+    let data = std::fs::read(path).with_context(|| format!("读取 binpkg 失败: {path}"))?;
+    let firmware = prepare_binpkg(&data)?;
+    on_progress(&FlashProgress::info("Preparing", 0.0, "EC716S binpkg 产品、分区和 SHA256 校验通过"));
+    let boot_port = auto_enter_boot_mode(Some(port), on_progress)?;
+    flash_firmware(&firmware, &boot_port, on_progress, cancel)
+}
+
+fn prepare_binpkg(data: &[u8]) -> Result<SocFirmware> {
+    anyhow::ensure!(
+        data.get(8..12) == Some(b"bpkg") && data.get(0x38..0x3f) == Some(b"pkgmode"),
+        "不是受支持的 pkgmode binpkg 固件"
+    );
+    let binpkg = parse_binpkg(data)?;
+    anyhow::ensure!(binpkg.chip == "EC716S_PRD", "裸 binpkg 当前仅支持 EC716S_PRD，实际产品: {}", binpkg.chip);
+    anyhow::ensure!(binpkg.entries.len() == 3, "EC716S binpkg 必须包含且仅包含 BL/AP/CP 三个镜像");
+    let mut expected_size = 0x1D8usize;
+    let mut ranges = Vec::new();
+    for image_type in ["BL", "AP", "CP"] {
+        let entries: Vec<_> = binpkg.entries.iter().filter(|entry| entry.image_type == image_type).collect();
+        anyhow::ensure!(entries.len() == 1, "binpkg 缺少或重复 {image_type} 镜像");
+        let entry = entries[0];
+        let image = entry.data.as_deref().context("binpkg 镜像数据被截断")?;
+        anyhow::ensure!(!image.is_empty() && image.len() == entry.image_size as usize, "{} 镜像长度非法", entry.name);
+        anyhow::ensure!(entry.image_size <= entry.flash_size, "{} 镜像超出声明分区", entry.name);
+        let start = ap_flash_offset(entry.addr);
+        let end = start.checked_add(entry.flash_size).context("binpkg 分区地址溢出")?;
+        anyhow::ensure!(end <= 0x200000, "{} 分区超出 EC716S 2MiB Flash", entry.name);
+        for &(other_start, other_end) in &ranges {
+            anyhow::ensure!(start >= other_end || end <= other_start, "{} 与其他分区重叠", entry.name);
+        }
+        ranges.push((start, end));
+        let hash = format!("{:x}", Sha256::digest(image));
+        anyhow::ensure!(hash == entry.hash, "{} SHA256 校验失败", entry.name);
+        expected_size = expected_size.checked_add(ENTRY_META_SIZE + image.len()).context("binpkg 长度溢出")?;
+    }
+    anyhow::ensure!(expected_size == data.len(), "binpkg 存在未解析的尾部数据");
+    anyhow::ensure!(
+        binpkg.entries.iter().map(|entry| entry.image_type.as_str()).eq(["BL", "AP", "CP"]),
+        "binpkg 镜像顺序必须为 BL/AP/CP"
+    );
+    Ok(SocFirmware {
+        binpkg,
+        chip: EigencommChip::Ec716s,
+        force_br: 115200,
+        usb_agentboot: None,
+    })
+}
+
+fn flash_firmware(firmware: &SocFirmware, port: &str, on_progress: &ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
     let binpkg = &firmware.binpkg;
     log::info!(
         "{} package: {}, {} entries, force_br={}",
@@ -1746,6 +1808,64 @@ pub fn flash_ec718_exe(_soc_path: &str, _port: &str, _on_progress: &ProgressCall
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ec716_test_package() -> Vec<u8> {
+        let mut package = vec![0; 0x1D8];
+        package[8..12].copy_from_slice(b"bpkg");
+        package[0x38..0x3f].copy_from_slice(b"pkgmode");
+        let product = b"EC716S_PRD";
+        package[0x190..0x190 + product.len()].copy_from_slice(product);
+        for (name, kind, addr) in [("ap_bootloader", "BL", 0x803000), ("ap", "AP", 0x874000), ("cp-demo-flash", "CP", 0x81a000)] {
+            let mut entry = build_legacy_binpkg(name, addr, 4, b"code");
+            let hash = format!("{:x}", Sha256::digest(b"code"));
+            entry[0x34 + 80..0x34 + 144].copy_from_slice(hash.as_bytes());
+            entry[0x34 + 336..0x34 + 338].copy_from_slice(kind.as_bytes());
+            package.extend_from_slice(&entry[0x34..]);
+        }
+        package
+    }
+
+    #[test]
+    fn ec716_binpkg_selects_dedicated_agent_and_ap_flash_for_cp() {
+        let firmware = prepare_binpkg(&ec716_test_package()).unwrap();
+        assert_eq!(firmware.chip, EigencommChip::Ec716s);
+        assert_eq!(firmware.agentboot(Ec718PortType::Usb), AGENTBOOT_EC716_USB);
+        assert_eq!(
+            entry_to_burn_type(&firmware.binpkg.entries[0], firmware.chip),
+            Some((BurnImageType::Bootloader, STYPE_AP_FLASH, 0))
+        );
+        assert_eq!(
+            entry_to_burn_type(&firmware.binpkg.entries[1], firmware.chip),
+            Some((BurnImageType::Ap, STYPE_AP_FLASH, 0x74000))
+        );
+        assert_eq!(
+            entry_to_burn_type(&firmware.binpkg.entries[2], firmware.chip),
+            Some((BurnImageType::Cp, STYPE_AP_FLASH, 0x1a000))
+        );
+    }
+
+    #[test]
+    fn ec716_binpkg_rejects_invalid_images_before_hardware_access() {
+        let good = ec716_test_package();
+        let mut corrupt = good.clone();
+        *corrupt.last_mut().unwrap() ^= 1;
+        assert!(prepare_binpkg(&corrupt).unwrap_err().to_string().contains("SHA256"));
+        assert!(prepare_binpkg(&good[..good.len() - 1]).is_err());
+        let mut extra = good.clone();
+        extra.push(0);
+        assert!(prepare_binpkg(&extra).is_err());
+        let mut wrong_chip = good.clone();
+        wrong_chip[0x194] = b'8';
+        assert!(prepare_binpkg(&wrong_chip).is_err());
+        let mut overlap = good.clone();
+        let second_addr = 0x1d8 + ENTRY_META_SIZE + 4 + 64;
+        overlap[second_addr..second_addr + 4].copy_from_slice(&0x803000u32.to_le_bytes());
+        assert!(prepare_binpkg(&overlap).unwrap_err().to_string().contains("重叠"));
+        let mut out_of_range = good.clone();
+        out_of_range[second_addr..second_addr + 4].copy_from_slice(&0xA00000u32.to_le_bytes());
+        assert!(prepare_binpkg(&out_of_range).is_err());
+        assert!(parse_binpkg(&good[..0x40]).is_err());
+    }
 
     #[test]
     fn test_crc8_maxim() {

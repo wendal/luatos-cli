@@ -225,8 +225,8 @@ impl SignalLevel {
 enum FlashCommands {
     /// Full firmware flash (ROM + optional script)
     Run {
-        /// Path to .soc file
-        #[arg(long)]
+        /// 固件路径：SOC 或 EC716S binpkg（也可使用 --binpkg）
+        #[arg(long, visible_alias = "binpkg")]
         soc: String,
         /// Serial port (e.g. COM6)
         #[arg(long)]
@@ -1120,6 +1120,19 @@ fn main() {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn flash_run_accepts_binpkg_alias() {
+        let cli = Cli::try_parse_from(["luatos-cli", "flash", "run", "--binpkg", "at.binpkg", "--port", "auto"]).unwrap();
+        let Commands::Flash {
+            action: FlashCommands::Run { soc, .. },
+            ..
+        } = cli.command
+        else {
+            panic!("应解析为全量刷机命令");
+        };
+        assert_eq!(soc, "at.binpkg");
+    }
 
     #[test]
     fn flash_luac_debug_accepts_supported_modes_and_defaults_to_all() {

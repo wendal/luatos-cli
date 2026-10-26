@@ -11,6 +11,14 @@ pub struct ModelGuide {
 
 const GUIDES: &[ModelGuide] = &[
     ModelGuide {
+        key: "ec716s",
+        aliases: &["ec716s", "air780el", "air780et"],
+        description: "EC716S / Air780EL / Air780ET（USB 原生刷写 AT binpkg，运行后通过 AT 口确认版本）",
+        flash_example: "luatos-cli flash run --binpkg firmware.binpkg --port auto",
+        log_example: "luatos-cli serial list",
+        docs_path: "docs\\models\\ec716s.md",
+    },
+    ModelGuide {
         key: "air1601",
         aliases: &["air1601", "air1602", "air1603", "air1604", "ccm4211"],
         description: "Air1601/Air1602/Air1603/Air1604/CCM4211（SOC 二进制日志，建议 --probe）",
@@ -149,6 +157,15 @@ pub fn cmd_guide_model(model: &str, format: &OutputFormat) -> anyhow::Result<()>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ec716s_el_et_share_binpkg_guide() {
+        for name in ["EC716S", "Air780EL", "Air780ET"] {
+            let guide = super::find_model_guide(name).unwrap();
+            assert_eq!(guide.key, "ec716s");
+            assert!(guide.flash_example.contains("--binpkg"));
+        }
+    }
+
     #[test]
     fn guide_alias_air1602_maps_to_air1601_family() {
         let guide = super::find_model_guide("Air1602").expect("expected guide");

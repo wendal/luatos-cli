@@ -6,6 +6,16 @@ All notable changes to this project will be documented in this file.
 
 ### 新增
 
+#### EC716S / Air780EL / Air780ET AT binpkg 烧录
+
+- `flash run` 的固件参数新增 `--binpkg` 别名，支持直接读取 `EC716S_PRD` pkgmode 包，无需合成 SOC；保留文本、JSON 和 JSONL 输出
+- 使用 EC716 专用 AgentBoot，CP 走 AP Flash，BL 地址为 0，AP/CP 地址去除 `0x800000` XIP 基址
+- 连接设备前校验 BL/AP/CP 三分区、非空镜像、长度、SHA256、2MiB Flash 边界和分区重叠；拒绝不支持的产品、截断包和未解析尾部数据，修复短 pkgmode 头可能导致切片越界的问题
+- AT binpkg 不提供 Lua 脚本元数据，拒绝 `--script` 与 `--tail-log-secs`；AT 版本验证应使用运行时 AT 口，不套用 LuatOS 日志闭环
+- Air780ET 真机使用 `AirM2M_780EL_V1001_LTE_AT_TU.binpkg`：关闭占用串口的软件后免 BOOT 切换 COM3 → COM6，三分区烧录及设备端校验成功，复位后 COM3 的 `AT` 返回 OK，`ATI` / `AT+CGMR` 返回 `AirM2M_780ET_V1001_LTE_AT_TU`（EL/ET 固件通用）
+
+### 新增
+
 #### trun run 支持 `--libs` 追加脚本库目录
 
 - `trun run` 新增 `--libs <DIR>`（可重复传入）：把 testcase `require` testrunner/common 之外的
