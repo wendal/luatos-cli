@@ -854,6 +854,7 @@ mod tests {
             port: "COM999".into(),
             baud: None,
             common_scripts: None,
+            libs: vec![],
             progress_step: 10,
             reset: crate::reset_args::ResetArgs::default(),
             full: false,
