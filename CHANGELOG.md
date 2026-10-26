@@ -26,6 +26,16 @@ All notable changes to this project will be documented in this file.
 
 ### 新增
 
+#### EC618 / Air780E / Air780EG USB 刷机
+
+- 复用移芯 DLBOOT/AGBOOT/LPC 协议，根据 SOC 元数据区分 EC618 与 EC718；EC618 legacy binpkg 没有产品名时也能正确识别
+- EC618 USB 优先使用 SOC 自带 `agentboot_usb.bin`，缺失时回退内置 EC618 AgentBoot，不再误用 EC718M 版本；脚本单独烧录与全量烧录共用选择逻辑
+- EC618 CP 分区改为独立 `CP_FLASH`，`LPC_BURN_ONE` 携带 `0xE101` 标记；EC718 CP 继续使用 AP Flash，保留原有行为
+- 支持全量刷机、脚本覆盖与单独刷脚本，新增 EC618 型号帮助及协议文档；自动进下载模式前显式拉高 USB CDC DTR/RTS
+- Air780EG_A12 + V1124 EC618 FULL 真机：免 BOOT 指令未能进入下载模式；手动 BOOT 后完成四分区烧录与设备端校验，复位后确认固件版本及持续 `hi, LuatOS` 输出
+- release 版单独刷脚本验证通过（`--luac-debug 0`，393 字节测试镜像，持续 `EC618_SCRIPT_OK`）；全量 `flash test` JSONL 闭环 PASS，已恢复原固件。闭环验证曾出现一次 AP 写入阶段 USB 断连重启，重新手动 BOOT 后同一二进制复测通过，原因未确定
+- 新增 EC618 legacy 包识别、SOC 内 AgentBoot 优先级、独立 CP Flash 命令载荷及 EC718 兼容性回归测试
+
 #### Air1603 / Air1604 刷机支持（CCM4211 族）
 
 - **型号归一化**：`air1603` / `air1604` 并入 `ChipFamily::Ccm4211`，因此

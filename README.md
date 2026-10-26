@@ -6,7 +6,7 @@ LuatOS 命令行工具集（纯 Rust）——刷机、日志、项目管理、�
 
 ## 功能特性
 
-- **多芯片刷机**：Air8101(BK7258)、Air6208(XT804)、Air1601/Air1602/Air1603/Air1604(CCM4211)、Air8000/Air780EPM(EC718)、SF32LB58、Air724UG(UIS8910DM/RDA8910)；Air8101 走原生 ISP（不调用 `.soc` 内 `air602_flash.exe`），写完 RTS+DTR 复位；`flash run --script` 递归收集子目录，并在 EC718 / CCM4211 / RDA8910 上覆盖 SOC 包内脚本
+- **多芯片刷机**：Air8101(BK7258)、Air6208(XT804)、Air1601/Air1602/Air1603/Air1604(CCM4211)、EC618/Air780E/Air780EG、Air8000/Air780EPM(EC718)、SF32LB58、Air724UG(UIS8910DM/RDA8910)；EC618 优先使用 SOC 内的专用 AgentBoot，CP 写入独立 CP Flash；Air8101 走原生 ISP，写完 RTS+DTR 复位；`flash run --script` 支持 EC618 / EC718 / CCM4211 / RDA8910 脚本覆盖
 - **CCM4211 下载提速**：Air160x 系列固件分区按设备上报的块长（通常 256KB）做 LZMA 压缩后下发，与 LuaTools 行为一致；压缩无收益或失败自动回落明文，设备端 MD5 校验不通过则自动改明文重传一次（`LUATOS_CCM_LZMA=0` 可强制关闭压缩）；装载 ramrun 前会先关掉其他串口的时钟门控（IPSCGTCR），避免 PCBA_TYPE2 板子上多出的串口干扰下载口
 - **任意地址刷机**：`flash raw` 绕过 `info.json` 分区定义，按 `--addr` 直接擦写 Flash（Air8101 / Air6208 / Air1601），适合单独补刷外置字库/TTS/fs 等分区表覆盖不到的资源。bootloader/core 默认受保护需 `--force`。校验能力因芯片而异：Air8101 读回逐字节比对、Air1601 用设备回读 MD5，Air6208(XT804) 无读回命令故不支持 `--verify`。擦除三颗都支持，粒度各异：Air8101 4K 精确、Air1601 256KB 向下对齐整块擦、Air6208(XT804) 走 ROM `QFlash 擦除 0x32` 的 Sector 模式，4KB 精确
 - **任意地址读回**：`flash dump` 把任意 Flash 区间导出到文件并打印 md5（仅 Air8101 支持）
@@ -109,6 +109,9 @@ luatos-cli flash run --soc firmware.soc --port COM10
 # Air780EPM：自动重启进入 USB 下载模式，烧录 SOC 中的底层与脚本
 luatos-cli flash run --soc LuatOS-SoC_V2054_Air780EPM_1.soc --port auto
 
+# EC618 / Air780E / Air780EG：免 BOOT 失败时先按住 BOOT 复位，再运行
+luatos-cli flash run --soc helloworld_1.0.0_LuatOS-SoC_V1124_EC618_FULL.soc --port auto
+
 # 往任意 Flash 地址刷机（低阶操作，bootloader/core 需 --force）
 luatos-cli flash raw --soc firmware.soc --port COM10 \
   --addr 0x200000 --file font.bin --erase --verify
@@ -165,6 +168,7 @@ luatos-cli fota build --new v2.soc --old v1.soc --force-par  # 强制走 FotaToo
 
 - [Air1601 / Air1602 / Air1603 / Air1604 / CCM4211](docs/models/air1601-air1604.md)
 - [Air8000 / EC7xx / Air780E 系列](docs/models/air8000-ec7xx.md)
+- [EC618 / Air780E / Air780EG](docs/models/ec618.md)
 - [Air8101 / BK72xx](docs/models/air8101-bk72xx.md)
 - [Air6208 / XT804 / Air101/Air103](docs/models/air6208-xt804.md)
 - [SF32LB58](docs/models/sf32lb58.md)
@@ -273,7 +277,8 @@ luatos-cli doctor --help
 | Air6208 | XT804 (air6208) | ✅ | ✅ | ✅ | ✅ | ✅（全量） | 二进制 | ✅（仅写，无擦除/校验/读回） | ✅ | ✅ |
 | Air101/103 | XT804 | ✅ | ✅ | — | — | ✅（全量） | 二进制 | ✅（仅写，无擦除/校验/读回） | ✅ | ✅ |
 | Air1601 / Air1602 / Air1603 / Air1604 | CCM4211 | ✅ | ✅ | ✅ | ✅ | ✅（全量/脚本） | 二进制 (`--probe`) | ✅（MD5 真校验，无读回） | ✅ | ✅ |
-| Air8000 / Air780E（含 Air780EPM） | EC718 (ec7xx) | ✅ | ✅ | — | — | ✅（差分/脚本） | 二进制 (`--probe`) | — | ✅ | ✅ |
+| Air8000 / Air780EPM / Air780EHx | EC718 (ec7xx) | ✅ | ✅ | — | — | ✅（差分/脚本） | 二进制 (`--probe`) | — | ✅ | ✅ |
+| EC618 / Air780E / Air780EG | EC618 | ✅ | ✅ | — | — | ✅（差分/脚本） | 二进制 (`--probe`) | — | ✅ | ✅ |
 | Air8101(SF32) | SF32LB58 | ✅ | ✅ | — | ✅ | — | 文本 | — | — | — |
 | Air724UG | UIS8910DM (rda8910) | ✅ | ✅ | — | — | ✅（差分/脚本） | 二进制 (`--probe`) | — | — | — |
 

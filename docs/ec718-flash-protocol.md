@@ -1,5 +1,7 @@
 # EC718 (Air8000/Air780E系列) 刷机协议文档
 
+EC618 / Air780E / Air780EG 共用本协议的帧与分块实现，但 AgentBoot 和 CP Flash 拓扑不同，参见 [EC618 协议与实机记录](ec618-flash-protocol.md)。
+
 ## 芯片映射
 
 | 模组型号 | 芯片型号 | chip.type | 芯片家族 | binpkg标识 |

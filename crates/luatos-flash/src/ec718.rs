@@ -1,4 +1,4 @@
-// EC718 (Air8000 / Air780EPM / Air780EHx) flash protocol.
+// EC618 / EC718（Air780E / Air780EG / Air8000 / Air780EPM / Air780EHx）共享刷机协议。
 //
 // Multi-stage firmware download for Eigencomm EC718 series chips:
 //   1. DLBOOT Sync: ROM bootloader handshake
@@ -29,6 +29,51 @@ use crate::{FlashProgress, ProgressCallback};
 
 const AGENTBOOT_EC718M_USB: &[u8] = include_bytes!("../../../refs/origin_tools/ec_download/agentboot/ec718m_usb.bin");
 const AGENTBOOT_EC718M_UART: &[u8] = include_bytes!("../../../refs/origin_tools/ec_download/agentboot/ec718m_uart.bin");
+const AGENTBOOT_EC618_USB: &[u8] = include_bytes!("../../../refs/origin_tools/ec_download/image_ec618/agentboot_usb/agentboot.bin");
+const AGENTBOOT_EC618_UART: &[u8] = include_bytes!("../../../refs/origin_tools/ec_download/image_ec618/agentboot_uart/agentboot.bin");
+
+/// EC618 与 EC718 共用下载协议，但 AgentBoot 与 CP Flash 拓扑不同。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EigencommChip {
+    Ec618,
+    Ec718,
+}
+
+impl EigencommChip {
+    fn from_soc(chip_type: &str, package_chip: &str) -> Self {
+        if matches!(chip_type.to_ascii_lowercase().as_str(), "ec618" | "air780e" | "air780eg") || package_chip.to_ascii_uppercase().starts_with("EC618") {
+            Self::Ec618
+        } else {
+            Self::Ec718
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Ec618 => "EC618",
+            Self::Ec718 => "EC718",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SocFirmware {
+    binpkg: BinpkgResult,
+    chip: EigencommChip,
+    force_br: u32,
+    usb_agentboot: Option<Vec<u8>>,
+}
+
+impl SocFirmware {
+    fn agentboot(&self, port_type: Ec718PortType) -> &[u8] {
+        match (self.chip, port_type) {
+            (EigencommChip::Ec618, Ec718PortType::Usb) => self.usb_agentboot.as_deref().unwrap_or(AGENTBOOT_EC618_USB),
+            (EigencommChip::Ec618, Ec718PortType::Uart) => AGENTBOOT_EC618_UART,
+            (EigencommChip::Ec718, Ec718PortType::Usb) => AGENTBOOT_EC718M_USB,
+            (EigencommChip::Ec718, Ec718PortType::Uart) => AGENTBOOT_EC718M_UART,
+        }
+    }
+}
 
 // ─── Protocol Constants ─────────────────────────────────────────────────────
 
@@ -776,20 +821,19 @@ fn package_image_head(port: &mut dyn SerialPort, fdata: &[u8], img_type: BurnIma
 
 fn lpc_burn_one(port: &mut dyn SerialPort, img_type: BurnImageType, stor_type: u8) -> Result<i32> {
     let mut cmd = LpcCmd::new(LPC_BURN_ONE);
-    let img_id = img_type.identifier();
-
-    let data = if stor_type == STYPE_CP_FLASH {
-        cmd.len = 6;
-        let mut d = img_id.to_le_bytes().to_vec();
-        d.extend_from_slice(&CP_FLASH_MARKER.to_le_bytes());
-        d
-    } else {
-        cmd.len = 4;
-        img_id.to_le_bytes().to_vec()
-    };
+    let data = burn_one_payload(img_type, stor_type);
+    cmd.len = data.len() as u32;
 
     let (ret, _) = send_recv_lpc_cmd(port, &mut cmd, &data)?;
     Ok(ret)
+}
+
+fn burn_one_payload(img_type: BurnImageType, stor_type: u8) -> Vec<u8> {
+    let mut data = img_type.identifier().to_le_bytes().to_vec();
+    if stor_type == STYPE_CP_FLASH {
+        data.extend_from_slice(&CP_FLASH_MARKER.to_le_bytes());
+    }
+    data
 }
 
 fn lpc_get_burn_status(port: &mut dyn SerialPort) -> Result<i32> {
@@ -946,7 +990,7 @@ fn sys_reset(port: &mut dyn SerialPort) -> Result<()> {
 // ─── SOC File Parsing Helpers ───────────────────────────────────────────────
 
 /// Extract binpkg from a 7z SOC archive and parse it.
-fn extract_and_parse_soc(soc_path: &str) -> Result<(BinpkgResult, Option<Vec<u8>>, u32)> {
+fn extract_and_parse_soc(soc_path: &str) -> Result<SocFirmware> {
     let tempdir = tempfile::tempdir().context("Create temp dir")?;
     let temppath = tempdir.path();
 
@@ -954,7 +998,7 @@ fn extract_and_parse_soc(soc_path: &str) -> Result<(BinpkgResult, Option<Vec<u8>
     parse_extracted_soc(temppath)
 }
 
-fn parse_extracted_soc(temppath: &std::path::Path) -> Result<(BinpkgResult, Option<Vec<u8>>, u32)> {
+fn parse_extracted_soc(temppath: &std::path::Path) -> Result<SocFirmware> {
     // Read info.json for script_addr
     let info_path = temppath.join("info.json");
     let info: serde_json::Value = serde_json::from_reader(std::fs::File::open(&info_path).context("info.json missing")?).context("Parse info.json")?;
@@ -971,6 +1015,15 @@ fn parse_extracted_soc(temppath: &std::path::Path) -> Result<(BinpkgResult, Opti
     let rom_file = info.pointer("/rom/file").and_then(|v| v.as_str()).context("SOC 缺少 rom.file")?;
     let rom_data = std::fs::read(temppath.join(rom_file)).with_context(|| format!("读取 SOC 固件文件失败: {rom_file}"))?;
     let mut result = parse_binpkg(&rom_data)?;
+    let chip_type = info.pointer("/chip/type").and_then(|v| v.as_str()).unwrap_or("");
+    let chip = EigencommChip::from_soc(chip_type, &result.chip);
+    // EC618 量产包自带与固件匹配的 AgentBoot，不能用 EC718M 版本替代。
+    let agent_path = temppath.join("agentboot_usb.bin");
+    let usb_agentboot = if chip == EigencommChip::Ec618 && agent_path.exists() {
+        Some(std::fs::read(&agent_path).context("读取 EC618 SOC 内的 agentboot_usb.bin 失败")?)
+    } else {
+        None
+    };
     let script_file = info.pointer("/script/file").and_then(|v| v.as_str()).unwrap_or("script.bin");
     let script_path = temppath.join(script_file);
     let script_data = if script_path.exists() { Some(std::fs::read(script_path)?) } else { None };
@@ -990,7 +1043,12 @@ fn parse_extracted_soc(temppath: &std::path::Path) -> Result<(BinpkgResult, Opti
         }
     }
 
-    Ok((result, None, force_br))
+    Ok(SocFirmware {
+        binpkg: result,
+        chip,
+        force_br,
+        usb_agentboot,
+    })
 }
 
 /// Helper to extract a 7z SOC file.
@@ -1002,7 +1060,7 @@ fn extract_soc_7z(soc_path: &str, out_dir: &std::path::Path) -> Result<()> {
 
 // ─── Map entry to BurnImageType / storage type ──────────────────────────────
 
-fn entry_to_burn_type(entry: &BinpkgEntry) -> Option<(BurnImageType, u8, u32)> {
+fn entry_to_burn_type(entry: &BinpkgEntry, chip: EigencommChip) -> Option<(BurnImageType, u8, u32)> {
     let name = entry.name.to_lowercase();
     let itype = entry.image_type.to_uppercase();
 
@@ -1013,8 +1071,11 @@ fn entry_to_burn_type(entry: &BinpkgEntry) -> Option<(BurnImageType, u8, u32)> {
         // Bootloader 的目标位置由镜像自身决定，协议头的 burnaddr 必须为 0。
         Some((BurnImageType::Bootloader, STYPE_AP_FLASH, 0))
     } else if itype == "CP" || name.contains("cp") {
-        // EC7xx 的 AP/CP 都写入 AP Flash，镜像地址需去掉 XIP 基址。
-        Some((BurnImageType::Cp, STYPE_AP_FLASH, ap_flash_offset(entry.addr)))
+        match chip {
+            // EC618 使用独立 CP Flash，命令载荷必须携带 CP_FLASH_MARKER。
+            EigencommChip::Ec618 => Some((BurnImageType::Cp, STYPE_CP_FLASH, entry.addr)),
+            EigencommChip::Ec718 => Some((BurnImageType::Cp, STYPE_AP_FLASH, ap_flash_offset(entry.addr))),
+        }
     } else if itype == "AP" || name.contains("ap") || name.contains("system") {
         Some((BurnImageType::Ap, STYPE_AP_FLASH, ap_flash_offset(entry.addr)))
     } else if name.contains("flex") || name.contains("rf") {
@@ -1082,6 +1143,13 @@ pub fn try_reboot_to_download(on_progress: &ProgressCallback) -> bool {
             return false;
         }
     };
+
+    // 移芯 USB CDC 需拉高控制线后再发送复位指令，与 device boot 保持一致。
+    if let Err(e) = port.write_data_terminal_ready(true).and_then(|_| port.write_request_to_send(true)) {
+        log::warn!("设置 USB CDC 控制线失败: {e}");
+        return false;
+    }
+    std::thread::sleep(Duration::from_millis(80));
 
     // Step 1: AT+ECRST=delay,799 — trigger delayed reset
     if let Err(e) = port.write_all(b"AT+ECRST=delay,799\r\n") {
@@ -1394,7 +1462,7 @@ fn overlay_script_entry(binpkg: &mut BinpkgResult, overlay: &[u8], script_addr: 
     Ok(())
 }
 
-/// Flash EC718 firmware via native Rust protocol.
+/// 使用原生 Rust 移芯协议刷写 EC618 / EC718 固件。
 ///
 /// Handles full flash: agentboot + all partitions from .soc file.
 /// `script_overlay` replaces the `script.bin` packaged in the SOC when `flash run --script` is used.
@@ -1402,22 +1470,26 @@ pub fn flash_ec718(soc_path: &str, port: &str, on_progress: &ProgressCallback, c
     on_progress(&FlashProgress::info("Preparing", 0.0, "Parsing SOC file..."));
 
     // Parse SOC file
-    let (mut binpkg, _script_data, force_br) = extract_and_parse_soc(soc_path)?;
+    let mut firmware = extract_and_parse_soc(soc_path)?;
     if let Some(overlay) = script_overlay {
         let info = luatos_soc::read_soc_info(soc_path)?;
         let script_addr = info.download.script_addr.as_deref().and_then(luatos_soc::parse_addr).unwrap_or(0) as u32;
-        overlay_script_entry(&mut binpkg, overlay, script_addr)?;
+        overlay_script_entry(&mut firmware.binpkg, overlay, script_addr)?;
         on_progress(&FlashProgress::info("Preparing", 0.5, &format!("Using --script overlay ({} bytes)", overlay.len())));
     }
 
-    log::info!("EC718 chip: {}, {} entries, force_br={}", binpkg.chip, binpkg.entries.len(), force_br,);
+    let binpkg = &firmware.binpkg;
+    log::info!(
+        "{} package: {}, {} entries, force_br={}",
+        firmware.chip.name(),
+        binpkg.chip,
+        binpkg.entries.len(),
+        firmware.force_br
+    );
 
     // Determine port type and agentboot binary
     let port_type = detect_port_type(port);
-    let agentboot = match port_type {
-        Ec718PortType::Usb => AGENTBOOT_EC718M_USB,
-        Ec718PortType::Uart => AGENTBOOT_EC718M_UART,
-    };
+    let agentboot = firmware.agentboot(port_type);
 
     on_progress(&FlashProgress::info("Connecting", 1.0, &format!("Opening {} ({:?} mode)...", port, port_type)));
 
@@ -1464,7 +1536,7 @@ pub fn flash_ec718(soc_path: &str, port: &str, on_progress: &ProgressCallback, c
     on_progress(&FlashProgress::info("AgentBoot", 6.0, &format!("Downloading agentboot ({} bytes)...", agentboot.len())));
 
     // USB 下载使用厂商配置的 921600，不能套用 SOC 中面向 UART 的 force_br。
-    let agent_baud = if port_type == Ec718PortType::Usb { baudrate } else { force_br };
+    let agent_baud = if port_type == Ec718PortType::Usb { baudrate } else { firmware.force_br };
     burn_agboot(serial.as_mut(), agentboot, agent_baud)?;
 
     on_progress(&FlashProgress::info("AgentBoot", 15.0, "AgentBoot loaded"));
@@ -1482,7 +1554,7 @@ pub fn flash_ec718(soc_path: &str, port: &str, on_progress: &ProgressCallback, c
             bail!("Cancelled");
         }
 
-        let (img_type, stor_type, burn_addr) = match entry_to_burn_type(entry) {
+        let (img_type, stor_type, burn_addr) = match entry_to_burn_type(entry, firmware.chip) {
             Some(v) => v,
             None => {
                 log::warn!("Skipping unknown entry: {}", entry.name);
@@ -1514,17 +1586,16 @@ pub fn flash_ec718(soc_path: &str, port: &str, on_progress: &ProgressCallback, c
     on_progress(&FlashProgress::info("Resetting", 96.0, "Resetting device..."));
     sys_reset(serial.as_mut())?;
 
-    on_progress(&FlashProgress::done_ok("EC718 flash completed successfully"));
+    on_progress(&FlashProgress::done_ok(&format!("{} flash completed successfully", firmware.chip.name())));
     Ok(())
 }
 
-/// Flash only the script partition via native protocol.
+/// 使用原生移芯协议单独刷写 EC618 / EC718 的脚本分区。
 pub fn flash_script_ec718(soc_path: &str, port: &str, script_data: &[u8], on_progress: &ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
     on_progress(&FlashProgress::info("Preparing", 0.0, "Parsing SOC for script addr..."));
 
     // Parse SOC to get script_addr and force_br
-    let (binpkg, _, force_br) = extract_and_parse_soc(soc_path)?;
-    let _ = binpkg; // We only need script_addr from info.json
+    let firmware = extract_and_parse_soc(soc_path)?;
 
     // Re-read info.json for script_addr
     let info = luatos_soc::read_soc_info(soc_path)?;
@@ -1539,10 +1610,7 @@ pub fn flash_script_ec718(soc_path: &str, port: &str, script_data: &[u8], on_pro
     let burn_addr = script_burn_addr(script_addr);
 
     let port_type = detect_port_type(port);
-    let agentboot = match port_type {
-        Ec718PortType::Usb => AGENTBOOT_EC718M_USB,
-        Ec718PortType::Uart => AGENTBOOT_EC718M_UART,
-    };
+    let agentboot = firmware.agentboot(port_type);
 
     on_progress(&FlashProgress::info("Connecting", 1.0, &format!("Opening {}...", port)));
 
@@ -1575,7 +1643,7 @@ pub fn flash_script_ec718(soc_path: &str, port: &str, script_data: &[u8], on_pro
     }
 
     on_progress(&FlashProgress::info("AgentBoot", 10.0, "Downloading agentboot..."));
-    let agent_baud = if port_type == Ec718PortType::Usb { baudrate } else { force_br };
+    let agent_baud = if port_type == Ec718PortType::Usb { baudrate } else { firmware.force_br };
     burn_agboot(serial.as_mut(), agentboot, agent_baud)?;
 
     if cancel.load(Ordering::Relaxed) {
@@ -1699,9 +1767,10 @@ mod tests {
             eprintln!("Skipping: {} not found", soc);
             return;
         }
-        let (result, _, force_br) = extract_and_parse_soc(soc).expect("parse SOC");
+        let firmware = extract_and_parse_soc(soc).expect("parse SOC");
+        let result = firmware.binpkg;
         println!("Chip: {}", result.chip);
-        println!("Force BR: {}", force_br);
+        println!("Force BR: {}", firmware.force_br);
         for entry in &result.entries {
             println!("  {} addr=0x{:08X} size={} type={}", entry.name, entry.addr, entry.image_size, entry.image_type);
         }
@@ -1851,8 +1920,9 @@ mod tests {
         std::fs::write(temp.path().join("app.bin"), b"script").unwrap();
         std::fs::write(temp.path().join("script.bin"), b"wrong").unwrap();
 
-        let (result, _, force_br) = parse_extracted_soc(temp.path()).unwrap();
-        assert_eq!(force_br, 1152000);
+        let firmware = parse_extracted_soc(temp.path()).unwrap();
+        assert_eq!(firmware.force_br, 1152000);
+        let result = firmware.binpkg;
         assert_eq!(result.entries.len(), 2);
         assert_eq!(result.entries[0].data.as_deref(), Some(b"core".as_slice()));
         assert_eq!(result.entries[1].name, "script");
@@ -1886,8 +1956,71 @@ mod tests {
                 image_type: image_type.into(),
                 data: None,
             };
-            assert_eq!(entry_to_burn_type(&entry), Some((expected_type, STYPE_AP_FLASH, expected_addr)), "{name} @ 0x{addr:X}");
+            assert_eq!(
+                entry_to_burn_type(&entry, EigencommChip::Ec718),
+                Some((expected_type, STYPE_AP_FLASH, expected_addr)),
+                "{name} @ 0x{addr:X}"
+            );
         }
+    }
+
+    #[test]
+    fn ec618_legacy_soc_uses_packaged_agent_and_dedicated_cp_flash() {
+        let temp = tempfile::tempdir().unwrap();
+        // V1124 EC618 的 binpkg 是无产品名的 legacy 格式，必须根据 SOC 元数据选芯片。
+        let info = serde_json::json!({
+            "chip": {"type": "ec618"},
+            "rom": {"file": "luatos.binpkg"},
+            "script": {"file": "script.bin"},
+            "download": {"script_addr": "2CC000", "force_br": "1152000"}
+        });
+        std::fs::write(temp.path().join("info.json"), info.to_string()).unwrap();
+        let mut binpkg = build_legacy_binpkg("cp-demo-flash", 0, 4, b"code");
+        binpkg[0x34 + 336..0x34 + 338].copy_from_slice(b"CP");
+        std::fs::write(temp.path().join("luatos.binpkg"), binpkg).unwrap();
+        std::fs::write(temp.path().join("script.bin"), b"script").unwrap();
+        std::fs::write(temp.path().join("agentboot_usb.bin"), b"packaged-ec618-agent").unwrap();
+
+        let firmware = parse_extracted_soc(temp.path()).unwrap();
+        assert_eq!(firmware.binpkg.chip, "unknown");
+        assert_eq!(firmware.chip, EigencommChip::Ec618);
+        assert_eq!(firmware.agentboot(Ec718PortType::Usb), b"packaged-ec618-agent");
+        assert_eq!(firmware.agentboot(Ec718PortType::Uart), AGENTBOOT_EC618_UART);
+        assert_eq!(entry_to_burn_type(&firmware.binpkg.entries[0], firmware.chip), Some((BurnImageType::Cp, STYPE_CP_FLASH, 0)));
+        assert_eq!(
+            entry_to_burn_type(&firmware.binpkg.entries[1], firmware.chip),
+            Some((BurnImageType::FlexFile, STYPE_AP_FLASH, 0xACC000))
+        );
+
+        std::fs::remove_file(temp.path().join("agentboot_usb.bin")).unwrap();
+        let firmware = parse_extracted_soc(temp.path()).unwrap();
+        assert_eq!(firmware.agentboot(Ec718PortType::Usb), AGENTBOOT_EC618_USB);
+    }
+
+    #[test]
+    fn ec618_cp_burn_command_has_dedicated_flash_marker() {
+        // CIMG 标识的 LE 编码 + CP Flash 标记 0xE101；EC7xx 则只有前 4 字节。
+        assert_eq!(burn_one_payload(BurnImageType::Cp, STYPE_CP_FLASH), [0x49, 0x42, 0x50, 0x43, 0x01, 0xE1]);
+        assert_eq!(burn_one_payload(BurnImageType::Cp, STYPE_AP_FLASH), [0x49, 0x42, 0x50, 0x43]);
+    }
+
+    #[test]
+    fn ec618_chip_aliases_do_not_change_ec718_agent_selection() {
+        for name in ["ec618", "EC618", "air780e", "Air780EG"] {
+            assert_eq!(EigencommChip::from_soc(name, "unknown"), EigencommChip::Ec618);
+        }
+        assert_eq!(EigencommChip::from_soc("", "EC618_OLDPKG_DEFAULT"), EigencommChip::Ec618);
+        let firmware = SocFirmware {
+            chip: EigencommChip::Ec718,
+            binpkg: BinpkgResult {
+                chip: "EC718PM_PRD".into(),
+                entries: vec![],
+            },
+            force_br: 1152000,
+            usb_agentboot: Some(b"ec618-agent-must-not-be-used".to_vec()),
+        };
+        assert_eq!(firmware.agentboot(Ec718PortType::Usb), AGENTBOOT_EC718M_USB);
+        assert_eq!(firmware.agentboot(Ec718PortType::Uart), AGENTBOOT_EC718M_UART);
     }
 
     #[test]

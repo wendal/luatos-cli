@@ -27,6 +27,14 @@ const GUIDES: &[ModelGuide] = &[
         docs_path: "docs\\models\\air8000-ec7xx.md",
     },
     ModelGuide {
+        key: "ec618",
+        aliases: &["ec618", "air780e", "air780eg"],
+        description: "EC618/Air780E/Air780EG（独立 CP Flash；免 BOOT 失败时按住 BOOT 复位）",
+        flash_example: "luatos-cli flash run --soc firmware.soc --port auto",
+        log_example: "luatos-cli log view-binary --port auto --baud 921600 --probe",
+        docs_path: "docs\\models\\ec618.md",
+    },
+    ModelGuide {
         key: "air8101",
         aliases: &["air8101", "bk72xx"],
         description: "Air8101/BK7258（文本日志）",
@@ -159,5 +167,14 @@ mod tests {
     fn guide_lookup_is_case_insensitive() {
         let guide = super::find_model_guide("air8000").expect("expected guide");
         assert_eq!(guide.key, "air8000");
+    }
+
+    #[test]
+    fn ec618_aliases_have_separate_model_guide() {
+        for name in ["EC618", "Air780E", "air780eg"] {
+            let guide = super::find_model_guide(name).expect("EC618 应有型号指南");
+            assert_eq!(guide.key, "ec618");
+            assert_eq!(guide.docs_path, "docs\\models\\ec618.md");
+        }
     }
 }
