@@ -75,6 +75,12 @@ pub struct TrunRunArgs {
     #[arg(long)]
     pub common_scripts: Option<String>,
 
+    /// 额外脚本库目录（可重复传入，如 LuatOS `script/libs` 或只含所需
+    /// 子集的精简目录），其内容在 testcase scripts 之后合并进 script.bin，
+    /// 用于 testcase `require` testrunner/common 之外的脚本库（如 libnet）
+    #[arg(long = "libs", value_name = "DIR")]
+    pub libs: Vec<String>,
+
     /// 刷机进度步进（1-50%）
     #[arg(long, default_value = "10", value_parser = clap::value_parser!(u8).range(1..=50))]
     pub progress_step: u8,
@@ -514,7 +520,15 @@ fn install_ctrlc(format: &OutputFormat, cancel: Arc<AtomicBool>) {
 
 fn build_script_image_with_ctx(args: &TrunRunArgs, resolved: &ResolvedTestcase, soc_info: &luatos_soc::SocInfo, ctx_tmp: &tempfile::TempDir) -> Result<Vec<u8>> {
     let common = resolve_common_scripts(args, &resolve_luatos_root(args.luatos_root.as_deref())?);
-    let script_dirs: Vec<&Path> = vec![resolved.scripts_dir.as_path()];
+    let mut script_dirs: Vec<&Path> = vec![resolved.scripts_dir.as_path()];
+    for lib in &args.libs {
+        let p = Path::new(lib);
+        if p.is_dir() {
+            script_dirs.push(p);
+        } else {
+            bail!("libs 目录不存在: {}", p.display());
+        }
+    }
     // 编译参数一律取自 SOC 包元数据(与 flash 路径同源). 不能按芯片名查表:
     // ccm4211 家族(air1601/1602/1603/1604)是 64 位 Lua VM, 漏一个型号就会刷出
     // "lua_Integer size mismatch in precompiled chunk"(Lua VM 起不来).
@@ -587,8 +601,11 @@ fn flash_device(
     let soc_for_flash = combined_soc.and_then(|p| p.to_str()).unwrap_or(args.soc.as_str());
     let on_progress = cmd_flash::make_progress_callback(format, "testcase.run", args.progress_step);
 
-    // 收集脚本源目录：testcase scripts → common scripts → ctx 临时目录（最后，最高优先级）
+    // 收集脚本源目录：testcase scripts → libs → common scripts → ctx 临时目录（最后，最高优先级）
     let mut script_folders: Vec<String> = vec![resolved.scripts_dir.display().to_string()];
+    for lib in &args.libs {
+        script_folders.push(lib.clone());
+    }
     if let Some(common) = common_scripts {
         script_folders.push(common.display().to_string());
     }

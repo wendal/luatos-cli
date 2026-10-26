@@ -217,6 +217,14 @@ luatos-cli trun exftp \
   --luatos-root D:/github/LuatOS \
   --soc base.soc --port COM6 \
   --ctx ./my_local_ctx.json
+
+# testcase 依赖 testrunner/common 之外的脚本库时（如 require "libnet"），
+# 用 --libs 追加脚本库目录（可重复传入；建议只放所需子集，脚本分区容量有限）
+luatos-cli trun run func/network/TCP \
+  --luatos-root D:/github/LuatOS \
+  --soc base.soc --port COM6 \
+  --libs D:/github/LuatOS/script/libs_min \
+  --keyword '### OVERALL_PASS ###' --fail-keyword '### OVERALL_FAIL ###'
 ```
 
 ### 退出码

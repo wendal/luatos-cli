@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 新增
+
+#### trun run 支持 `--libs` 追加脚本库目录
+
+- `trun run` 新增 `--libs <DIR>`（可重复传入）：把 testcase `require` testrunner/common 之外的
+  脚本库（如 `func/network/TCP` 的 `require "libnet"`、`httpdns`/`httpplus`）合并进
+  script.bin，打在 testcase scripts 之后（高优先级）、ctx.json 之前
+- 目录需调用方自行精简（如只拷贝 `libnet.lua` 的 `libs_min/`），脚本分区容量有限，
+  不建议整目录传入 `script/libs`
+
 ### 修复
 
 #### Air780EPM：修复 USB 烧录失败
