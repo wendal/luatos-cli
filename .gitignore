@@ -2,6 +2,7 @@ target/
 *.obj
 *.o
 *.exe
+!vendor/ffmpeg/**/ffmpeg.exe
 !csrc/
 node_modules/
 dist/
@@ -12,4 +13,7 @@ resource/
 *.pyc
 .worktrees/
 logs/
+/vendor/ffmpeg/aarch64-*/
+/vendor/ffmpeg/x86_64-unknown-linux-gnu/
+/vendor/ffmpeg/x86_64-apple-darwin/
 refs/origin_tools/dtools/ec7xx/tmp/

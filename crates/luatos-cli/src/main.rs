@@ -15,6 +15,7 @@ mod cmd_doctor;
 mod cmd_flash;
 mod cmd_fota;
 mod cmd_guide;
+mod cmd_hzv;
 mod cmd_log;
 mod cmd_pipeline;
 mod cmd_project;
@@ -71,6 +72,14 @@ enum OutputFormat {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// HZV 视频探测、转换与校验（兼容 AirMaster HZV v1）
+    Hzv {
+        /// 覆盖随包 FFmpeg 路径，也可用 LUATOS_FFMPEG
+        #[arg(long, global = true)]
+        ffmpeg: Option<std::path::PathBuf>,
+        #[command(subcommand)]
+        action: cmd_hzv::HzvCommands,
+    },
     /// Serial port tools
     Serial {
         #[command(subcommand)]
@@ -793,6 +802,7 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
+        Commands::Hzv { action, ffmpeg } => cmd_hzv::run(&action, ffmpeg.as_deref(), &cli.format),
         Commands::Serial { action } => match action {
             SerialCommands::List => cmd_serial::cmd_serial_list(&cli.format),
         },
