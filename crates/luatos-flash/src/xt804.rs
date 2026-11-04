@@ -740,6 +740,7 @@ pub fn flash_script_only_with_debug(
         });
     }
     let luadb_data = luatos_luadb::pack_luadb(&entries)?;
+    crate::validate_script_image(&info, luadb_data.len(), 1024)?;
 
     on_progress(&FlashProgress::info(
         "Build",
@@ -1090,7 +1091,7 @@ mod tests {
         std::fs::create_dir(&soc_dir).unwrap();
         let info = serde_json::json!({
             "chip": {"type": "air6208"},
-            "rom": {"file": "firmware.fls"},
+            "rom": {"file": "firmware.fls", "fs": {"script": {"size": 400}}},
             "script": {"file": "script.bin", "bitw": 64, "use-luac": true, "use-debug": true},
             "download": {"script_addr": "08430000"}
         });

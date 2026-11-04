@@ -866,6 +866,7 @@ pub fn flash_bk7258_with_debug(
             let valid_paths: Vec<&Path> = paths.into_iter().filter(|p| p.is_dir()).collect();
             match build_script_bin(&valid_paths, &info, luac_debug) {
                 Ok(data) => {
+                    crate::validate_script_image(&info, data.len(), SECTOR_SIZE)?;
                     let sa = parse_addr(info.download.script_addr.as_deref().unwrap_or("0x200000")).unwrap_or(0x200000) as u32;
                     on_progress(&FlashProgress::info("Building", 5.0, &format!("Script: {} bytes @ 0x{:x}", data.len(), sa)));
                     Some((data, sa))
@@ -1128,10 +1129,7 @@ pub fn flash_script_only_with_debug(
         let paths: Vec<&Path> = script_folders.iter().map(|f| Path::new(*f)).collect();
         build_script_bin(&paths, &info, luac_debug)?
     };
-    let script_size = info.script_size();
-    if script_data.len() > script_size {
-        bail!("Script data ({} bytes) exceeds partition size ({} bytes)", script_data.len(), script_size);
-    }
+    crate::validate_script_image(&info, script_data.len(), SECTOR_SIZE)?;
 
     // Connect bootloader
     let mut serial = connect_bootloader(port, flash_br, &cancel, on_progress)?;

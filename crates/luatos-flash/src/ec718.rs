@@ -1479,12 +1479,20 @@ pub fn flash_ec718(soc_path: &str, port: &str, on_progress: &ProgressCallback, c
     on_progress(&FlashProgress::info("Preparing", 0.0, "Parsing SOC file..."));
 
     // Parse SOC file
+    let info = luatos_soc::read_soc_info(soc_path)?;
+    if let Some(overlay) = script_overlay {
+        crate::validate_script_image(&info, overlay.len(), 1)?;
+    }
     let mut firmware = extract_and_parse_soc(soc_path)?;
     if let Some(overlay) = script_overlay {
-        let info = luatos_soc::read_soc_info(soc_path)?;
         let script_addr = info.download.script_addr.as_deref().and_then(luatos_soc::parse_addr).unwrap_or(0) as u32;
         overlay_script_entry(&mut firmware.binpkg, overlay, script_addr)?;
         on_progress(&FlashProgress::info("Preparing", 0.5, &format!("Using --script overlay ({} bytes)", overlay.len())));
+    }
+    for entry in firmware.binpkg.entries.iter().filter(|entry| entry.name.eq_ignore_ascii_case("script")) {
+        if let Some(data) = &entry.data {
+            crate::validate_script_image(&info, data.len(), 1)?;
+        }
     }
     flash_firmware(&firmware, port, on_progress, cancel)
 }
@@ -1656,11 +1664,13 @@ fn flash_firmware(firmware: &SocFirmware, port: &str, on_progress: &ProgressCall
 pub fn flash_script_ec718(soc_path: &str, port: &str, script_data: &[u8], on_progress: &ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
     on_progress(&FlashProgress::info("Preparing", 0.0, "Parsing SOC for script addr..."));
 
+    let info = luatos_soc::read_soc_info(soc_path)?;
+    crate::validate_script_image(&info, script_data.len(), 1)?;
+
     // Parse SOC to get script_addr and force_br
     let firmware = extract_and_parse_soc(soc_path)?;
 
-    // Re-read info.json for script_addr
-    let info = luatos_soc::read_soc_info(soc_path)?;
+    // Resolve script address from the validated SOC metadata.
     let script_addr = info.download.script_addr.as_deref().and_then(luatos_soc::parse_addr).unwrap_or(0) as u32;
 
     if script_addr == 0 {

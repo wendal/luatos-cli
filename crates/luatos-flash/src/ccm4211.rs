@@ -878,6 +878,17 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
     let unpacked = luatos_soc::unpack_soc(soc_path, tmpdir.path())?;
     let info = &unpacked.info;
     let soc_dir = tmpdir.path();
+    let script_path = soc_dir.join(&info.script.file);
+    let script_data = if let Some(overlay) = script_overlay {
+        Some(overlay.to_vec())
+    } else if script_path.exists() {
+        Some(std::fs::read(&script_path).context("Failed to read script")?)
+    } else {
+        None
+    };
+    if let Some(data) = &script_data {
+        crate::validate_script_image(info, data.len(), 1)?;
+    }
 
     let include_path = soc_dir.join("include.txt");
     let mut resource_plan = if include_path.exists() {
@@ -964,8 +975,6 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
     // Load files from SOC directory
     let bl_path = soc_dir.join("bootloader.bin");
     let core_path = soc_dir.join(&info.rom.file);
-    let script_path = soc_dir.join(&info.script.file);
-
     let bl_addr = info.bl_addr().unwrap_or(0x10000000);
     let core_addr = info.app_addr().unwrap_or(0x14000000);
     let script_addr = info.script_addr();
@@ -1018,13 +1027,6 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
     }
 
     // Download script: --script overlay wins over the SOC-packaged script.bin.
-    let script_data = if let Some(overlay) = script_overlay {
-        Some(overlay.to_vec())
-    } else if script_path.exists() {
-        Some(std::fs::read(&script_path).context("Failed to read script")?)
-    } else {
-        None
-    };
     if let Some(script_data) = script_data {
         on_progress(&FlashProgress::info("Script", 88.0, "Downloading script").with_region("script"));
         soc_download_file(&mut port, &mut parser, &mut sn, script_addr, &script_data, block_len, on_progress, "Script", 88.0, 95.0)?;
@@ -1046,6 +1048,7 @@ pub fn flash_script_ccm4211(soc_path: &str, port_name: &str, script_data: &[u8],
     let tmpdir = tempfile::tempdir().context("Create temp dir")?;
     let unpacked = luatos_soc::unpack_soc(soc_path, tmpdir.path())?;
     let info = &unpacked.info;
+    crate::validate_script_image(info, script_data.len(), 1)?;
 
     let ramrun_data = load_ramrun_data(soc_path, tmpdir.path())?;
 

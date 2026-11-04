@@ -339,6 +339,7 @@ pub fn flash_sf32lb5x_with_debug(
         let path_refs: Vec<&std::path::Path> = dir_paths.iter().map(|p| p.as_path()).collect();
         let debug_mode = luac_debug.unwrap_or_else(|| info.script_debug_mode());
         let script_data = luatos_luadb::build::build_script_image(&path_refs, info.script_use_luac(), info.script_bitw(), info.use_bkcrc(), debug_mode)?;
+        crate::validate_script_image(info, script_data.len(), 1)?;
         std::fs::write(&script_path, &script_data).context("写入 script.bin 失败")?;
     }
 
@@ -353,6 +354,8 @@ pub fn flash_sf32lb5x_with_debug(
             bail!("SOC 中缺少 {name}: {}", path.display());
         }
     }
+
+    crate::validate_script_image(info, usize::try_from(std::fs::metadata(&script_path)?.len())?, 1)?;
 
     sink_impl.emit("prepare", 5.0, "准备刷机文件...");
     // 写入顺序：NOR（bootloader + ftab）→ NAND（app + script）
@@ -446,6 +449,7 @@ pub fn flash_script_sf32lb5x_with_debug(
     let script_data = luatos_luadb::build::build_script_image(&path_refs, info.script_use_luac(), info.script_bitw(), info.use_bkcrc(), debug_mode)?;
 
     let tempdir = tempfile::tempdir().context("创建临时目录失败")?;
+    crate::validate_script_image(&info, script_data.len(), 1)?;
     let script_path = tempdir.path().join("script.bin");
     std::fs::write(&script_path, &script_data).context("写入 script.bin 失败")?;
 

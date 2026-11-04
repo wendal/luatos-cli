@@ -696,12 +696,27 @@ fn open_and_load_fdls(
 ) -> Result<(Box<dyn serialport::SerialPort>, PacFile, luatos_soc::SocInfo)> {
     on_progress(&FlashProgress::info("Preparing", 0.0, "解析 SOC 固件包与 PAC"));
 
+    let (pac, info) = read_soc_pac(soc_path)?;
+    load_soc_fdls(pac, info, port_name, on_progress, cancel)
+}
+
+fn read_soc_pac(soc_path: &str) -> Result<(PacFile, luatos_soc::SocInfo)> {
     let tmp = tempfile::tempdir().context("创建临时目录失败")?;
     let unpacked = luatos_soc::unpack_soc(soc_path, tmp.path())?;
     let info = unpacked.info.clone();
     let pac_data = std::fs::read(&unpacked.rom_path).with_context(|| format!("读取 PAC 失败: {}", unpacked.rom_path.display()))?;
     let pac = parse_pac(&pac_data).context("解析 PAC 失败")?;
 
+    Ok((pac, info))
+}
+
+fn load_soc_fdls(
+    pac: PacFile,
+    info: luatos_soc::SocInfo,
+    port_name: &str,
+    on_progress: &ProgressCallback,
+    cancel: &AtomicBool,
+) -> Result<(Box<dyn serialport::SerialPort>, PacFile, luatos_soc::SocInfo)> {
     let fdl1 = pac.find(PAC_ID_FDL1).context("PAC 缺少 HOST_FDL")?.clone();
     let fdl2 = pac.find(PAC_ID_FDL2).context("PAC 缺少 FDL2")?.clone();
 
@@ -1084,7 +1099,13 @@ fn apply_script_overlay(pac: &mut PacFile, overlay: &[u8]) -> bool {
 /// `script_overlay` 为 `flash run --script` 编译出的 LuaDB 脚本镜像；传 Some 时
 /// 覆盖 PAC 内 LUA 条目，使全量刷机写入用户脚本（否则设备跑 .soc 固件自带脚本）。
 pub fn flash_rda8910(soc_path: &str, port_name: &str, on_progress: &ProgressCallback, cancel: Arc<AtomicBool>, script_overlay: Option<&[u8]>) -> Result<()> {
-    let (mut serial, mut pac, _info) = open_and_load_fdls(soc_path, port_name, on_progress, &cancel)?;
+    let (pac, info) = read_soc_pac(soc_path)?;
+    if let Some(lua) = pac.find("LUA") {
+        if let Some(data) = script_overlay.or(lua.data.as_deref()) {
+            crate::validate_script_image(&info, data.len(), 1)?;
+        }
+    }
+    let (mut serial, mut pac, _info) = load_soc_fdls(pac, info, port_name, on_progress, &cancel)?;
 
     if let Some(overlay) = script_overlay {
         if apply_script_overlay(&mut pac, overlay) {
@@ -1139,6 +1160,8 @@ pub fn flash_rda8910(soc_path: &str, port_name: &str, on_progress: &ProgressCall
 
 /// 仅刷脚本分区：加载 FDL1/FDL2 后把 LuaDB 脚本写入脚本分区地址。
 pub fn flash_script_rda8910(soc_path: &str, port_name: &str, script_data: &[u8], on_progress: &ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
+    let info = luatos_soc::read_soc_info(soc_path)?;
+    crate::validate_script_image(&info, script_data.len(), 1)?;
     let (mut serial, pac, info) = open_and_load_fdls(soc_path, port_name, on_progress, &cancel)?;
     // 脚本分区地址优先取 PAC 内 LUA 条目（物理地址，权威值），
     // 仅在 PAC 无 LUA 条目时回退到 info.json 偏移 + SPI_FLASH_BASE。

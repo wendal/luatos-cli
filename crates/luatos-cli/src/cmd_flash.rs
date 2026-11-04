@@ -8,25 +8,6 @@ use crate::{
     OutputFormat,
 };
 
-/// 检查脚本镜像大小是否超过分区容量，超出则报错并给出详细信息
-fn check_script_size(image_len: usize, partition_size: usize) -> anyhow::Result<()> {
-    if image_len > partition_size {
-        let overflow = image_len - partition_size;
-        anyhow::bail!(
-            "脚本镜像大小（{} 字节, {:.1} KB）超过分区容量（{} 字节, {:.1} KB），超出 {} 字节（{:.1} KB）。\
-             请减少脚本文件数量或大小",
-            image_len,
-            image_len as f64 / 1024.0,
-            partition_size,
-            partition_size as f64 / 1024.0,
-            overflow,
-            overflow as f64 / 1024.0,
-        );
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 fn script_folders_present(folders: Option<&[String]>) -> bool {
     folders.is_some_and(|dirs| !dirs.is_empty())
@@ -43,7 +24,7 @@ fn build_script_image_checked(folders: &[String], info: &luatos_soc::SocInfo, lu
     let folder_paths: Vec<std::path::PathBuf> = folders.iter().map(std::path::PathBuf::from).collect();
     let path_refs: Vec<&std::path::Path> = folder_paths.iter().map(|p| p.as_path()).collect();
     let script_data = luatos_luadb::build::build_script_image(&path_refs, info.script_use_luac(), info.script_bitw(), info.use_bkcrc(), luac_debug)?;
-    check_script_size(script_data.len(), info.script_size())?;
+    luatos_flash::validate_script_image(info, script_data.len(), 1)?;
     Ok(script_data)
 }
 
@@ -316,12 +297,12 @@ pub fn cmd_flash_run(
         }
         ChipFamily::Rda8910 => {
             // --port auto 支持：自动探测下载口（SPRD U2S Diag, VID 0525:PID a4a7）
-            let boot_port = luatos_flash::rda8910::auto_enter_boot_mode(Some(port), &on_progress)?;
             // --script 覆盖：全量刷机时把用户脚本写入 LUA 分区（与 EC718/CCM4211 行为一致）
             let overlay = build_script_overlay(script_folders, &info, luac_debug)?;
             if overlay.is_some() {
                 event::emit_message(format, "flash.run", MessageLevel::Info, "Applying script overlay from --script folders...")?;
             }
+            let boot_port = luatos_flash::rda8910::auto_enter_boot_mode(Some(port), &on_progress)?;
             luatos_flash::rda8910::flash_rda8910(soc, &boot_port, &on_progress, cancel, overlay.as_deref())?;
             match format {
                 OutputFormat::Text => {
@@ -1209,6 +1190,7 @@ pub fn cmd_flash_script_bin(soc: &str, port: &str, bin_path: &str, on_progress: 
 
     let cancel = Arc::new(AtomicBool::new(false));
     let info = luatos_soc::read_soc_info(soc)?;
+    luatos_flash::validate_script_image(&info, script_data.len(), 1)?;
 
     match info.family() {
         ChipFamily::Ec718 => {
@@ -1244,6 +1226,32 @@ pub fn print_script_result(format: &OutputFormat) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn script_bin_rejects_500kb_image_for_400kb_partition_before_boot_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        let bin = dir.path().join("script.bin");
+        std::fs::write(&bin, vec![0u8; 500 * 1024]).unwrap();
+        for chip in ["ec7xx", "ccm4211"] {
+            let info = serde_json::json!({
+                "chip": {"type": chip},
+                "rom": {"file": "rom.bin", "fs": {"script": {"size": 400}}},
+                "script": {"file": "script.bin"},
+                "download": {"script_addr": "2B1000"}
+            });
+            std::fs::write(source.join("info.json"), info.to_string()).unwrap();
+            let soc = dir.path().join(format!("{chip}.soc"));
+            luatos_soc::pack_soc_zip(&source, soc.to_str().unwrap()).unwrap();
+            let progress: luatos_flash::ProgressCallback = Box::new(|_| {});
+            let error = cmd_flash_script_bin(soc.to_str().unwrap(), "INVALID_PORT", bin.to_str().unwrap(), &progress)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("512000 字节"), "{error}");
+            assert!(error.contains("超过分区容量（409600 字节"), "{error}");
+        }
+    }
 
     #[test]
     fn binpkg_rejects_soc_only_options_before_reading_file_or_opening_port() {
@@ -1311,8 +1319,8 @@ mod tests {
             )
             .unwrap_err()
             .to_string();
-            assert!(error.contains("exceeds partition size (0 bytes)"), "{error}");
-            let size = error.strip_prefix("Script data (").unwrap().split(' ').next().unwrap().parse::<usize>().unwrap();
+            assert!(error.contains("超过分区容量（0 字节"), "{error}");
+            let size = error.strip_prefix("脚本镜像大小（").unwrap().split(' ').next().unwrap().parse::<usize>().unwrap();
             sizes.push(size);
         }
         assert!(sizes[0] < sizes[1], "CLI 的 0/99 级别必须到达 BK7258 编译后端: {sizes:?}");
