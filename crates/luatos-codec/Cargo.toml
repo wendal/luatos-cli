@@ -1,0 +1,8 @@
+[package]
+name = "luatos-codec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LuatOS 协议编解码基础算法（CRC 与帧化）"
+
+[dependencies]

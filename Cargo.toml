@@ -12,6 +12,7 @@ members = [
     "crates/luatos-log-ffi",
     "crates/luatos-resource",
     "crates/luatos-testcase",
+    "crates/luatos-codec",
     # "crates/luatos-gui/src-tauri",  # GUI 暂时禁用
 ]
 
@@ -30,8 +31,6 @@ env_logger = "0.11"
 zip = "2"
 chrono = { version = "0.4", features = ["clock"] }
 clap = { version = "4", features = ["derive"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 tempfile = "3"
 toml = "0.8"
 walkdir = "2"
@@ -42,7 +41,6 @@ sha2 = "0.10"
 indicatif = "0.17"
 crc32fast = "1"
 md-5 = "0.10"
-tokio = { version = "1", features = ["io-util", "macros", "rt-multi-thread", "sync", "net", "time"] }
 
 [profile.release]
 lto = "fat"

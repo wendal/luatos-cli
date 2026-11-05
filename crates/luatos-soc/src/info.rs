@@ -269,8 +269,9 @@ impl SocInfo {
         if let Some(bitw) = self.script.bitw {
             return bitw;
         }
-        match self.chip.chip_type.as_str() {
-            "air6208" | "air101" | "air103" | "air601" | "air1601" | "air1602" | "air1603" | "air1604" | "ccm4211" => 64,
+        // 芯片族归一化的单一来源是 ChipFamily；64 位 luac 只有 XT804 与 CCM4211 需要。
+        match self.family() {
+            ChipFamily::Xt804 | ChipFamily::Ccm4211 => 64,
             _ => 32,
         }
     }

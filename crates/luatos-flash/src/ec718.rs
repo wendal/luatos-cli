@@ -1336,10 +1336,7 @@ pub fn wait_for_log_port(timeout_secs: u32) -> Option<String> {
 pub fn auto_enter_boot_mode(user_port: Option<&str>, on_progress: &ProgressCallback) -> Result<String> {
     // `--port auto`（或空串）只是「自动探测」的占位符，不能当作真实设备名去打开；
     // 否则探测失败时会回退到打开名为 "auto" 的串口并报 "No such file or directory"。
-    let user_port = user_port.filter(|p| {
-        let p = p.trim();
-        !p.is_empty() && !p.eq_ignore_ascii_case("auto")
-    });
+    let user_port = crate::device::normalize_serial_port(user_port);
 
     // If user specified a port, check if it's already a boot mode port
     if let Some(port) = user_port {

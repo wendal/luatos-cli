@@ -10,6 +10,7 @@ build = "build.rs"
 cc = "1"
 
 [dependencies]
+luatos-codec = { path = "../luatos-codec" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

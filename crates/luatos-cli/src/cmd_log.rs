@@ -34,7 +34,7 @@ pub fn cmd_log_view(port: &str, baud: u32, smart: bool, reset: &ResetArgs, forma
     });
 
     // --port auto：自动探测 RDA8910 运行模式 log 口（按 VID/PID + 接口号，对齐 ec7xx）
-    let actual_port = if port == "auto" {
+    let actual_port = if luatos_flash::device::normalize_serial_port(Some(port)).is_none() {
         match luatos_flash::rda8910::find_rda8910_log_port() {
             Some(p) => {
                 event::emit_message(format, "log.view", MessageLevel::Info, format!("Auto-detected RDA8910 log port: {p}"))?;
@@ -246,7 +246,7 @@ pub fn cmd_log_view_binary(port: &str, baud: u32, probe: bool, save_dir: Option<
     let is_ec718_present = luatos_flash::ec718::find_ec718_cmd_port().is_some() || ec718_log_port.is_some();
 
     // Auto-detect log port if "auto" specified
-    let actual_port = if port == "auto" {
+    let actual_port = if luatos_flash::device::normalize_serial_port(Some(port)).is_none() {
         if is_ec718_present {
             event::emit_message(format, "log.view_binary", MessageLevel::Info, "Auto-detecting EC718 log port (VID=0x19D1)...")?;
             match ec718_log_port.clone().or_else(luatos_flash::ec718::find_ec718_log_port) {

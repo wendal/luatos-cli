@@ -300,39 +300,7 @@ fn pad_to_alignment_ff(data: &mut Vec<u8>, align: usize) {
     }
 }
 
-fn bk_crc16_32bytes(chunk: &[u8]) -> u16 {
-    let mut crc: u32 = 0xFFFF_FFFF;
-    for &b in chunk {
-        crc ^= (b as u32) << 8;
-        for _ in 0..8 {
-            if (crc & 0x8000) != 0 {
-                crc = (crc << 1) ^ 0x8005;
-            } else {
-                crc <<= 1;
-            }
-        }
-    }
-    (crc & 0xFFFF) as u16
-}
-
-fn add_bk_crc_to_data(data: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity((data.len() / 32 + 1) * 34);
-    let mut pos = 0usize;
-    while pos < data.len() {
-        let end = std::cmp::min(pos + 32, data.len());
-        let mut chunk = data[pos..end].to_vec();
-        if chunk.len() < 32 {
-            chunk.resize(32, 0xFF);
-        }
-        let crc = bk_crc16_32bytes(&chunk);
-        out.extend_from_slice(&chunk);
-        out.extend_from_slice(&crc.to_be_bytes());
-        pos = end;
-    }
-    out
-}
-
-/// 去掉 BK CRC 帧化（`add_bk_crc_to_data` 的逆操作）：每 34 物理字节取前 32 字节数据，
+/// 去掉 BK CRC 帧化（`luatos_codec::bk_crc_frame` 的逆操作）：每 34 物理字节取前 32 字节数据，
 /// 丢弃 2 字节 CRC。尾部不足 34 字节的残帧丢弃（合法帧化输入总是 34 的整数倍）。
 ///
 /// 全量 FOTA 的 bootloader 会把包内 cp/ap/脚本统一做一次 CRC 帧化再写入 Flash，
@@ -340,13 +308,7 @@ fn add_bk_crc_to_data(data: &[u8]) -> Vec<u8> {
 /// 二次帧化（每 32 字节数据多 2 字节），CPU 窗口按 34 字节解帧后整体漂移，导致
 /// 升级后 /luadb/ 挂载失败（main.lua 找不到）。cp.bin/ap.bin 是裸二进制，无需处理。
 pub fn bk72xx_deframe_framed(framed: &[u8]) -> Vec<u8> {
-    let groups = framed.len() / 34;
-    let mut out = Vec::with_capacity(groups * 32);
-    for g in 0..groups {
-        let start = g * 34;
-        out.extend_from_slice(&framed[start..start + 32]);
-    }
-    out
+    luatos_codec::bk_crc_deframe(framed)
 }
 
 /// Build BK72XX new-format script-only FOTA package.
@@ -355,13 +317,13 @@ pub fn bk72xx_deframe_framed(framed: &[u8]) -> Vec<u8> {
 /// 注意 payload 必须是**单重** CRC 帧化的脚本：设备端 `luat_fota_move_script_from_ota`
 /// 经 `bk_flash_write_fast` 原样写入 AP 尾部（bk_flash 读写均为裸字节，不再加帧），
 /// 写入内容即包内内容。而 .soc 的 script.bin 本身已是帧化形态，若直接对它再
-/// `add_bk_crc_to_data` 会二次帧化，导致升级后 /luadb/ 挂载失败。所以先解帧再帧化一次。
+/// `luatos_codec::bk_crc_frame` 会二次帧化，导致升级后 /luadb/ 挂载失败。所以先解帧再帧化一次。
 pub fn build_bk72xx_script_fota_new(script_path: &Path, output_path: &Path) -> Result<()> {
     let framed = fs::read(script_path).with_context(|| format!("read {}", script_path.display()))?;
     let mut script = trim_trailing_ff(&bk72xx_deframe_framed(&framed)).to_vec();
     pad_to_alignment_ff(&mut script, 32);
 
-    let mut script_with_crc = add_bk_crc_to_data(&script);
+    let mut script_with_crc = luatos_codec::bk_crc_frame(&script);
     pad_to_alignment_ff(&mut script_with_crc, 4);
 
     let mut out = Vec::with_capacity(1024 + 8 + script_with_crc.len());
@@ -1041,7 +1003,7 @@ mod tests {
         let script = tmp.path().join("script.bin");
         let out = tmp.path().join("script_fota.bin");
         // 真实输入是 .soc 里 CRC 帧化后的 script.bin，先帧化再交给打包函数
-        fs::write(&script, add_bk_crc_to_data(b"print('hello')\n\xFF\xFF\xFF")).unwrap();
+        fs::write(&script, luatos_codec::bk_crc_frame(b"print('hello')\n\xFF\xFF\xFF")).unwrap();
 
         build_bk72xx_script_fota_new(&script, &out).unwrap();
 
@@ -1061,13 +1023,13 @@ mod tests {
     fn test_bk72xx_deframe_framed_roundtrip() {
         // 帧化 -> 解帧 必须还原原始数据（含非 32 对齐长度与 0xFF 填充）
         let raw = b"\x01\x04LuaS framed-payload demo".to_vec();
-        let framed = add_bk_crc_to_data(&raw);
+        let framed = luatos_codec::bk_crc_frame(&raw);
         assert_eq!(framed.len() % 34, 0, "framed length must be 34-aligned");
         let deframed = bk72xx_deframe_framed(&framed);
         assert_eq!(trim_trailing_ff(&deframed), &raw[..]);
         // 多帧场景: 100 字节原始数据 -> 4 帧 -> 解帧后内容一致
         let big: Vec<u8> = (0..100u8).map(|i| i.wrapping_mul(7).wrapping_add(3)).collect();
-        let deframed_big = bk72xx_deframe_framed(&add_bk_crc_to_data(&big));
+        let deframed_big = bk72xx_deframe_framed(&luatos_codec::bk_crc_frame(&big));
         assert_eq!(trim_trailing_ff(&deframed_big), &big[..]);
     }
 

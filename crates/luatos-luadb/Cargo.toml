@@ -6,6 +6,7 @@ license.workspace = true
 description = "LuaDB script image packer + embedded Lua 5.3 compiler"
 
 [dependencies]
+luatos-codec = { path = "../luatos-codec" }
 anyhow.workspace = true
 log.workspace = true
 walkdir.workspace = true

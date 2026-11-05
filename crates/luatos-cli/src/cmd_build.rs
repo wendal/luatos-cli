@@ -51,21 +51,10 @@ pub fn cmd_build_filesystem(
 
     let image = luatos_luadb::build::build_script_image(&path_refs, use_luac, bitw, bkcrc, luac_debug)?;
 
-    // 检查镜像大小是否超过分区容量
+    // 与刷机路径共用同一套容量判定；离线构建没有写入对齐，传 1。
     if let Some(max_kb) = max_size_kb {
-        let max_bytes = max_kb as usize * 1024;
-        if image.len() > max_bytes {
-            let overflow = image.len() - max_bytes;
-            anyhow::bail!(
-                "脚本镜像大小（{} 字节, {:.1} KB）超过分区容量（{} 字节, {:.1} KB），超出 {} 字节（{:.1} KB）",
-                image.len(),
-                image.len() as f64 / 1024.0,
-                max_bytes,
-                max_bytes as f64 / 1024.0,
-                overflow,
-                overflow as f64 / 1024.0,
-            );
-        }
+        let max_bytes = max_kb as u64 * 1024;
+        luatos_flash::ensure_image_fits(image.len(), max_bytes, 1)?;
     }
 
     let out_path = std::path::Path::new(output);

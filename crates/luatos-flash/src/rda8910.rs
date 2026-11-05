@@ -1011,7 +1011,7 @@ pub fn try_reboot_to_download(on_progress: &ProgressCallback) -> bool {
 /// 用户口为 "auto" 时视为未指定，不回退。
 pub fn auto_enter_boot_mode(user_port: Option<&str>, on_progress: &ProgressCallback) -> Result<String> {
     // Step 1: 用户指定口已是下载口？
-    if let Some(port) = user_port.filter(|p| *p != "auto") {
+    if let Some(port) = crate::device::normalize_serial_port(user_port) {
         if let Ok(ports) = serialport::available_ports() {
             if ports.iter().any(|p| p.port_name == port && is_download_port(&p.port_type)) {
                 log::info!("用户指定端口 {} 已是下载模式", port);
@@ -1054,7 +1054,7 @@ pub fn auto_enter_boot_mode(user_port: Option<&str>, on_progress: &ProgressCallb
     }
 
     // Step 5: 回退用户指定口（物理 UART2 通道等）
-    if let Some(port) = user_port.filter(|p| *p != "auto") {
+    if let Some(port) = crate::device::normalize_serial_port(user_port) {
         on_progress(&FlashProgress::info("Fallback", 2.0, &format!("使用用户指定端口: {} (可能需手动进入下载模式)", port)));
         return Ok(port.to_string());
     }

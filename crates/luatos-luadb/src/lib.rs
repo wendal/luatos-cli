@@ -65,32 +65,7 @@ fn pack_luadb_with_name_limit(entries: &[LuadbEntry], name_limit: usize) -> Resu
 /// The final block is padded with 0xFF bytes to reach 32 bytes before
 /// the CRC is calculated.
 pub fn add_bk_crc(data: &[u8]) -> Vec<u8> {
-    let blocks = data.len().div_ceil(32);
-    let mut out = Vec::with_capacity(blocks * 34);
-    let mut i = 0;
-    while i < data.len() {
-        let mut block = [0xFFu8; 32];
-        let end = (i + 32).min(data.len());
-        block[..end - i].copy_from_slice(&data[i..end]);
-        let crc = bk_crc16(&block);
-        out.extend_from_slice(&block);
-        out.push((crc >> 8) as u8); // big-endian
-        out.push(crc as u8);
-        i += 32;
-    }
-    out
-}
-
-/// CRC16 used by Beken: init=0xFFFFFFFF, poly=0x8005, big-endian result.
-fn bk_crc16(block: &[u8; 32]) -> u16 {
-    let mut crc: u32 = 0xFFFFFFFF;
-    for &b in block {
-        crc ^= (b as u32) << 8;
-        for _ in 0..8 {
-            crc = if crc & 0x8000 != 0 { (crc << 1) ^ 0x8005 } else { crc << 1 };
-        }
-    }
-    (crc & 0xFFFF) as u16
+    luatos_codec::bk_crc_frame(data)
 }
 
 pub mod build;
@@ -145,8 +120,8 @@ mod tests {
     #[test]
     fn bk_crc_deterministic() {
         let block = [0xFFu8; 32];
-        let crc = bk_crc16(&block);
-        assert_eq!(crc, bk_crc16(&block));
+        let crc = luatos_codec::bk_crc16(&block);
+        assert_eq!(crc, luatos_codec::bk_crc16(&block));
     }
 
     #[test]
