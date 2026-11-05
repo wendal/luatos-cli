@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ### 移除
 
+#### 移除已停用的 GUI crate
+
+- `crates/luatos-gui/`（Tauri 前端 + `src-tauri` 共 46 个文件）此前已被注释出 workspace、零 CI 覆盖、且引用了旧版刷机 API；整目录移除，需要时可从 Git 历史恢复
+
 #### 移除 `pipeline flash-log` 子命令
 
 - 该命令仅支持 XT804、`try_stdin()` 为空实现、README 从未记载，且与 `flash test` / `trun` 的闭环能力重复；刷机后抓日志改用 `flash run --tail-log-secs <N>`，闭环判定改用 `flash test`
@@ -18,13 +22,15 @@ All notable changes to this project will be documented in this file.
 
 ### 变更
 
-#### 架构收敛（P0 / P1 / P2）
+#### 架构收敛（P0 / P1 / P2 / P3）
 
 - 新增零依赖 crate `luatos-codec`，统一 Beken CRC16 帧化/解帧与 CRC16-Modbus；`luatos-luadb`、`luatos-soc`、`luatos-log`、`luatos-flash` 不再各写一份（设备侧 CRC16 为 init=0 变体，勿改成标准 MODBUS 初值）
 - 新增 `luatos-cli/src/keyword.rs`，`flash test` 与 `trun` 共用关键字判定；Ctrl+C 处理器统一到 `event`；`project wizard` 改用 `emit_result`，修复 `--format jsonl` 输出多行 JSON
 - `luatos_flash::ensure_image_fits` 统一刷机路径与 `build filesystem` 的脚本容量判定；端口 `auto` / 空串 / 大小写统一到 `device::normalize_serial_port`；`script_bitw` 默认值改走 `ChipFamily`
 - `CLAUDE.md` 明确记录「有意不走 ChipFamily」的白名单边界，避免把 binpkg 格式能力、EC618/716S/718 协议变体、型号文档映射误收敛
 - 删除 workspace 未使用的 `tracing` / `tracing-subscriber` / `tokio` 依赖
+- P3：`luatos_flash::raw::RawChip::from_family` 成为 `ChipFamily → raw 协议` 的唯一映射入口，`flash raw` 与 `flash dump` 不再各写一份 `match family`；`RawChip` 与 `ChipFamily` 语义不同，保持两个枚举不合并
+- P3：`CLAUDE.md` 补齐 `luatos-hzv` crate 与独立 `hzv` 子命令的说明（按约定保留，不并入其他链路）
 
 #### SOC 包资源纯内存读取
 
@@ -63,6 +69,12 @@ All notable changes to this project will be documented in this file.
 - 支持全局 text/json/jsonl 输出，新增 `luatos-hzv` 库、容器与媒体解析测试及 `docs/hzv.md` 使用说明。
 
 ### 修复
+
+#### `flash dump` 在开串口前拦截不支持读回的协议
+
+- 旧实现的芯片族白名单把 CCM4211 列为支持，但该协议实测 `GET_FLASH_DATA` 无应答、能力表 `supports_read()` 为 false，用户要等到打开串口、加载 ramrun 之后才看到失败；XT804 虽在旧白名单之外，但本次改用 `RawChip::from_family` 后会被映射成 Xt804，必须靠能力校验拦住，否则会回归为放行
+- 现在统一由能力表判定：仅 BK7258 可读回，CCM4211 / XT804 均在连接硬件前给出明确错误；错误文案同步修正为「仅支持 Air8101(BK7258)」，并把子命令名统一为 `flash dump`
+- 新增 `resolve_dump_chip` 纯函数与 CLI 层回归测试，覆盖全部 7 个 `ChipFamily` 变体的放行/拒绝
 
 #### Air780EPM：修复 USB 烧录失败
 

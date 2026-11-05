@@ -3,7 +3,7 @@
 //! 从 CDN 获取资源清单（files.json），支持按模组/版本筛选，
 //! 下载固件文件并进行 SHA256 校验。
 //!
-//! CLI 和 GUI 共用此 crate 的 API，各自负责渲染/格式化输出。
+//! CLI 通过此 crate 的 API 取资源，输出渲染由 CLI 层负责。
 
 use std::cmp::Reverse;
 use std::io::{Read, Write};

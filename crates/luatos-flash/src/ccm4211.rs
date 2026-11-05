@@ -1741,7 +1741,7 @@ mod tests {
     ///
     /// 两者都是 `flash raw` 的能力前提：
     /// - `block_len` 是分区级擦除的实际粒度，直接决定 `erase()` 循环几次
-    /// - `GET_FLASH_DATA` 若可用，`flash raw dump` 的成本会大幅下降
+    /// - `GET_FLASH_DATA` 若可用，`flash dump` 的成本会大幅下降
     ///
     /// 用法：`cargo test -p luatos-flash hw_probe -- --ignored --nocapture`
     /// 环境变量：`HW_PORT`（默认 COM23）、`HW_SOC`（默认 refs/soc_files 下的 Air1601 V1021）

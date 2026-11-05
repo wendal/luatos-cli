@@ -1406,7 +1406,7 @@ mod resource_download_tests {
     /// ```
     ///
     /// 若可用，则 `flash raw --verify` 可以从"只能记录设备端 CRC"升级为真正的
-    /// 主机端读回比对，`flash raw dump` 也变得可行。
+    /// 主机端读回比对，`flash dump` 也变得可行。
     ///
     /// 用法：`cargo test -p luatos-flash hw_probe_bk7258 -- --ignored --nocapture`
     /// 环境变量：`HW_PORT`（默认 COM12）、`HW_SOC`（默认 refs/soc_files 下的 Air8101 V2015）

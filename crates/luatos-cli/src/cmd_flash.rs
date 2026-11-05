@@ -497,12 +497,26 @@ pub fn cmd_flash_ext_flash(port: &str, baud: u32, partition: &str, file: &str, e
     Ok(())
 }
 
-/// 读回任意 Flash 地址区间（`flash raw dump`）。
+/// 选出 `flash dump` 可用的 raw 协议：无 raw 实现、或协议不支持读回，都在连硬件之前拒绝。
 ///
-/// 需要协议支持 flash 读命令：BK7258 支持（`FLASH_CMD_READ`/`FLASH_CMD_SECTOR_READ`），
-/// CCM4211 不支持（实测无读回通道）。
+/// 只有 BK7258 提供 flash 读命令（`FLASH_CMD_READ`/`FLASH_CMD_SECTOR_READ`）；
+/// CCM4211（实测 `GET_FLASH_DATA` 无应答）与 XT804（bootloader 命令集无读回）
+/// 由 `supports_read()` 提前拦下，不去占用串口。抽成纯函数便于在不碰硬件的前提下回归。
+fn resolve_dump_chip(family: ChipFamily, chip_type: &str) -> anyhow::Result<luatos_flash::raw::RawChip> {
+    use luatos_flash::raw::RawChip;
+
+    let chip = RawChip::from_family(family).with_context(|| format!("flash dump 目前仅支持 Air8101(BK7258)：当前芯片 {chip_type} ({family:?}) 没有对应的 raw 协议"))?;
+    anyhow::ensure!(
+        chip.supports_read(),
+        "flash dump 目前仅支持 Air8101(BK7258)：协议 {} 不提供 flash 读回通道（当前芯片 {chip_type} / {family:?}）",
+        chip.name()
+    );
+    Ok(chip)
+}
+
+/// 读回任意 Flash 地址区间（`flash dump`）。
 pub fn cmd_flash_raw_dump(soc: &str, port: &str, addr: &str, len: &str, output: &str, step: u8, format: &OutputFormat) -> anyhow::Result<()> {
-    use luatos_flash::raw::{self, RawChip};
+    use luatos_flash::raw;
 
     let command = "flash.raw-dump".to_string();
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -514,14 +528,7 @@ pub fn cmd_flash_raw_dump(soc: &str, port: &str, addr: &str, len: &str, output: 
     anyhow::ensure!(len <= 64 * 1024 * 1024, "--len 超过 64MiB 上限，请分多次导出");
 
     let info = luatos_soc::read_soc_info(soc)?;
-    let chip = match info.family() {
-        ChipFamily::Bk72xx => RawChip::Bk7258,
-        ChipFamily::Ccm4211 => RawChip::Ccm4211,
-        other => anyhow::bail!(
-            "flash raw dump 目前仅支持 Air8101(BK7258) 与 Air1601/Air1602/Air1603/Air1604(CCM4211)，当前芯片: {} ({other:?})",
-            info.chip.chip_type
-        ),
-    };
+    let chip = resolve_dump_chip(info.family(), &info.chip.chip_type)?;
 
     let on_progress = make_progress_callback(format, command.clone(), step);
     on_progress(&luatos_flash::FlashProgress::info("RawDump", 10.0, &format!("读回 0x{addr:08x} 共 {len} 字节")).with_region("raw"));
@@ -598,48 +605,31 @@ pub fn cmd_flash_raw(
 
     let info = luatos_soc::read_soc_info(soc)?;
     let family = info.family();
+    // 芯片族 → raw 协议只走 from_family 一处；受保护区间按协议区分，避免两个 match 各自维护一份分发表。
+    let chip = RawChip::from_family(family).with_context(|| {
+        format!(
+            "flash raw 目前仅支持 Air8101(BK7258)、Air6208/Air101(XT804) 与 Air1601/Air1602/Air1603/Air1604(CCM4211)，当前芯片: {} ({family:?})",
+            info.chip.chip_type
+        )
+    })?;
 
     // 受保护区间：bootloader + core。两者在 info.json 里的边界就是 bl_addr..script_addr
-    // （BK72xx 的 bl_addr 为 0x0，core 紧随其后直到脚本分区）。
-    let (chip, protected) = match family {
-        ChipFamily::Bk72xx => {
-            let script_addr = info.script_addr();
-            (
-                RawChip::Bk7258,
-                vec![raw::ProtectedRange {
-                    start: 0,
-                    len: script_addr as u64,
-                    name: "bootloader+core",
-                }],
-            )
-        }
-        ChipFamily::Ccm4211 => {
+    // （BK72xx / XT804 的 bl_addr 为 0x0，core 紧随其后直到脚本分区；CCM4211 从 bl_addr 起算）。
+    let script_addr = info.script_addr();
+    let protected = match chip {
+        RawChip::Bk7258 | RawChip::Xt804 => vec![raw::ProtectedRange {
+            start: 0,
+            len: script_addr as u64,
+            name: "bootloader+core",
+        }],
+        RawChip::Ccm4211 => {
             let bl_addr = info.bl_addr().unwrap_or(0);
-            let script_addr = info.script_addr();
-            (
-                RawChip::Ccm4211,
-                vec![raw::ProtectedRange {
-                    start: bl_addr,
-                    len: script_addr.saturating_sub(bl_addr) as u64,
-                    name: "bootloader+core",
-                }],
-            )
+            vec![raw::ProtectedRange {
+                start: bl_addr,
+                len: script_addr.saturating_sub(bl_addr) as u64,
+                name: "bootloader+core",
+            }]
         }
-        ChipFamily::Xt804 => {
-            let script_addr = info.script_addr();
-            (
-                RawChip::Xt804,
-                vec![raw::ProtectedRange {
-                    start: 0,
-                    len: script_addr as u64,
-                    name: "bootloader+core",
-                }],
-            )
-        }
-        other => anyhow::bail!(
-            "flash raw 目前仅支持 Air8101(BK7258)、Air6208/Air101(XT804) 与 Air1601/Air1602/Air1603/Air1604(CCM4211)，当前芯片: {} ({other:?})",
-            info.chip.chip_type
-        ),
     };
 
     let capacity = match flash_size {
@@ -1111,6 +1101,23 @@ pub fn print_script_result(format: &OutputFormat) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use luatos_flash::raw::RawChip;
+
+    #[test]
+    fn dump_只允许_bk7258_且在开串口前拒绝其余芯片族() {
+        assert_eq!(resolve_dump_chip(ChipFamily::Bk72xx, "air8101").unwrap(), RawChip::Bk7258);
+        for family in [
+            ChipFamily::Xt804,
+            ChipFamily::Ccm4211,
+            ChipFamily::Ec718,
+            ChipFamily::Rda8910,
+            ChipFamily::Air6201,
+            ChipFamily::Unknown,
+        ] {
+            let err = resolve_dump_chip(family, "test-soc").unwrap_err().to_string();
+            assert!(err.contains("flash dump 目前仅支持 Air8101(BK7258)"), "{family:?}: {err}");
+        }
+    }
 
     #[test]
     fn script_bin_rejects_500kb_image_for_400kb_partition_before_boot_mode() {

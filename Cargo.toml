@@ -13,7 +13,6 @@ members = [
     "crates/luatos-resource",
     "crates/luatos-testcase",
     "crates/luatos-codec",
-    # "crates/luatos-gui/src-tauri",  # GUI 暂时禁用
 ]
 
 [workspace.package]

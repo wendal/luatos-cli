@@ -1,5 +1,7 @@
 # EC7xx 多脚本目录支持实施计划
 
+> **归档说明（2026-11）**：本文是当时的实施计划快照，不作维护。其中 `crates/luatos-gui/` 相关文件与 `cargo build -p luatos-gui` / `npm run build` 命令已随 GUI crate 删除而失效；`sf32lb5x.rs` 亦已移除。CLI 侧实现请以当前源码与 `CLAUDE.md` 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 为 EC7xx/Air8000/Air780EPM 系列芯片添加多脚本目录支持，使得：

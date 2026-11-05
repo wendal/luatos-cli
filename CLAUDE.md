@@ -31,10 +31,10 @@ Linux 上 `serialport` 需要系统依赖：`libudev-dev` 与 `pkg-config`（CI 
 
 ## 项目结构
 
-Cargo workspace（`Cargo.toml`）包含 12 个 crate（`luatos-gui` 注释禁用，不参与构建）：
+Cargo workspace（`Cargo.toml`）包含 12 个 crate：
 
-- **crates/luatos-cli** — 二进制入口。`main.rs` 用 clap 派生宏定义子命令树（`serial` / `soc` / `flash` / `log` / `project` / `build` / `resource` / `device` / `doctor` / `fota` / `guide` / `trun` / `version`）。各 `cmd_*.rs` 模块实现业务逻辑，全局 `--format text|json|jsonl` 决定输出形式；关键模块：`keyword.rs`（`flash test` 与 `trun` 共用的关键字判定）、`cmd_trun.rs`（testcase 单点调试）、`cmd_doctor.rs`（环境诊断）、`cmd_guide.rs`（型号二级帮助）。
-- **crates/luatos-flash** — 刷机协议：BK7258（Air8101）、XT804（Air6208/Air101/Air103）、CCM4211（Air1601/Air1602/Air1603/Air1604）、EC718（Air8000/Air780）、Air6201 外置 SPI。每个芯片一个模块，公共类型为 `FlashProgress` 与 `ProgressCallback = Box<dyn Fn(&FlashProgress) + Send>`。SOC 包内资源（rom.bin、fdl、ramrun 等）一律经 `luatos_soc::SocArchive` 纯内存读取，不再解压到临时目录或调用外部刷机 exe。
+- **crates/luatos-cli** — 二进制入口。`main.rs` 用 clap 派生宏定义子命令树（`serial` / `soc` / `flash` / `log` / `project` / `build` / `resource` / `device` / `doctor` / `fota` / `guide` / `trun` / `hzv` / `version`）。各 `cmd_*.rs` 模块实现业务逻辑，全局 `--format text|json|jsonl` 决定输出形式；关键模块：`keyword.rs`（`flash test` 与 `trun` 共用的关键字判定）、`cmd_trun.rs`（testcase 单点调试）、`cmd_doctor.rs`（环境诊断）、`cmd_guide.rs`（型号二级帮助）、`cmd_hzv.rs`（HZV 独立子命令入口）。
+- **crates/luatos-flash** — 刷机协议：BK7258（Air8101）、XT804（Air6208/Air101/Air103）、CCM4211（Air1601/Air1602/Air1603/Air1604）、EC718（Air8000/Air780）、Air6201 外置 SPI。每个芯片一个模块，公共类型为 `FlashProgress` 与 `ProgressCallback = Box<dyn Fn(&FlashProgress) + Send>`。`raw.rs` 的 `RawChip` 是任意地址读写协议的能力表；`RawChip::from_family` 是 `ChipFamily → raw 协议` 的唯一映射入口。SOC 包内资源（rom.bin、fdl、ramrun 等）一律经 `luatos_soc::SocArchive` 纯内存读取，不再解压到临时目录或调用外部刷机 exe。
 - **crates/luatos-soc** — SOC 固件包（ZIP+7z）解析、解包、打包、注入（`combine.rs`）、OTA 包生成。`ota.rs` 含 LZMA SDK 的 FFI 绑定（`lzma_sdk_compress`），`pack.rs` 为纯 Rust ZIP/7z 打包。
 - **crates/luatos-luadb** — LuaDB 文件系统镜像打包，含内置 Lua 5.3 编译器（`build.rs` 走 `cc` 编译 `embedded_helpers.rs`）与 BK CRC16 framing。
 - **crates/luatos-codec** — 零依赖的协议基础算法（Beken CRC16 / 32+2 帧化 / 解帧）。`luatos-luadb` 与 `luatos-soc` 共用，避免同一算法两份实现。
@@ -44,6 +44,7 @@ Cargo workspace（`Cargo.toml`）包含 12 个 crate（`luatos-gui` 注释禁用
 - **crates/luatos-log** — 日志解析框架。核心 trait 是 `LogParser`（`name()` + `parse_line()`），内置 `LuatosParser` / `BootLogParser` / `SocLogDecoder`，`LogDispatcher` 按注册顺序尝试解析。`smart.rs` 提供智能诊断。
 - **crates/luatos-log-ffi** — C ABI 动态库（cdylib），导出 `luatos_soclog_analyze()` 与 `pySoclogAnalyze()` 别名，供 Python/C/Go 等语言直接消费 SOC 日志解码。
 - **crates/luatos-testcase** — testcase 解析与发现（metas / discovery / ctx.json 合并 / script.bin 构建），承载 `trun` 的独立可测逻辑（path crate, lib only）。
+- **crates/luatos-hzv** — HZV v1 音视频容器（MJPEG + MP3/PCM）的转换、封装与校验。作为**独立子命令 `hzv`** 保留，不并入 flash/project 链路。
 
 ## 关键约定
 
@@ -56,6 +57,7 @@ Cargo workspace（`Cargo.toml`）包含 12 个 crate（`luatos-gui` 注释禁用
 - `luatos-soc/src/combine.rs::is_ec7xx`：binpkg 注入的**格式能力白名单**，只覆盖 EC7xx 新格式；EC618 / EC716S 的 binpkg 结构不同，换成 `ChipFamily::Ec718` 会放行不支持的包。
 - `luatos-flash/src/ec718.rs::EigencommChip::from_soc`：区分 EC618 / EC716S / EC718 三种协议变体，还参考 `package_chip`；ChipFamily 把三者都归为 `Ec718`，无法表达。
 - `luatos-cli/src/cmd_flash.rs`（显示名）、`cmd_fota.rs`（dtools 变体与配置文件名）、`cmd_guide.rs`（型号→文档映射）、`luatos-project/src/wizard.rs`（从**文件名**推断）：都是「同族细分」或展示层映射，不是芯片族判定。
+- **不要合并 `RawChip` 与 `ChipFamily`**：前者只覆盖支持任意地址读写的三套协议，后者是芯片归一化。`ChipFamily → RawChip` 只走 `luatos_flash::raw::RawChip::from_family`；`flash raw` / `flash dump` 的能力校验（尤其 `supports_read()`）必须在开串口之前完成。
 - 端口归一化统一走 `luatos_flash::device::normalize_serial_port`（`auto` / 空串 / 大小写 / trim 的单一入口）。
 - 脚本镜像容量校验统一走 `luatos_flash::ensure_image_fits`：刷机路径传芯片实际写入对齐，离线构建 `build filesystem` 传 1。
 - BK CRC16 帧化统一走 `luatos_codec`，不要在 `luatos-luadb` 与 `luatos-soc` 里各写一份。

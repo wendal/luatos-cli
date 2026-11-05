@@ -368,10 +368,10 @@ enum FlashCommands {
         #[arg(long)]
         no_reboot: bool,
     },
-    /// 读回任意 Flash 地址区间到文件（flash raw dump）
+    /// 读回任意 Flash 地址区间到文件
     ///
-    /// 只读操作，不需要 --force。需要协议支持 flash 读命令：Air8101 支持，
-    /// Air1601/Air1602/Air1603/Air1604 不支持（实测无读回通道）。
+    /// 只读操作，不需要 --force。需要协议支持 flash 读命令：目前仅 Air8101(BK7258) 支持；
+    /// CCM4211（实测 GET_FLASH_DATA 无应答）与 XT804（bootloader 无读回命令）不支持。
     Dump {
         /// Path to .soc file（用于确定芯片族与下载波特率）
         #[arg(long)]

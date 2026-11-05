@@ -33,6 +33,22 @@ pub enum RawChip {
 }
 
 impl RawChip {
+    /// 芯片族 → `flash raw` 协议的唯一映射入口。
+    ///
+    /// `RawChip` 只覆盖支持任意地址读写的三套协议，与 `ChipFamily`（芯片归一化）
+    /// 语义不同，因此两者不合并：新增芯片族时只需在这里决定是否提供 raw 实现。
+    /// 这里故意穷举所有变体（不用 `_`），让新增 ChipFamily 时编译器强制提醒补映射。
+    pub fn from_family(family: luatos_soc::ChipFamily) -> Option<Self> {
+        use luatos_soc::ChipFamily;
+
+        match family {
+            ChipFamily::Bk72xx => Some(RawChip::Bk7258),
+            ChipFamily::Ccm4211 => Some(RawChip::Ccm4211),
+            ChipFamily::Xt804 => Some(RawChip::Xt804),
+            ChipFamily::Ec718 | ChipFamily::Rda8910 | ChipFamily::Air6201 | ChipFamily::Unknown => None,
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             RawChip::Bk7258 => "bk7258",
@@ -708,6 +724,19 @@ mod tests {
         assert_eq!(RawChip::Ccm4211.erase_granularity(), Some(0x40000));
         // XT804 flash 扇区 4KB（INSIDE_FLS_SECTOR_SIZE）
         assert_eq!(RawChip::Xt804.erase_granularity(), Some(0x1000));
+    }
+
+    #[test]
+    fn 芯片族到_raw_协议只在一处映射() {
+        use luatos_soc::ChipFamily;
+
+        assert_eq!(RawChip::from_family(ChipFamily::Bk72xx), Some(RawChip::Bk7258));
+        assert_eq!(RawChip::from_family(ChipFamily::Xt804), Some(RawChip::Xt804));
+        assert_eq!(RawChip::from_family(ChipFamily::Ccm4211), Some(RawChip::Ccm4211));
+        // 这几族没有任意地址读写的 raw 协议实现，新增支持时必须回到 from_family 登记。
+        for family in [ChipFamily::Ec718, ChipFamily::Rda8910, ChipFamily::Air6201, ChipFamily::Unknown] {
+            assert_eq!(RawChip::from_family(family), None, "{family:?} 不应有 raw 实现");
+        }
     }
 
     #[test]

@@ -5,40 +5,42 @@
 Every commit **must** pass these checks before being committed:
 
 ```bash
-cargo fmt --check                    # Formatting (auto-fix with: cargo fmt)
-cargo clippy                         # Lint warnings
+cargo fmt --all -- --check           # Formatting (auto-fix with: cargo fmt --all)
+cargo clippy --workspace -- -D warnings  # Lint (CI enforces this)
 cargo test --workspace               # All unit tests
 ```
 
-If `cargo fmt --check` fails, run `cargo fmt` to auto-fix, then re-check clippy and tests.
+If `cargo fmt --all -- --check` fails, run `cargo fmt --all` to auto-fix, then re-check clippy and tests.
 
 ## Build & Test
 
 ```bash
 cargo build --release                # Release build
-cargo test --workspace               # All unit tests (~99)
+cargo test --workspace               # All unit tests
 cargo test -p luatos-luadb           # Single crate
 cargo test pack_luadb_               # Single test by name pattern
-cargo clippy -- -D warnings          # Lint (CI enforces this)
-cargo fmt -- --check                 # Format check
+cargo clippy --workspace -- -D warnings  # Lint (CI enforces this)
+cargo fmt --all -- --check           # Format check
 ```
 
 Linux requires `libudev-dev` and `pkg-config` for serial port support.
 
 ## Architecture
 
-Cargo workspace with 8 crates — the CLI binary orchestrates 7 library crates:
+Cargo workspace with 12 crates — `luatos-cli` is the binary entry point, the rest are library crates:
 
-- **luatos-cli** — Binary entry point. Clap-based CLI with nested subcommands (`serial`, `soc`, `flash`, `log`, `project`, `build`, `resource`). Owns the `--format json|text` global flag and progress display. Main logic split into `cmd_serial.rs`, `cmd_soc.rs`, `cmd_flash.rs`, `cmd_log.rs`, `cmd_project.rs`, `cmd_build.rs`, `cmd_resource.rs` modules.
-- **luatos-flash** — Flash protocols for BK7258, XT804 (Air6208), EC718 (Air780/Air201/Air8000), and CCM4211 (Air1601). Each chip module exposes a top-level function that accepts a `ProgressCallback`.
+- **luatos-cli** — Binary entry point. Clap-based CLI with nested subcommands (`serial`, `soc`, `flash`, `log`, `project`, `build`, `resource`, `device`, `doctor`, `fota`, `guide`, `trun`, `hzv`, `version`). Owns the global `--format text|json|jsonl` flag and progress display; main logic split into `cmd_*.rs` modules.
+- **luatos-flash** — Flash protocols for BK7258 (Air8101), XT804 (Air6208/Air101), CCM4211 (Air1601...), EC718 (Air780/Air8000), Air6201 external SPI. `raw.rs::RawChip::from_family` is the single `ChipFamily → raw 协议` mapping.
 - **luatos-soc** — Parse/unpack/pack SOC firmware archives (ZIP + 7z via `sevenz-rust2`).
 - **luatos-luadb** — LuaDB filesystem image packer, embedded Lua 5.3 compiler (C, built via `build.rs`), BK CRC16 adapter.
+- **luatos-codec** — Dependency-free protocol primitives (Beken CRC16 framing/deframing, CRC16-Modbus); shared by flash/log/luadb/soc.
 - **luatos-serial** — Serial port enumeration and log streaming (text + binary).
 - **luatos-project** — Project scaffolding, `luatos-project.toml` config, LuaTools INI import (`import.rs`), Lua dependency analysis (`lua_deps.rs`).
 - **luatos-resource** — Firmware resource manifest fetching and downloading from CDN, with SHA256 verification and download callbacks.
 - **luatos-log** — Log parsing framework built around the `LogParser` trait. Includes `LuatosParser`, `BootLogParser`, `SocLogDecoder`. `LogDispatcher` tries parsers in registration order.
-
-> Note: `luatos-gui` (Tauri 2 + Vue 3) 暂时禁用，不参与 workspace 构建。
+- **luatos-log-ffi** — C ABI cdylib exposing SOC log decoding to Python/C/Go.
+- **luatos-testcase** — testcase parsing/discovery and script.bin building for `trun` (path crate, lib only).
+- **luatos-hzv** — HZV v1 video container conversion/verification, backing the independent `hzv` subcommand.
 
 ## Key Conventions
 
@@ -50,7 +52,7 @@ The global `--format` flag produces a consistent JSON envelope:
 ```json
 { "status": "ok", "command": "soc.info", "data": { ... } }
 ```
-When adding commands, branch on `OutputFormat::Text` vs `OutputFormat::Json` and follow this structure.
+When adding commands, use `event::emit_result` / `event::emit_message` so `text` / `json` / `jsonl` all get the same envelope and `jsonl` stays single-line.
 
 ### Progress callback
 Flash operations report progress via `ProgressCallback = Box<dyn Fn(&FlashProgress) + Send>`. The CLI creates one via `make_progress_callback(format)` that formats for text or JSON.
