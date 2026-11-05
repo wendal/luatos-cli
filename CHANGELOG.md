@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ### 移除
 
+#### 移除 `pipeline flash-log` 子命令
+
+- 该命令仅支持 XT804、`try_stdin()` 为空实现、README 从未记载，且与 `flash test` / `trun` 的闭环能力重复；刷机后抓日志改用 `flash run --tail-log-secs <N>`，闭环判定改用 `flash test`
+
 #### 删除 SF32LB58 支持与外部刷机进程
 
 - 移除 SF32LB58 全部支持：`ChipFamily::Sf32lb58`、`luatos-flash::sf32lb5x` 模块、本地 `sftool-lib` crate 与 `[patch]` 覆盖、`sf32lb52`~`sf32lb58` feature、`flash run` 的 `--auto-reset`/`--dtr-boot`/`--sf32-rts-reset`/`--sf32-boot-wait-ms` 参数、`guide model` 的 sf32 条目及相关文档
@@ -13,6 +17,14 @@ All notable changes to this project will be documented in this file.
 - `flash script` / `flash clear-kv` 的 `--baud` 参数随 SF32 一并移除（其余芯片未使用）
 
 ### 变更
+
+#### 架构收敛（P0 / P1 / P2）
+
+- 新增零依赖 crate `luatos-codec`，统一 Beken CRC16 帧化/解帧与 CRC16-Modbus；`luatos-luadb`、`luatos-soc`、`luatos-log`、`luatos-flash` 不再各写一份（设备侧 CRC16 为 init=0 变体，勿改成标准 MODBUS 初值）
+- 新增 `luatos-cli/src/keyword.rs`，`flash test` 与 `trun` 共用关键字判定；Ctrl+C 处理器统一到 `event`；`project wizard` 改用 `emit_result`，修复 `--format jsonl` 输出多行 JSON
+- `luatos_flash::ensure_image_fits` 统一刷机路径与 `build filesystem` 的脚本容量判定；端口 `auto` / 空串 / 大小写统一到 `device::normalize_serial_port`；`script_bitw` 默认值改走 `ChipFamily`
+- `CLAUDE.md` 明确记录「有意不走 ChipFamily」的白名单边界，避免把 binpkg 格式能力、EC618/716S/718 协议变体、型号文档映射误收敛
+- 删除 workspace 未使用的 `tracing` / `tracing-subscriber` / `tokio` 依赖
 
 #### SOC 包资源纯内存读取
 

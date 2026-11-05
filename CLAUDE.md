@@ -33,7 +33,7 @@ Linux 上 `serialport` 需要系统依赖：`libudev-dev` 与 `pkg-config`（CI 
 
 Cargo workspace（`Cargo.toml`）包含 12 个 crate（`luatos-gui` 注释禁用，不参与构建）：
 
-- **crates/luatos-cli** — 二进制入口。`main.rs` 用 clap 派生宏定义子命令树（`serial` / `soc` / `flash` / `log` / `pipeline` / `project` / `build` / `resource` / `device` / `doctor` / `fota` / `guide` / `trun` / `version`）。各 `cmd_*.rs` 模块实现业务逻辑，全局 `--format text|json|jsonl` 决定输出形式；关键模块：`cmd_pipeline.rs`（刷机+日志流水线）、`cmd_trun.rs`（testcase 单点调试）、`cmd_doctor.rs`（环境诊断）、`cmd_guide.rs`（型号二级帮助）。
+- **crates/luatos-cli** — 二进制入口。`main.rs` 用 clap 派生宏定义子命令树（`serial` / `soc` / `flash` / `log` / `project` / `build` / `resource` / `device` / `doctor` / `fota` / `guide` / `trun` / `version`）。各 `cmd_*.rs` 模块实现业务逻辑，全局 `--format text|json|jsonl` 决定输出形式；关键模块：`keyword.rs`（`flash test` 与 `trun` 共用的关键字判定）、`cmd_trun.rs`（testcase 单点调试）、`cmd_doctor.rs`（环境诊断）、`cmd_guide.rs`（型号二级帮助）。
 - **crates/luatos-flash** — 刷机协议：BK7258（Air8101）、XT804（Air6208/Air101/Air103）、CCM4211（Air1601/Air1602/Air1603/Air1604）、EC718（Air8000/Air780）、Air6201 外置 SPI。每个芯片一个模块，公共类型为 `FlashProgress` 与 `ProgressCallback = Box<dyn Fn(&FlashProgress) + Send>`。SOC 包内资源（rom.bin、fdl、ramrun 等）一律经 `luatos_soc::SocArchive` 纯内存读取，不再解压到临时目录或调用外部刷机 exe。
 - **crates/luatos-soc** — SOC 固件包（ZIP+7z）解析、解包、打包、注入（`combine.rs`）、OTA 包生成。`ota.rs` 含 LZMA SDK 的 FFI 绑定（`lzma_sdk_compress`），`pack.rs` 为纯 Rust ZIP/7z 打包。
 - **crates/luatos-luadb** — LuaDB 文件系统镜像打包，含内置 Lua 5.3 编译器（`build.rs` 走 `cc` 编译 `embedded_helpers.rs`）与 BK CRC16 framing。

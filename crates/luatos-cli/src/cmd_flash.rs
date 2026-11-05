@@ -4,6 +4,7 @@ use luatos_soc::ChipFamily;
 use crate::{
     cmd_log,
     event::{self, MessageLevel},
+    keyword,
     reset_args::ResetArgs,
     OutputFormat,
 };
@@ -727,60 +728,6 @@ pub fn cmd_flash_raw(
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct KeywordEvaluation {
-    results: Vec<(String, bool)>,
-    missing_keywords: Vec<String>,
-    all_passed: bool,
-}
-
-fn evaluate_keyword_results(all_lines: &[String], keywords: &[String]) -> KeywordEvaluation {
-    let mut results = Vec::with_capacity(keywords.len());
-    let mut missing_keywords = Vec::new();
-    for kw in keywords {
-        let found = all_lines.iter().any(|line| line.contains(kw.as_str()));
-        results.push((kw.clone(), found));
-        if !found {
-            missing_keywords.push(kw.clone());
-        }
-    }
-
-    let all_passed = missing_keywords.is_empty();
-    KeywordEvaluation {
-        results,
-        missing_keywords,
-        all_passed,
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct FlashTestOutcome {
-    pass: KeywordEvaluation,
-    fail_keyword_results: Vec<(String, bool)>,
-    matched_fail_keywords: Vec<String>,
-    fast_failed: bool,
-    all_passed: bool,
-}
-
-fn evaluate_keyword_hits(all_lines: &[String], keywords: &[String]) -> Vec<(String, bool)> {
-    keywords.iter().map(|kw| (kw.clone(), all_lines.iter().any(|line| line.contains(kw.as_str())))).collect()
-}
-
-fn evaluate_flash_test_outcome(all_lines: &[String], pass_keywords: &[String], fail_keywords: &[String]) -> FlashTestOutcome {
-    let pass = evaluate_keyword_results(all_lines, pass_keywords);
-    let fail_keyword_results = evaluate_keyword_hits(all_lines, fail_keywords);
-    let matched_fail_keywords = fail_keyword_results.iter().filter(|(_, found)| *found).map(|(kw, _)| kw.clone()).collect::<Vec<_>>();
-    let fast_failed = !matched_fail_keywords.is_empty();
-    let all_passed = pass.all_passed && !fast_failed;
-    FlashTestOutcome {
-        pass,
-        fail_keyword_results,
-        matched_fail_keywords,
-        fast_failed,
-        all_passed,
-    }
-}
-
 /// Closed-loop flash test: flash firmware → capture boot log → check keywords → PASS/FAIL.
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_flash_test(
@@ -914,7 +861,7 @@ pub fn cmd_flash_test(
         let start = Instant::now();
         let timeout = Duration::from_secs(timeout_secs);
         let mut buf = vec![0u8; 4096];
-        let mut early_outcome: Option<FlashTestOutcome> = None;
+        let mut early_outcome: Option<crate::keyword::KeywordOutcome> = None;
 
         if use_binary_log {
             if is_ec718 {
@@ -938,8 +885,8 @@ pub fn cmd_flash_test(
                                 );
                                 all_lines.push(msg);
                             }
-                            let outcome = evaluate_flash_test_outcome(&all_lines, keywords, fail_keywords);
-                            if outcome.fast_failed || outcome.pass.all_passed {
+                            let outcome = keyword::evaluate_outcome(keywords, fail_keywords, |kw| all_lines.iter().any(|line| line.contains(kw)));
+                            if outcome.fast_failed || outcome.all_passed {
                                 early_outcome = Some(outcome);
                                 break;
                             }
@@ -971,8 +918,8 @@ pub fn cmd_flash_test(
                                 );
                                 all_lines.push(msg);
                             }
-                            let outcome = evaluate_flash_test_outcome(&all_lines, keywords, fail_keywords);
-                            if outcome.fast_failed || outcome.pass.all_passed {
+                            let outcome = keyword::evaluate_outcome(keywords, fail_keywords, |kw| all_lines.iter().any(|line| line.contains(kw)));
+                            if outcome.fast_failed || outcome.all_passed {
                                 early_outcome = Some(outcome);
                                 break;
                             }
@@ -1013,8 +960,8 @@ pub fn cmd_flash_test(
                             }
                         }
 
-                        let outcome = evaluate_flash_test_outcome(&all_lines, keywords, fail_keywords);
-                        if outcome.fast_failed || outcome.pass.all_passed {
+                        let outcome = keyword::evaluate_outcome(keywords, fail_keywords, |kw| all_lines.iter().any(|line| line.contains(kw)));
+                        if outcome.fast_failed || outcome.all_passed {
                             early_outcome = Some(outcome);
                             break;
                         }
@@ -1051,10 +998,10 @@ pub fn cmd_flash_test(
     }
 
     // Step 3: Evaluate keywords
-    let outcome = evaluate_flash_test_outcome(&all_lines, keywords, fail_keywords);
-    let keyword_results = outcome.pass.results;
-    let missing_keywords = outcome.pass.missing_keywords;
-    let fail_keyword_results = outcome.fail_keyword_results;
+    let outcome = keyword::evaluate_outcome(keywords, fail_keywords, |kw| all_lines.iter().any(|line| line.contains(kw)));
+    let keyword_results = outcome.pass_results;
+    let missing_keywords = outcome.missing_keywords;
+    let fail_keyword_results = outcome.fail_results;
     let matched_fail_keywords = outcome.matched_fail_keywords;
     let fast_failed = outcome.fast_failed;
     let all_passed = outcome.all_passed;
@@ -1312,45 +1259,45 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_keyword_results_marks_missing_keyword() {
+    fn evaluate_outcome_marks_missing_keyword() {
         let all_lines = vec!["Boot OK".to_string(), "READY token".to_string()];
         let keywords = vec!["READY".to_string(), "LuatOS@".to_string()];
 
-        let evaluated = evaluate_keyword_results(&all_lines, &keywords);
-        assert!(!evaluated.all_passed);
-        assert_eq!(evaluated.results, vec![("READY".to_string(), true), ("LuatOS@".to_string(), false),]);
-        assert_eq!(evaluated.missing_keywords, vec!["LuatOS@".to_string()]);
+        let outcome = keyword::evaluate_outcome(&keywords, &[], |kw| all_lines.iter().any(|line| line.contains(kw)));
+        assert!(!outcome.all_passed);
+        assert_eq!(outcome.pass_results, vec![("READY".to_string(), true), ("LuatOS@".to_string(), false),]);
+        assert_eq!(outcome.missing_keywords, vec!["LuatOS@".to_string()]);
     }
 
     #[test]
-    fn evaluate_keyword_results_passes_when_all_found() {
+    fn evaluate_outcome_passes_when_all_found() {
         let all_lines = vec!["Boot LuatOS@ READY".to_string()];
         let keywords = vec!["READY".to_string(), "LuatOS@".to_string()];
 
-        let evaluated = evaluate_keyword_results(&all_lines, &keywords);
-        assert!(evaluated.all_passed);
-        assert_eq!(evaluated.missing_keywords, Vec::<String>::new());
+        let outcome = keyword::evaluate_outcome(&keywords, &[], |kw| all_lines.iter().any(|line| line.contains(kw)));
+        assert!(outcome.all_passed);
+        assert_eq!(outcome.missing_keywords, Vec::<String>::new());
     }
 
     #[test]
-    fn evaluate_flash_test_outcome_fast_fails_when_fail_keyword_matched() {
+    fn evaluate_outcome_fast_fails_when_fail_keyword_matched() {
         let all_lines = vec!["panic: assert failed".to_string(), "LuatOS@ ready".to_string()];
         let pass_keywords = vec!["LuatOS@".to_string()];
         let fail_keywords = vec!["panic".to_string(), "hardfault".to_string()];
 
-        let outcome = evaluate_flash_test_outcome(&all_lines, &pass_keywords, &fail_keywords);
+        let outcome = keyword::evaluate_outcome(&pass_keywords, &fail_keywords, |kw| all_lines.iter().any(|line| line.contains(kw)));
         assert!(!outcome.all_passed);
         assert!(outcome.fast_failed);
         assert_eq!(outcome.matched_fail_keywords, vec!["panic".to_string()]);
     }
 
     #[test]
-    fn evaluate_flash_test_outcome_does_not_fast_fail_when_fail_keywords_unset() {
+    fn evaluate_outcome_does_not_fast_fail_when_fail_keywords_unset() {
         let all_lines = vec!["LuatOS@ ready".to_string()];
         let pass_keywords = vec!["LuatOS@".to_string()];
         let fail_keywords = Vec::<String>::new();
 
-        let outcome = evaluate_flash_test_outcome(&all_lines, &pass_keywords, &fail_keywords);
+        let outcome = keyword::evaluate_outcome(&pass_keywords, &fail_keywords, |kw| all_lines.iter().any(|line| line.contains(kw)));
         assert!(outcome.all_passed);
         assert!(!outcome.fast_failed);
         assert_eq!(outcome.matched_fail_keywords, Vec::<String>::new());

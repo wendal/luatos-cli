@@ -20,6 +20,7 @@ use luatos_testcase::{build_ctx, build_script_bin, inject_identifiers, resolve_t
 use crate::cmd_flash;
 use crate::cmd_log;
 use crate::event::{self, MessageLevel};
+use crate::keyword;
 use crate::OutputFormat;
 use luatos_log::LogEntry;
 
@@ -423,24 +424,12 @@ pub fn cmd_trun_run(args: &TrunRunArgs, format: &OutputFormat) -> Result<Verdict
     let (verdict, keyword_hits, fail_keyword_hits, matched_fail_keywords, fast_failed) = if args.flash_only {
         (Verdict::Pass, Vec::new(), Vec::new(), Vec::new(), false)
     } else {
-        let keyword_hits: Vec<KeywordHit> = keywords
-            .iter()
-            .map(|k| KeywordHit {
-                keyword: k.clone(),
-                found: match_keyword(&all_entries, k, args.match_field),
-            })
-            .collect();
-        let fail_keyword_hits: Vec<KeywordHit> = fail_keywords
-            .iter()
-            .map(|k| KeywordHit {
-                keyword: k.clone(),
-                found: match_keyword(&all_entries, k, args.match_field),
-            })
-            .collect();
-        let matched_fail_keywords: Vec<String> = fail_keyword_hits.iter().filter(|h| h.found).map(|h| h.keyword.clone()).collect();
-        let fast_failed = !matched_fail_keywords.is_empty();
-        let all_passed = keyword_hits.iter().all(|h| h.found) && !fast_failed;
-        let verdict = derive_verdict(all_passed, fast_failed);
+        let outcome = keyword::evaluate_outcome(&keywords, &fail_keywords, |kw| match_keyword(&all_entries, kw, args.match_field));
+        let keyword_hits: Vec<KeywordHit> = outcome.pass_results.into_iter().map(|(keyword, found)| KeywordHit { keyword, found }).collect();
+        let fail_keyword_hits: Vec<KeywordHit> = outcome.fail_results.into_iter().map(|(keyword, found)| KeywordHit { keyword, found }).collect();
+        let matched_fail_keywords = outcome.matched_fail_keywords;
+        let fast_failed = outcome.fast_failed;
+        let verdict = derive_verdict(outcome.all_passed, fast_failed);
         (verdict, keyword_hits, fail_keyword_hits, matched_fail_keywords, fast_failed)
     };
     phase_durations.insert(Phase::Finalize.as_str().to_string(), start.elapsed().as_millis() as u64);

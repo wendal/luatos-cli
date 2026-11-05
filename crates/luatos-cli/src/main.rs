@@ -17,7 +17,6 @@ mod cmd_fota;
 mod cmd_guide;
 mod cmd_hzv;
 mod cmd_log;
-mod cmd_pipeline;
 mod cmd_project;
 mod cmd_project_wizard;
 mod cmd_resource;
@@ -25,6 +24,7 @@ mod cmd_serial;
 mod cmd_soc;
 mod cmd_trun;
 mod event;
+mod keyword;
 mod reset_args;
 
 const DEFAULT_FLASH_TEST_KEYWORD: &str = "LuatOS@";
@@ -102,11 +102,6 @@ enum Commands {
     Log {
         #[command(subcommand)]
         action: LogCommands,
-    },
-    /// Combined workflow commands (flash + reset + log)
-    Pipeline {
-        #[command(subcommand)]
-        action: PipelineCommands,
     },
     /// Project management
     Project {
@@ -498,34 +493,6 @@ enum LogCommands {
 }
 
 #[derive(Subcommand)]
-enum PipelineCommands {
-    /// Flash firmware, automatically reset device, then view logs
-    FlashLog {
-        /// Path to .soc firmware file
-        #[arg(long)]
-        soc: String,
-        /// Serial port (e.g. COM6)
-        #[arg(long)]
-        port: String,
-        /// Baud rate for log capture (default 2000000)
-        #[arg(long, default_value = "2000000")]
-        baud: u32,
-        /// Send probe to trigger binary log output
-        #[arg(long)]
-        probe: bool,
-        /// Enable smart diagnostic analysis
-        #[arg(long)]
-        smart: bool,
-        /// Save raw binary log to directory
-        #[arg(long)]
-        save: Option<String>,
-
-        #[command(flatten)]
-        reset: reset_args::ResetArgs,
-    },
-}
-
-#[derive(Subcommand)]
 enum ProjectCommands {
     /// 向导式创建 LuatOS 项目（交互式引导选择型号、版本、模板等）
     ///
@@ -891,17 +858,6 @@ fn main() {
             } => cmd_log::cmd_log_view_binary(&port, baud, probe, save.as_deref(), smart, &reset, &cli.format),
             LogCommands::Record { port, baud, output, json } => cmd_log::cmd_log_record(&port, baud, &output, json, &cli.format),
             LogCommands::Parse { path } => cmd_log::cmd_log_parse(&path, &cli.format),
-        },
-        Commands::Pipeline { action } => match action {
-            PipelineCommands::FlashLog {
-                soc,
-                port,
-                baud,
-                probe,
-                smart,
-                save,
-                reset,
-            } => cmd_pipeline::cmd_pipeline_flash_log(&soc, &port, baud, probe, smart, save.as_deref(), &reset, &cli.format),
         },
         Commands::Project { action } => match action {
             ProjectCommands::Wizard {
