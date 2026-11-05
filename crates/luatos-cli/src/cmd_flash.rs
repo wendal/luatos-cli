@@ -139,20 +139,6 @@ fn tail_log_after_flash(soc: &str, port: &str, timeout_secs: u64, format: &Outpu
     Ok(())
 }
 
-/// 注册 Ctrl+C 取消处理。trun 等流程已注册过时静默忽略（返回 false 表示未接管）。
-/// 统一取消消息为 "Cancelling..."，避免各刷机入口维护多份重复的 ctrlc 闭包。
-fn install_cancel_handler(format: &OutputFormat, command: &str, cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>) {
-    let format_clone = *format;
-    let command = command.to_string();
-    let cancel_clone = cancel.clone();
-    let _ = ctrlc::set_handler(move || {
-        if let Err(e) = event::emit_message(&format_clone, &command, MessageLevel::Warn, "Cancelling...") {
-            log::warn!("输出取消事件失败: {e}");
-        }
-        cancel_clone.store(true, std::sync::atomic::Ordering::Relaxed);
-    });
-}
-
 /// cmd_flash_run / cmd_flash_partition 支持刷机的芯片族（作为分发 match 的前置校验）。
 /// 每个已知芯片族都必须在此有明确归属，避免新增族时静默落入 Unsupported 分支。
 fn family_flash_supported(family: ChipFamily) -> bool {
@@ -179,7 +165,7 @@ pub fn cmd_flash_run(
     // Set up Ctrl+C handler (容错: trun 流程下, trun 已经注册过, 第二次注册返回
     // Error::MultipleHandlers, 这里静默忽略。单独调用 cmd_flash run 时,
     // 这是首次注册, 正常生效。)
-    install_cancel_handler(format, "flash.run", &cancel);
+    event::install_cancel_handler(format, "flash.run", &cancel);
 
     let on_progress = make_progress_callback(format, "flash.run", step);
 
@@ -348,7 +334,7 @@ pub fn cmd_flash_partition(
 ) -> anyhow::Result<()> {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let command = format!("flash.{op}");
-    install_cancel_handler(format, &command, &cancel);
+    event::install_cancel_handler(format, &command, &cancel);
 
     let on_progress = make_progress_callback(format, command.clone(), step);
 
@@ -498,7 +484,7 @@ fn collect_script_files(folders: &[String]) -> anyhow::Result<Vec<String>> {
 pub fn cmd_flash_ext_flash(port: &str, baud: u32, partition: &str, file: &str, ext_prog: bool, step: u8, format: &OutputFormat) -> anyhow::Result<()> {
     let data = std::fs::read(file).with_context(|| format!("无法读取文件: {file}"))?;
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    install_cancel_handler(format, "flash.ext-flash", &cancel);
+    event::install_cancel_handler(format, "flash.ext-flash", &cancel);
 
     let on_progress = make_progress_callback(format, "flash.ext-flash", step);
     luatos_flash::air6201::flash_partition(port, baud, partition, &data, ext_prog, &on_progress, cancel)?;
@@ -519,7 +505,7 @@ pub fn cmd_flash_raw_dump(soc: &str, port: &str, addr: &str, len: &str, output: 
 
     let command = "flash.raw-dump".to_string();
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    install_cancel_handler(format, &command, &cancel);
+    event::install_cancel_handler(format, &command, &cancel);
 
     let addr = raw::parse_addr(addr)?;
     let len = raw::parse_len(len)?;
@@ -570,7 +556,7 @@ pub fn cmd_flash_raw_dump(soc: &str, port: &str, addr: &str, len: &str, output: 
 /// Air6201 外置 SPI Flash 分区擦除
 pub fn cmd_flash_ext_erase(port: &str, baud: u32, partition: &str, ext_prog: bool, step: u8, format: &OutputFormat) -> anyhow::Result<()> {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    install_cancel_handler(format, "flash.ext-erase", &cancel);
+    event::install_cancel_handler(format, "flash.ext-erase", &cancel);
 
     let on_progress = make_progress_callback(format, "flash.ext-erase", step);
     luatos_flash::air6201::erase_ext_partition(port, baud, partition, ext_prog, &on_progress, cancel)?;
@@ -604,7 +590,7 @@ pub fn cmd_flash_raw(
 
     let command = "flash.raw".to_string();
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    install_cancel_handler(format, &command, &cancel);
+    event::install_cancel_handler(format, &command, &cancel);
 
     let addr = raw::parse_addr(addr)?;
     let data = std::fs::read(file).with_context(|| format!("无法读取文件: {file}"))?;
@@ -816,7 +802,7 @@ pub fn cmd_flash_test(
     use std::time::{Duration, Instant};
 
     let cancel = Arc::new(AtomicBool::new(false));
-    install_cancel_handler(format, "flash.test", &cancel);
+    event::install_cancel_handler(format, "flash.test", &cancel);
 
     let on_progress = make_progress_callback(format, "flash.test", step);
 

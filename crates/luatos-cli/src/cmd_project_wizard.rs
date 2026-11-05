@@ -12,7 +12,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use luatos_project::wizard::{chip_from_model_name, fallback_models, ModelInfo, TemplateKind, VersionEntry, WizardConfig};
 use luatos_resource::{collect_files_for_child, download_files, fetch_manifest_with_cache, find_category, find_child, DownloadEvent, FileEntry, ResourceManifest};
 
-use crate::OutputFormat;
+use crate::{event, OutputFormat};
 
 // ─── 向导入口 ─────────────────────────────────────────────────────────────────
 
@@ -354,23 +354,22 @@ fn execute_wizard(config: WizardConfig, manifest: &ResourceManifest, format: &Ou
             println!("  cd {}", dir.display());
             println!("  luatos-cli project build");
         }
-        OutputFormat::Json | OutputFormat::Jsonl => {
-            let json = serde_json::json!({
-                "status": "ok",
-                "command": "project.wizard",
-                "data": {
-                    "name": config.project_name,
-                    "dir": dir,
-                    "model": config.model.name,
-                    "chip": config.model.chip,
-                    "template": config.template.id(),
-                    "port": config.port,
-                    "soc_script": config.soc_script,
-                    "git_init": config.git_init,
-                }
-            });
-            println!("{}", serde_json::to_string_pretty(&json)?);
-        }
+        // 统一走 event 的结果信封：Json 为漂亮打印，Jsonl 为单行事件（此前 Jsonl 也输出多行）。
+        OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(
+            format,
+            "project.wizard",
+            "ok",
+            serde_json::json!({
+                "name": config.project_name,
+                "dir": dir,
+                "model": config.model.name,
+                "chip": config.model.chip,
+                "template": config.template.id(),
+                "port": config.port,
+                "soc_script": config.soc_script,
+                "git_init": config.git_init,
+            }),
+        )?,
     }
     Ok(())
 }

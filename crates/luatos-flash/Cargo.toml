@@ -6,6 +6,7 @@ license.workspace = true
 description = "LuatOS flash protocols — BK7258, EC618, etc."
 
 [dependencies]
+luatos-codec = { path = "../luatos-codec" }
 luatos-soc = { path = "../luatos-soc" }
 luatos-luadb = { path = "../luatos-luadb" }
 anyhow.workspace = true

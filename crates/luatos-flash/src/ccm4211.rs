@@ -211,36 +211,6 @@ fn build_ccm_resource_plan(archive: &mut luatos_soc::SocArchive, info: &luatos_s
     plan
 }
 
-// CRC16 Modbus lookup table (polynomial 0x8005 reversed = 0xA001, init=0)
-const CRC16_TABLE: [u16; 256] = {
-    let mut table = [0u16; 256];
-    let mut i = 0u16;
-    while i < 256 {
-        let mut crc = i;
-        let mut j = 0;
-        while j < 8 {
-            if crc & 1 != 0 {
-                crc = (crc >> 1) ^ 0xA001;
-            } else {
-                crc >>= 1;
-            }
-            j += 1;
-        }
-        table[i as usize] = crc;
-        i += 1;
-    }
-    table
-};
-
-fn crc16_modbus(data: &[u8]) -> u16 {
-    let mut crc: u16 = 0;
-    for &b in data {
-        let idx = (b ^ (crc as u8)) as usize;
-        crc = (crc >> 8) ^ CRC16_TABLE[idx];
-    }
-    crc
-}
-
 // ─── SOC Frame Builder / Parser ─────────────────────────────────────────────
 
 /// Build a SOC protocol header.
@@ -296,7 +266,7 @@ fn build_soc_frame(cmd: u32, address: u32, payload: &[u8], sn: u16) -> Vec<u8> {
     let mut raw = Vec::with_capacity(SOC_HEADER_LEN + payload.len());
     raw.extend_from_slice(&header);
     raw.extend_from_slice(payload);
-    let crc = crc16_modbus(&raw);
+    let crc = luatos_codec::crc16_modbus(&raw);
     let crc_bytes = crc.to_le_bytes();
 
     // Build frame
@@ -382,7 +352,7 @@ impl SocFrameParser {
         }
         let payload = &data[..data.len() - 2];
         let crc_received = u16::from_le_bytes([data[data.len() - 2], data[data.len() - 1]]);
-        let crc_computed = crc16_modbus(payload);
+        let crc_computed = luatos_codec::crc16_modbus(payload);
         if crc_received != crc_computed {
             return None;
         }
@@ -1578,13 +1548,13 @@ mod tests {
     fn test_crc16_modbus() {
         // CCM4211 uses CRC16 with init=0 (not standard Modbus init=0xFFFF)
         let data = b"123456789";
-        let crc = crc16_modbus(data);
+        let crc = luatos_codec::crc16_modbus(data);
         assert_eq!(crc, 0xBB3D, "CRC16 (poly=0xA001, init=0) of '123456789'");
     }
 
     #[test]
     fn test_crc16_empty() {
-        assert_eq!(crc16_modbus(&[]), 0x0000);
+        assert_eq!(luatos_codec::crc16_modbus(&[]), 0x0000);
     }
 
     #[test]
@@ -1729,10 +1699,10 @@ mod tests {
         // 说明：标准 Modbus CRC（init=0xFFFF + xorout=0xFFFF）对 b"123456789" 的校验值是
         // 0x4B37；本实现采用 init=0、无最终异或（等效 CRC-16/ARC，多项式同为 0x8005 反转），
         // 实际计算结果为 0xBB3D（与现有 test_crc16_modbus 一致），故以实际值固化。
-        assert_eq!(crc16_modbus(b"123456789"), 0xBB3D);
+        assert_eq!(luatos_codec::crc16_modbus(b"123456789"), 0xBB3D);
         // 额外固定输入，期望值由本函数实际计算结果固化
-        assert_eq!(crc16_modbus(b"LuatOS Air1601"), 0x14BF);
-        assert_eq!(crc16_modbus(b""), 0x0000);
+        assert_eq!(luatos_codec::crc16_modbus(b"LuatOS Air1601"), 0x14BF);
+        assert_eq!(luatos_codec::crc16_modbus(b""), 0x0000);
     }
 
     #[test]

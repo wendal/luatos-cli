@@ -31,6 +31,27 @@ pub fn emit_message(format: &OutputFormat, command: &str, level: MessageLevel, m
     }
 }
 
+/// 注册统一的 Ctrl+C 取消处理。
+///
+/// 同一进程内重复注册会得到 `Error::MultipleHandlers`（例如 trun 内部再进入 flash），
+/// 此处静默忽略并遵循「先到先得」；取消提示按当前输出格式经 [`emit_message`] 发出。
+pub fn install_cancel_handler(format: &OutputFormat, command: &str, cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    install_cancel_handler_with_message(format, command, "Cancelling...", cancel);
+}
+
+/// 与 [`install_cancel_handler`] 相同，但允许长流程指定自己的取消提示语。
+pub fn install_cancel_handler_with_message(format: &OutputFormat, command: &str, message: &'static str, cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    let format = *format;
+    let command = command.to_string();
+    let cancel = cancel.clone();
+    let _ = ctrlc::set_handler(move || {
+        if let Err(e) = emit_message(&format, &command, MessageLevel::Warn, message) {
+            log::warn!("输出取消事件失败: {e}");
+        }
+        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+}
+
 pub fn emit_flash_progress(format: &OutputFormat, command: &str, progress: &luatos_flash::FlashProgress) -> anyhow::Result<()> {
     match format {
         OutputFormat::Text => {

@@ -965,6 +965,7 @@ dependencies = [
  "anyhow",
  "crc32fast",
  "log",
+ "luatos-codec",
  "luatos-luadb",
  "luatos-soc",
  "md5",
@@ -998,6 +999,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "log",
+ "luatos-codec",
  "serde",
  "serde_json",
 ]
