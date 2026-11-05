@@ -701,10 +701,9 @@ fn open_and_load_fdls(
 }
 
 fn read_soc_pac(soc_path: &str) -> Result<(PacFile, luatos_soc::SocInfo)> {
-    let tmp = tempfile::tempdir().context("创建临时目录失败")?;
-    let unpacked = luatos_soc::unpack_soc(soc_path, tmp.path())?;
-    let info = unpacked.info.clone();
-    let pac_data = std::fs::read(&unpacked.rom_path).with_context(|| format!("读取 PAC 失败: {}", unpacked.rom_path.display()))?;
+    let mut archive = luatos_soc::SocArchive::open(soc_path)?;
+    let info = archive.info().clone();
+    let pac_data = archive.read(&info.rom.file).with_context(|| format!("读取 PAC 失败: {}", info.rom.file))?;
     let pac = parse_pac(&pac_data).context("解析 PAC 失败")?;
 
     Ok((pac, info))
@@ -1503,9 +1502,8 @@ mod tests {
         let port = std::env::var("LUATOS_PORT").unwrap_or_else(|_| "/dev/ttyUSB0".into());
         println!("\n=== RDA8910 script-only flash (soc={soc}, port={port}) ===");
 
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let unpacked = luatos_soc::unpack_soc(&soc, tmp.path()).expect("解包 SOC 失败");
-        let pac_data = std::fs::read(&unpacked.rom_path).expect("读取 PAC 失败");
+        let mut archive = luatos_soc::SocArchive::open(&soc).expect("打开 SOC 失败");
+        let pac_data = archive.read(&archive.info().rom.file.clone()).expect("读取 PAC 失败");
         let pac = parse_pac(&pac_data).expect("解析 PAC 失败");
         let lua = pac.find("LUA").expect("PAC 缺少 LUA 条目");
         let script_data = lua.data.as_deref().expect("LUA 数据缺失");

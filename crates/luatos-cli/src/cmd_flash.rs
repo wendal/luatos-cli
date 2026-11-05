@@ -156,14 +156,10 @@ fn install_cancel_handler(format: &OutputFormat, command: &str, cancel: &std::sy
 /// cmd_flash_run / cmd_flash_partition 支持刷机的芯片族（作为分发 match 的前置校验）。
 /// 每个已知芯片族都必须在此有明确归属，避免新增族时静默落入 Unsupported 分支。
 fn family_flash_supported(family: ChipFamily) -> bool {
-    let supported = matches!(
+    matches!(
         family,
         ChipFamily::Bk72xx | ChipFamily::Xt804 | ChipFamily::Ccm4211 | ChipFamily::Ec718 | ChipFamily::Rda8910
-    );
-    // SF32LB 刷机功能仅在编译启用相应 feature 时可用
-    #[cfg(sf32lb)]
-    let supported = supported || matches!(family, ChipFamily::Sf32lb58);
-    supported
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -176,13 +172,8 @@ pub fn cmd_flash_run(
     step: u8,
     format: &OutputFormat,
     reset: &ResetArgs,
-    reset_config: Option<luatos_flash::sf32lb5x::Sf32ResetConfig>,
     tail_log_secs: u64,
 ) -> anyhow::Result<()> {
-    // reset_config 仅 SF32LB 刷机分支使用；feature 未启用时显式丢弃避免 unused 警告
-    #[cfg(not(sf32lb))]
-    let _ = &reset_config;
-
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Set up Ctrl+C handler (容错: trun 流程下, trun 已经注册过, 第二次注册返回
@@ -284,17 +275,6 @@ pub fn cmd_flash_run(
                 OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": chip_name }))?,
             }
         }
-        #[cfg(sf32lb)]
-        ChipFamily::Sf32lb58 => {
-            let folders_refs: Option<Vec<&str>> = script_folders.map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
-            luatos_flash::sf32lb5x::flash_sf32lb5x_with_debug(soc, port, folders_refs.as_deref(), on_progress, cancel, reset_config.as_ref(), baud, Some(luac_debug))?;
-            match format {
-                OutputFormat::Text => {
-                    println!("SF32LB58 flash completed successfully.");
-                }
-                OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": family.name() }))?,
-            }
-        }
         ChipFamily::Rda8910 => {
             // --port auto 支持：自动探测下载口（SPRD U2S Diag, VID 0525:PID a4a7）
             // --script 覆盖：全量刷机时把用户脚本写入 LUA 分区（与 EC718/CCM4211 行为一致）
@@ -313,9 +293,6 @@ pub fn cmd_flash_run(
         }
         // family_flash_supported 已在上方校验，其余族不可能到达这里
         ChipFamily::Unknown | ChipFamily::Air6201 => unreachable!("family_flash_supported 已校验芯片族"),
-        // SF32LB feature 未启用时，family_flash_supported 已将其拒之门外
-        #[cfg(not(sf32lb))]
-        ChipFamily::Sf32lb58 => unreachable!("SF32LB 刷机功能未编译启用（缺少 sf32lbXX feature）"),
     }
 
     if tail_log_secs > 0 {
@@ -368,13 +345,7 @@ pub fn cmd_flash_partition(
     step: u8,
     format: &OutputFormat,
     reset: &ResetArgs,
-    reset_config: Option<luatos_flash::sf32lb5x::Sf32ResetConfig>,
-    baud: Option<u32>,
 ) -> anyhow::Result<()> {
-    // reset_config / baud 仅 SF32LB 刷机分支使用；feature 未启用时显式丢弃避免 unused 警告
-    #[cfg(not(sf32lb))]
-    let _ = (&reset_config, &baud);
-
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let command = format!("flash.{op}");
     install_cancel_handler(format, &command, &cancel);
@@ -466,25 +437,6 @@ pub fn cmd_flash_partition(
                 );
             }
         },
-        #[cfg(sf32lb)]
-        ChipFamily::Sf32lb58 => match op {
-            "script" => {
-                let folders = script_folders.expect("script folder required");
-                let refs: Vec<&str> = folders.iter().map(|s| s.as_str()).collect();
-                luatos_flash::sf32lb5x::flash_script_sf32lb5x_with_debug(soc, port, &refs, on_progress, cancel, reset_config.as_ref(), baud, Some(luac_debug))?;
-            }
-            "clear-kv" => {
-                luatos_flash::sf32lb5x::clear_kv_sf32lb5x(soc, port, on_progress, cancel, reset_config.as_ref(), baud)?;
-            }
-            "clear-fs" | "flash-fs" => {
-                anyhow::bail!("SF32LB58 {op} 暂不支持，请手动使用 ImgDownUart 或其他工具操作分区");
-            }
-            _ => unreachable!(),
-        },
-        #[cfg(not(sf32lb))]
-        ChipFamily::Sf32lb58 => {
-            anyhow::bail!("SF32LB 刷机功能未编译启用（缺少 sf32lbXX feature）");
-        }
         ChipFamily::Rda8910 => match op {
             "script" => {
                 let folders = script_folders.expect("script folder required");
@@ -904,7 +856,7 @@ pub fn cmd_flash_test(
             luatos_flash::ec718::flash_ec718(soc, &boot_port, &on_progress2, cancel.clone(), overlay.as_deref())?;
             Vec::new()
         }
-        ChipFamily::Unknown | ChipFamily::Air6201 | ChipFamily::Sf32lb58 | ChipFamily::Rda8910 => {
+        ChipFamily::Unknown | ChipFamily::Air6201 | ChipFamily::Rda8910 => {
             anyhow::bail!("Unsupported chip type for flash test: {}", info.chip.chip_type);
         }
     };
@@ -1270,7 +1222,6 @@ mod tests {
                 10,
                 &OutputFormat::Text,
                 &ResetArgs::default(),
-                None,
                 tail_secs,
             )
             .unwrap_err();
@@ -1314,8 +1265,6 @@ mod tests {
                 10,
                 &OutputFormat::Text,
                 &ResetArgs::default(),
-                None,
-                None,
             )
             .unwrap_err()
             .to_string();
@@ -1332,19 +1281,7 @@ mod tests {
         let soc = write_zero_capacity_soc(dir.path(), "air6208");
         let folders = vec!["missing-script-folder".to_string()];
         let reset = ResetArgs::default();
-        let error = cmd_flash_run(
-            soc.to_str().unwrap(),
-            "PR_TEST_NO_SERIAL_PORT",
-            None,
-            Some(&folders),
-            0,
-            10,
-            &OutputFormat::Text,
-            &reset,
-            None,
-            0,
-        )
-        .unwrap_err();
+        let error = cmd_flash_run(soc.to_str().unwrap(), "PR_TEST_NO_SERIAL_PORT", None, Some(&folders), 0, 10, &OutputFormat::Text, &reset, 0).unwrap_err();
         assert!(error.to_string().contains("XT804 全量刷机暂不支持 --script"));
         let error = cmd_flash_test(
             soc.to_str().unwrap(),
@@ -1377,10 +1314,6 @@ mod tests {
         assert!(family_flash_supported(ChipFamily::Xt804));
         assert!(family_flash_supported(ChipFamily::Ccm4211));
         assert!(family_flash_supported(ChipFamily::Ec718));
-        #[cfg(sf32lb)]
-        assert!(family_flash_supported(ChipFamily::Sf32lb58));
-        #[cfg(not(sf32lb))]
-        assert!(!family_flash_supported(ChipFamily::Sf32lb58));
         assert!(family_flash_supported(ChipFamily::Rda8910));
         assert!(!family_flash_supported(ChipFamily::Air6201));
         assert!(!family_flash_supported(ChipFamily::Unknown));

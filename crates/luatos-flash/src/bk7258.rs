@@ -3,7 +3,7 @@
 // Protocol reference: https://github.com/openshwprojects/BK7231GUIFlashTool
 //
 // Flash sequence:
-//   1. Extract .soc (zip) to temp dir; parse info.json.
+//   1. Read .soc (zip) entries in memory; parse info.json.
 //   2. Open COM port at 115200 baud.
 //   3. Toggle DTR+RTS to reset device into ROM bootloader.
 //   4. LinkCheck handshake until device responds.
@@ -16,7 +16,6 @@
 
 use anyhow::{bail, Context, Result};
 use luatos_soc::{parse_addr, SocInfo};
-use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -620,9 +619,6 @@ fn flash_data(
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-/// Boot log capture duration after flashing.
-const LOG_CAPTURE_SECS: u64 = 20;
-
 /// LuaTools `_reboot_and_close`: RTS+DTR high 500ms, then release, then close.
 /// Air8101 stays in ROM bootloader (black LCD) if the port is only dropped.
 fn reboot_and_close(mut serial: Box<dyn serialport::SerialPort>) {
@@ -642,158 +638,9 @@ fn reboot_port(serial: &mut dyn serialport::SerialPort) {
     std::thread::sleep(Duration::from_millis(100));
 }
 
-/// Flash via air602_flash.exe subprocess.
-/// Unused as the primary path (hangs under Electron); kept for manual CLI experiments.
-#[allow(dead_code)]
-fn flash_via_subprocess(
-    exe_path: &Path,
-    rom_path: &Path,
-    port: &str,
-    log_br: u32,
-    cancel: &AtomicBool,
-    on_progress: &ProgressCallback,
-    capture_boot_log: bool,
-) -> Result<Vec<String>> {
-    // Strip "COM" prefix — air602_flash.exe wants a bare number
-    let port_num: String = port.chars().filter(|c| c.is_ascii_digit()).collect();
-    if port_num.is_empty() {
-        bail!("Invalid port name: {port}");
-    }
-
-    on_progress(&FlashProgress::info("Flashing", 5.0, &format!("Starting air602_flash.exe on {port} (~37s)…")));
-
-    let mut cmd = std::process::Command::new(exe_path);
-    cmd.args(["download", "-p", &port_num, "-b", "2000000", "-s", "0", "-i"])
-        .arg(rom_path)
-        .current_dir(exe_path.parent().unwrap_or(Path::new(".")))
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
-    // airMaster/Electron spawn CLI with CREATE_NO_WINDOW; give the child the same
-    // so it does not depend on an inherited console.
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-
-    let mut child = cmd.spawn().context("Failed to launch air602_flash.exe")?;
-
-    let stdout = child.stdout.take().expect("stdout piped");
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
-    let progress_thread = std::thread::spawn(move || {
-        use std::io::{BufRead, BufReader};
-        for line in BufReader::new(stdout).lines().map_while(|l| l.ok()) {
-            let t = line.trim().to_string();
-            if !t.is_empty() {
-                let _ = tx.send(t);
-            }
-        }
-    });
-
-    let status = child.wait().context("air602_flash.exe wait() failed")?;
-
-    let mut pct = 5.0f32;
-    while let Ok(t) = rx.try_recv() {
-        if t.contains("Gotten Bus") || t.contains("Gotten bus") {
-            pct = 15.0;
-        } else if t.contains("baudrate") {
-            pct = 22.0;
-        } else if t.contains("Boot_Reboot") {
-            pct = 90.0;
-        } else if t.contains("All Finished") {
-            pct = 93.0;
-        } else if t.contains("Writing") {
-            pct = (pct + 0.4).min(88.0);
-        }
-        on_progress(&FlashProgress::info("Flashing", pct, &format!("[exe] {t}")));
-    }
-    let _ = progress_thread.join();
-
-    if !status.success() {
-        bail!("air602_flash.exe failed (exit {:?})", status.code());
-    }
-
-    if !capture_boot_log {
-        on_progress(&FlashProgress::info("Flashing", 93.0, "Firmware written (boot log capture skipped)"));
-        return Ok(Vec::new());
-    }
-
-    on_progress(&FlashProgress::info("Booting", 94.0, &format!("Firmware sent! Opening {port} @ {log_br} for boot log…")));
-
-    // Open log port; failure here must not fail a successful firmware write.
-    let mut log_port = {
-        let mut last_err = String::new();
-        let mut port_opt = None;
-        for _ in 0..20 {
-            match serialport::new(port, log_br).timeout(Duration::from_millis(200)).open() {
-                Ok(p) => {
-                    port_opt = Some(p);
-                    break;
-                }
-                Err(e) => {
-                    last_err = e.to_string();
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-            }
-        }
-        match port_opt {
-            Some(p) => p,
-            None => {
-                on_progress(&FlashProgress::info(
-                    "Booting",
-                    94.0,
-                    &format!("[WARN] Cannot open log port {port}: {last_err} — firmware write already finished"),
-                ));
-                return Ok(Vec::new());
-            }
-        }
-    };
-
-    // Capture boot log
-    let mut log_bytes: Vec<u8> = Vec::new();
-    let mut read_buf = [0u8; 512];
-    let deadline = Instant::now() + Duration::from_secs(LOG_CAPTURE_SECS);
-
-    while Instant::now() < deadline {
-        if cancel.load(Ordering::Relaxed) {
-            break;
-        }
-        match log_port.read(&mut read_buf) {
-            Ok(n) if n > 0 => log_bytes.extend_from_slice(&read_buf[..n]),
-            _ => {}
-        }
-    }
-    drop(log_port);
-
-    let log_text = String::from_utf8_lossy(&log_bytes);
-    let lines: Vec<String> = log_text.lines().map(|l| l.trim_end_matches('\r').to_string()).filter(|l| !l.is_empty()).collect();
-
-    let boot_kw = ["luat:", "ap0:", "ap1:", "LuatOS", "EasyFlash"];
-    let passed = boot_kw.iter().any(|kw| log_text.contains(kw));
-
-    if passed {
-        on_progress(&FlashProgress::info(
-            "Booting",
-            99.0,
-            &format!("Firmware booted ({} log lines, {} bytes)", lines.len(), log_bytes.len()),
-        ));
-    } else {
-        // Air8101 SOC UART is 0xA5 binary — text keywords like "LuatOS" will not match.
-        on_progress(&FlashProgress::info(
-            "Booting",
-            99.0,
-            &format!("No text boot keywords in {} bytes (binary log is OK)", log_bytes.len()),
-        ));
-    }
-
-    Ok(lines)
-}
-
 /// Full BK7258 (Air8101) flash routine via native ISP (firmware + optional script).
 ///
-/// Does not spawn `air602_flash.exe` — that child hangs under Electron with no
-/// progress. `capture_boot_log` is accepted for API compatibility but unused.
+/// `capture_boot_log` is accepted for API compatibility but unused.
 pub fn flash_bk7258(
     soc_path: &str,
     script_folders: Option<&[&str]>,
@@ -820,28 +667,18 @@ pub fn flash_bk7258_with_debug(
 ) -> Result<Vec<String>> {
     cancel.store(false, Ordering::Relaxed);
 
-    on_progress(&FlashProgress::info("Preparing", 1.0, "Extracting .soc…"));
+    on_progress(&FlashProgress::info("Preparing", 1.0, "Reading .soc…"));
 
-    // 1. Extract .soc
-    let tempdir = tempfile::tempdir().context("Failed to create temp dir")?;
-    {
-        let file = std::fs::File::open(soc_path).with_context(|| format!("Cannot open {soc_path}"))?;
-        let mut archive = zip::ZipArchive::new(file)?;
-        archive.extract(tempdir.path()).context("Extraction failed")?;
-    }
+    // 1. Read .soc entries in memory (no temp extraction)
+    let mut archive = luatos_soc::SocArchive::open(soc_path)?;
 
-    // 2. Parse info.json
-    let info: SocInfo = serde_json::from_reader(std::fs::File::open(tempdir.path().join("info.json")).context("info.json missing")?).context("Parse info.json")?;
+    // 2. info.json
+    let info: SocInfo = archive.info().clone();
 
     let log_br = info.log_baud_rate();
-    let rom_path = tempdir.path().join(&info.rom.file);
-    if !rom_path.exists() {
+    if !archive.exists(&info.rom.file) {
         bail!("ROM file '{}' not found in .soc", info.rom.file);
     }
-
-    // .soc 里的 air602_flash.exe 是独立 Windows 工具。从 airMaster/Electron
-    //（无控制台）拉起时经常没有任何 stdout，UI 会一直停在
-    // “Starting air602_flash.exe…”。全量改走 native ISP：进度连续，写完 RTS+DTR 复位。
     let _ = (log_br, capture_boot_log);
 
     // 3. Native ISP: handshake @ 115200, switch baud, write ROM then script.
@@ -849,7 +686,7 @@ pub fn flash_bk7258_with_debug(
     let flash_br = baud_rate.unwrap_or(flash_br);
 
     let bl_addr = parse_addr(info.download.bl_addr.as_deref().unwrap_or("0")).unwrap_or(0) as u32;
-    let rom_data = std::fs::read(&rom_path).with_context(|| format!("Cannot read {}", info.rom.file))?;
+    let rom_data = archive.read(&info.rom.file).with_context(|| format!("Cannot read {}", info.rom.file))?;
 
     on_progress(&FlashProgress::info(
         "Preparing",

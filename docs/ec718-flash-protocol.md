@@ -418,15 +418,6 @@ luatos-cli device reboot --chip air8000
 luatos-cli flash test --soc firmware.soc --port COM3 --keyword "LuatOS@"
 ```
 
-## FlashToolCLI.exe 回退方案
-
-保留通过命令行调用移芯官方 FlashToolCLI.exe 的方式作为调试后备:
-```
-FlashToolCLI.exe --cfgfile config_pkg_product_usb.ini
-```
-- USB模式使用 `config_pkg_product_usb.ini`
-- UART模式使用 `config_pkg_product_uart.ini`
-
 ## 参考资料
 
 - 参考项目: https://github.com/yuzhan-tech/luatos-tools

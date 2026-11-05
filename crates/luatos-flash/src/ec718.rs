@@ -998,19 +998,15 @@ fn sys_reset(port: &mut dyn SerialPort) -> Result<()> {
 
 // ─── SOC File Parsing Helpers ───────────────────────────────────────────────
 
-/// Extract binpkg from a 7z SOC archive and parse it.
-fn extract_and_parse_soc(soc_path: &str) -> Result<SocFirmware> {
-    let tempdir = tempfile::tempdir().context("Create temp dir")?;
-    let temppath = tempdir.path();
-
-    extract_soc_7z(soc_path, temppath)?;
-    parse_extracted_soc(temppath)
+/// Parse a SOC archive (ZIP or 7z) fully in memory — no temp extraction.
+fn parse_soc(soc_path: &str) -> Result<SocFirmware> {
+    let mut archive = luatos_soc::SocArchive::open(soc_path)?;
+    parse_soc_archive(&mut archive)
 }
 
-fn parse_extracted_soc(temppath: &std::path::Path) -> Result<SocFirmware> {
-    // Read info.json for script_addr
-    let info_path = temppath.join("info.json");
-    let info: serde_json::Value = serde_json::from_reader(std::fs::File::open(&info_path).context("info.json missing")?).context("Parse info.json")?;
+fn parse_soc_archive(archive: &mut luatos_soc::SocArchive) -> Result<SocFirmware> {
+    let info_bytes = archive.read("info.json").context("info.json missing")?;
+    let info: serde_json::Value = serde_json::from_slice(&info_bytes).context("Parse info.json")?;
 
     let script_addr = info
         .pointer("/download/script_addr")
@@ -1022,20 +1018,18 @@ fn parse_extracted_soc(temppath: &std::path::Path) -> Result<SocFirmware> {
 
     // 量产 SOC 可能同时含 core.binpkg 与 luatos.binpkg，必须按元数据选取。
     let rom_file = info.pointer("/rom/file").and_then(|v| v.as_str()).context("SOC 缺少 rom.file")?;
-    let rom_data = std::fs::read(temppath.join(rom_file)).with_context(|| format!("读取 SOC 固件文件失败: {rom_file}"))?;
+    let rom_data = archive.read(rom_file).with_context(|| format!("读取 SOC 固件文件失败: {rom_file}"))?;
     let mut result = parse_binpkg(&rom_data)?;
     let chip_type = info.pointer("/chip/type").and_then(|v| v.as_str()).unwrap_or("");
     let chip = EigencommChip::from_soc(chip_type, &result.chip);
     // EC618 量产包自带与固件匹配的 AgentBoot，不能用 EC718M 版本替代。
-    let agent_path = temppath.join("agentboot_usb.bin");
-    let usb_agentboot = if chip == EigencommChip::Ec618 && agent_path.exists() {
-        Some(std::fs::read(&agent_path).context("读取 EC618 SOC 内的 agentboot_usb.bin 失败")?)
+    let usb_agentboot = if chip == EigencommChip::Ec618 && archive.exists("agentboot_usb.bin") {
+        Some(archive.read("agentboot_usb.bin").context("读取 EC618 SOC 内的 agentboot_usb.bin 失败")?)
     } else {
         None
     };
     let script_file = info.pointer("/script/file").and_then(|v| v.as_str()).unwrap_or("script.bin");
-    let script_path = temppath.join(script_file);
-    let script_data = if script_path.exists() { Some(std::fs::read(script_path)?) } else { None };
+    let script_data = if archive.exists(script_file) { Some(archive.read(script_file)?) } else { None };
 
     // Add script entry from SOC if present
     if let Some(sdata) = script_data {
@@ -1058,13 +1052,6 @@ fn parse_extracted_soc(temppath: &std::path::Path) -> Result<SocFirmware> {
         force_br,
         usb_agentboot,
     })
-}
-
-/// Helper to extract a 7z SOC file.
-fn extract_soc_7z(soc_path: &str, out_dir: &std::path::Path) -> Result<()> {
-    std::fs::create_dir_all(out_dir)?;
-    sevenz_rust2::decompress_file(soc_path, out_dir).with_context(|| format!("7z extraction failed: {soc_path}"))?;
-    Ok(())
 }
 
 // ─── Map entry to BurnImageType / storage type ──────────────────────────────
@@ -1483,7 +1470,7 @@ pub fn flash_ec718(soc_path: &str, port: &str, on_progress: &ProgressCallback, c
     if let Some(overlay) = script_overlay {
         crate::validate_script_image(&info, overlay.len(), 1)?;
     }
-    let mut firmware = extract_and_parse_soc(soc_path)?;
+    let mut firmware = parse_soc(soc_path)?;
     if let Some(overlay) = script_overlay {
         let script_addr = info.download.script_addr.as_deref().and_then(luatos_soc::parse_addr).unwrap_or(0) as u32;
         overlay_script_entry(&mut firmware.binpkg, overlay, script_addr)?;
@@ -1668,7 +1655,7 @@ pub fn flash_script_ec718(soc_path: &str, port: &str, script_data: &[u8], on_pro
     crate::validate_script_image(&info, script_data.len(), 1)?;
 
     // Parse SOC to get script_addr and force_br
-    let firmware = extract_and_parse_soc(soc_path)?;
+    let firmware = parse_soc(soc_path)?;
 
     // Resolve script address from the validated SOC metadata.
     let script_addr = info.download.script_addr.as_deref().and_then(luatos_soc::parse_addr).unwrap_or(0) as u32;
@@ -1745,74 +1732,6 @@ pub fn flash_script_ec718(soc_path: &str, port: &str, script_data: &[u8], on_pro
 
     on_progress(&FlashProgress::done_ok("Script flash completed successfully"));
     Ok(())
-}
-
-/// Flash EC718 via FlashToolCLI.exe subprocess (fallback/debug path).
-///
-/// This uses the vendor tool directly. The exe and config must be in
-/// refs/origin_tools/ec_download/.
-#[cfg(target_os = "windows")]
-pub fn flash_ec718_exe(soc_path: &str, port: &str, on_progress: &ProgressCallback) -> Result<()> {
-    use std::process::Command;
-
-    on_progress(&FlashProgress::info("Preparing", 0.0, "Extracting SOC file..."));
-
-    let tempdir = tempfile::tempdir().context("Create temp dir")?;
-    let temppath = tempdir.path();
-    extract_soc_7z(soc_path, temppath)?;
-
-    // Find binpkg file
-    let binpkg_path = std::fs::read_dir(temppath)?
-        .filter_map(|e| e.ok())
-        .find(|e| e.file_name().to_string_lossy().ends_with(".binpkg"))
-        .map(|e| e.path())
-        .ok_or_else(|| anyhow::anyhow!("No .binpkg in SOC"))?;
-
-    // Find FlashToolCLI.exe
-    let exe_dir = std::path::Path::new("refs/origin_tools/ec_download");
-    let exe_path = exe_dir.join("FlashToolCLI.exe");
-    if !exe_path.exists() {
-        bail!(
-            "FlashToolCLI.exe not found at {}. \
-             This fallback requires the vendor tool.",
-            exe_path.display()
-        );
-    }
-
-    // Extract COM port number
-    let port_num = port.trim_start_matches("COM").trim_start_matches("com");
-
-    on_progress(&FlashProgress::info("Flashing", 10.0, &format!("Running FlashToolCLI.exe on COM{}...", port_num)));
-
-    let output = Command::new(&exe_path)
-        .current_dir(exe_dir)
-        .arg("-p")
-        .arg(port_num)
-        .arg("-f")
-        .arg(binpkg_path.to_string_lossy().as_ref())
-        .output()
-        .with_context(|| format!("Failed to run {}", exe_path.display()))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    log::info!("FlashToolCLI stdout:\n{}", stdout);
-    if !stderr.is_empty() {
-        log::warn!("FlashToolCLI stderr:\n{}", stderr);
-    }
-
-    if !output.status.success() {
-        on_progress(&FlashProgress::done_err(&format!("FlashToolCLI.exe failed (exit code: {:?})", output.status.code())));
-        bail!("FlashToolCLI.exe failed with exit code {:?}\nstdout: {}\nstderr: {}", output.status.code(), stdout, stderr);
-    }
-
-    on_progress(&FlashProgress::done_ok("EC718 flash (exe) completed"));
-    Ok(())
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn flash_ec718_exe(_soc_path: &str, _port: &str, _on_progress: &ProgressCallback) -> Result<()> {
-    bail!("FlashToolCLI.exe fallback is only available on Windows");
 }
 
 #[cfg(test)]
@@ -1897,7 +1816,7 @@ mod tests {
             eprintln!("Skipping: {} not found", soc);
             return;
         }
-        let firmware = extract_and_parse_soc(soc).expect("parse SOC");
+        let firmware = parse_soc(soc).expect("parse SOC");
         let result = firmware.binpkg;
         println!("Chip: {}", result.chip);
         println!("Force BR: {}", firmware.force_br);
@@ -2036,21 +1955,39 @@ mod tests {
         buf
     }
 
+    /// 把若干 entry 打包成最小 ZIP .soc 供解析测试使用（按魔数识别，无需 .soc 扩展名）。
+    fn write_test_soc(entries: &[(&str, &[u8])]) -> tempfile::NamedTempFile {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut zw = zip::ZipWriter::new(file.reopen().unwrap());
+        let opts = zip::write::SimpleFileOptions::default();
+        for (name, data) in entries {
+            zw.start_file(*name, opts).unwrap();
+            std::io::Write::write_all(&mut zw, data).unwrap();
+        }
+        zw.finish().unwrap();
+        file
+    }
+
     #[test]
     fn soc_uses_declared_rom_and_script_files() {
-        let temp = tempfile::tempdir().unwrap();
         let info = serde_json::json!({
+            "chip": {"type": "ec718"},
             "rom": {"file": "core.binpkg"},
             "script": {"file": "app.bin"},
             "download": {"script_addr": "2B1000", "force_br": "1152000"}
         });
-        std::fs::write(temp.path().join("info.json"), info.to_string()).unwrap();
-        std::fs::write(temp.path().join("core.binpkg"), build_legacy_binpkg("ap", 0x882000, 4, b"core")).unwrap();
-        std::fs::write(temp.path().join("luatos.binpkg"), build_legacy_binpkg("ap", 0x882000, 5, b"other")).unwrap();
-        std::fs::write(temp.path().join("app.bin"), b"script").unwrap();
-        std::fs::write(temp.path().join("script.bin"), b"wrong").unwrap();
+        let info_s = info.to_string();
+        let core = build_legacy_binpkg("ap", 0x882000, 4, b"core");
+        let other = build_legacy_binpkg("ap", 0x882000, 5, b"other");
+        let soc = write_test_soc(&[
+            ("info.json", info_s.as_bytes()),
+            ("core.binpkg", &core),
+            ("luatos.binpkg", &other),
+            ("app.bin", b"script"),
+            ("script.bin", b"wrong"),
+        ]);
 
-        let firmware = parse_extracted_soc(temp.path()).unwrap();
+        let firmware = parse_soc(soc.path().to_str().unwrap()).unwrap();
         assert_eq!(firmware.force_br, 1152000);
         let result = firmware.binpkg;
         assert_eq!(result.entries.len(), 2);
@@ -2060,8 +1997,8 @@ mod tests {
         assert_eq!(result.entries[1].data.as_deref(), Some(b"script".as_slice()));
 
         // 指定文件缺失时必须报错，不能静默改刷包内另一份底层固件。
-        std::fs::remove_file(temp.path().join("core.binpkg")).unwrap();
-        let err = parse_extracted_soc(temp.path()).unwrap_err();
+        let soc_missing = write_test_soc(&[("info.json", info_s.as_bytes()), ("app.bin", b"script")]);
+        let err = parse_soc(soc_missing.path().to_str().unwrap()).unwrap_err();
         assert!(err.to_string().contains("core.binpkg"));
     }
 
@@ -2096,7 +2033,6 @@ mod tests {
 
     #[test]
     fn ec618_legacy_soc_uses_packaged_agent_and_dedicated_cp_flash() {
-        let temp = tempfile::tempdir().unwrap();
         // V1124 EC618 的 binpkg 是无产品名的 legacy 格式，必须根据 SOC 元数据选芯片。
         let info = serde_json::json!({
             "chip": {"type": "ec618"},
@@ -2104,14 +2040,17 @@ mod tests {
             "script": {"file": "script.bin"},
             "download": {"script_addr": "2CC000", "force_br": "1152000"}
         });
-        std::fs::write(temp.path().join("info.json"), info.to_string()).unwrap();
+        let info_s = info.to_string();
         let mut binpkg = build_legacy_binpkg("cp-demo-flash", 0, 4, b"code");
         binpkg[0x34 + 336..0x34 + 338].copy_from_slice(b"CP");
-        std::fs::write(temp.path().join("luatos.binpkg"), binpkg).unwrap();
-        std::fs::write(temp.path().join("script.bin"), b"script").unwrap();
-        std::fs::write(temp.path().join("agentboot_usb.bin"), b"packaged-ec618-agent").unwrap();
+        let soc = write_test_soc(&[
+            ("info.json", info_s.as_bytes()),
+            ("luatos.binpkg", &binpkg),
+            ("script.bin", b"script"),
+            ("agentboot_usb.bin", b"packaged-ec618-agent"),
+        ]);
 
-        let firmware = parse_extracted_soc(temp.path()).unwrap();
+        let firmware = parse_soc(soc.path().to_str().unwrap()).unwrap();
         assert_eq!(firmware.binpkg.chip, "unknown");
         assert_eq!(firmware.chip, EigencommChip::Ec618);
         assert_eq!(firmware.agentboot(Ec718PortType::Usb), b"packaged-ec618-agent");
@@ -2122,8 +2061,8 @@ mod tests {
             Some((BurnImageType::FlexFile, STYPE_AP_FLASH, 0xACC000))
         );
 
-        std::fs::remove_file(temp.path().join("agentboot_usb.bin")).unwrap();
-        let firmware = parse_extracted_soc(temp.path()).unwrap();
+        let soc_no_agent = write_test_soc(&[("info.json", info_s.as_bytes()), ("luatos.binpkg", &binpkg), ("script.bin", b"script")]);
+        let firmware = parse_soc(soc_no_agent.path().to_str().unwrap()).unwrap();
         assert_eq!(firmware.agentboot(Ec718PortType::Usb), AGENTBOOT_EC618_USB);
     }
 

@@ -60,19 +60,6 @@ const GUIDES: &[ModelGuide] = &[
     },
 ];
 
-// SF32LB 条目单独存放，仅在编译启用 SF32LB feature 时出现在指南列表中
-#[cfg(sf32lb)]
-const SF32_GUIDES: &[ModelGuide] = &[ModelGuide {
-    key: "sf32",
-    aliases: &["sf32", "sf32lb58", "air8101-sf32"],
-    description: "SF32LB58（支持 --auto-reset）",
-    flash_example: "luatos-cli flash run --soc firmware.soc --port COM13 --auto-reset",
-    log_example: "luatos-cli log view --port COM13 --baud 1000000",
-    docs_path: "docs\\models\\sf32lb58.md",
-}];
-#[cfg(not(sf32lb))]
-const SF32_GUIDES: &[ModelGuide] = &[];
-
 const GUIDES_TAIL: &[ModelGuide] = &[ModelGuide {
     key: "air724ug",
     aliases: &["air724ug", "uis8910", "rda8910"],
@@ -83,7 +70,7 @@ const GUIDES_TAIL: &[ModelGuide] = &[ModelGuide {
 }];
 
 fn all_guides() -> impl Iterator<Item = &'static ModelGuide> {
-    GUIDES.iter().chain(SF32_GUIDES).chain(GUIDES_TAIL)
+    GUIDES.iter().chain(GUIDES_TAIL)
 }
 
 fn normalize(input: &str) -> String {

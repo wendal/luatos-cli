@@ -16,11 +16,8 @@ ignore:
   - "crates/luatos-serial"
   # 硬件刷机协议实现 — 需要真实设备
   - "crates/luatos-flash/src/air6201.rs"
-  - "crates/luatos-flash/src/sf32lb5x.rs"
   - "crates/luatos-flash/src/device.rs"
   - "crates/luatos-flash/src/bk7258.rs"
   - "crates/luatos-flash/src/ccm4211.rs"
   - "crates/luatos-flash/src/ec718.rs"
   - "crates/luatos-flash/src/xt804.rs"
-  # sftool-lib 芯片级实现 — 依赖真实硬件
-  - "crates/sftool-lib/src/sf32lb*"

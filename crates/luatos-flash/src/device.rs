@@ -5,7 +5,6 @@
 //   - xt804 / air6208 / air101 / air103 / air601 : RTS+DTR 时序进入 boot；UART 上 RTS+DTR 重启
 //   - ec718 / ec7xx / air8000 / air780* : USB SOC 日志口 DIAG `7E 00 01 7E` + AT 兜底（`--port auto` 视为省略）
 //   - ccm4211 / air1601 / air1602 / air1603 / air1604  : ISP 时序进入 boot；UART 上 RTS+DTR 复位
-//   - sf32lb58           : ROM BL 需手动操作（MODE 引脚 + RESET），软件仅打印说明
 //   - 通用               : UART 上 RTS+DTR 脉冲（最佳努力）
 
 // 芯片分发基于 luatos_soc::ChipFamily（chip_type 字符串归一化的单一来源）。
@@ -304,14 +303,6 @@ pub fn device_enter_boot(port_name: Option<&str>, chip: &str) -> Result<()> {
         ChipFamily::Ccm4211 => {
             let port = port_name.ok_or_else(|| anyhow::anyhow!("ccm4211/air1601/air1602/air1603/air1604 需要指定 --port"))?;
             ccm4211_enter_boot(port)
-        }
-        ChipFamily::Sf32lb58 => {
-            // SF32LB58 ROM BL 进入需手动操作，无法通过软件触发
-            eprintln!("SF32LB58 需要手动进入 ROM BL 模式：");
-            eprintln!("  1. 短接 MODE 跳线（3-pin 排针）");
-            eprintln!("  2. 按下 RESET 按键后松开");
-            eprintln!("  3. 拔掉 MODE 短接帽");
-            Ok(())
         }
         _ => {
             // Air6201/Unknown 及通用：与重启相同的 RTS+DTR 脉冲

@@ -609,20 +609,19 @@ fn connect_bootloader(port: &str, target_baud: u32, cancel: &Arc<AtomicBool>, on
 
 /// Flash a .soc firmware to an XT804 device (Air6208/Air101).
 ///
-/// This is the main entry point — handles everything from .soc extraction
-/// through verification.
+/// This is the main entry point — reads the .soc in memory, verifies the
+/// image and transfers it via XMODEM.
 pub fn flash_xt804(soc_path: &str, port: &str, on_progress: ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
-    // Extract .soc
-    on_progress(&FlashProgress::info("Extract", 0.0, "Unpacking .soc file"));
-    let tmpdir = tempfile::tempdir().context("Create temp dir")?;
-    let unpacked = luatos_soc::unpack_soc(soc_path, tmpdir.path())?;
-    let info = &unpacked.info;
+    // Read .soc in memory
+    on_progress(&FlashProgress::info("Extract", 0.0, "Reading .soc file"));
+    let mut archive = luatos_soc::SocArchive::open(soc_path)?;
+    let info = archive.info().clone();
 
     let flash_br = info.flash_baud_rate();
     on_progress(&FlashProgress::info("Extract", 5.0, &format!("Chip: {}, ROM: {}", info.chip.chip_type, info.rom.file)));
 
     // Read firmware image
-    let image_data = std::fs::read(&unpacked.rom_path).with_context(|| format!("Cannot read ROM: {:?}", unpacked.rom_path))?;
+    let image_data = archive.read(&info.rom.file).with_context(|| format!("Cannot read ROM: {}", info.rom.file))?;
 
     // Verify image header
     verify_image(&image_data)?;
@@ -648,46 +647,6 @@ pub fn flash_xt804(soc_path: &str, port: &str, on_progress: ProgressCallback, ca
 
     on_progress(&FlashProgress::done_ok("Flash completed successfully"));
     Ok(())
-}
-
-/// Flash a .soc firmware using the bundled air101_flash.exe subprocess.
-///
-/// Falls back to this when the SOC file includes the flasher executable.
-pub fn flash_via_subprocess(soc_path: &str, port: &str, on_progress: ProgressCallback) -> Result<()> {
-    on_progress(&FlashProgress::info("Extract", 0.0, "Unpacking .soc file"));
-    let tmpdir = tempfile::tempdir().context("Create temp dir")?;
-    let unpacked = luatos_soc::unpack_soc(soc_path, tmpdir.path())?;
-
-    let flash_exe = unpacked.flash_exe.as_ref().context("No flash executable found in .soc")?;
-
-    on_progress(&FlashProgress::info("Flash", 10.0, &format!("Using: {:?}", flash_exe.file_name().unwrap_or_default())));
-
-    // Build command: air101_flash.exe -ds <baud> -p <COM> -rs at -eo all -dl <fls_file>
-    let baud = unpacked.info.flash_baud_rate().to_string();
-    let output = std::process::Command::new(flash_exe)
-        .arg("-ds")
-        .arg(&baud)
-        .arg("-p")
-        .arg(port)
-        .arg("-rs")
-        .arg("at")
-        .arg("-eo")
-        .arg("all")
-        .arg("-dl")
-        .arg(unpacked.rom_path.to_string_lossy().as_ref())
-        .current_dir(tmpdir.path())
-        .output()
-        .context("Failed to run flash tool")?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    if output.status.success() {
-        on_progress(&FlashProgress::done_ok(&format!("Subprocess flash OK\n{stdout}")));
-        Ok(())
-    } else {
-        bail!("Flash tool failed:\nstdout: {stdout}\nstderr: {stderr}");
-    }
 }
 
 /// Flash only the script partition of an XT804 device.

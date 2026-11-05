@@ -11,7 +11,7 @@
 //   CRC16: Modbus polynomial 0x8005, reversed, init=0
 
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -105,7 +105,7 @@ struct CcmResourceAddresses {
 struct CcmFlashResource {
     label: &'static str,
     region: &'static str,
-    path: PathBuf,
+    data: Vec<u8>,
     address: u32,
 }
 
@@ -158,47 +158,54 @@ fn parse_ccm_resource_addresses(source: &str) -> CcmResourceAddresses {
 
 /// Build the optional-resource download plan in the same order as LuaTools:
 /// font before core, TTS after core, and filesystem before scripts.
-fn build_ccm_resource_plan(soc_dir: &Path, info: &luatos_soc::SocInfo, addresses: CcmResourceAddresses) -> CcmFlashResourcePlan {
+/// Resource bytes are pulled out of the SOC archive at plan-build time.
+fn build_ccm_resource_plan(archive: &mut luatos_soc::SocArchive, info: &luatos_soc::SocInfo, addresses: CcmResourceAddresses) -> CcmFlashResourcePlan {
     let mut plan = CcmFlashResourcePlan::default();
 
-    let font_path = soc_dir.join("hzfont_builtin_ttf.bin");
     if let Some(address) = addresses.font {
-        if font_path.exists() {
-            plan.downloads.push(CcmFlashResource {
-                label: "Font",
-                region: "font",
-                path: font_path,
-                address,
-            });
+        if archive.exists("hzfont_builtin_ttf.bin") {
+            match archive.read("hzfont_builtin_ttf.bin") {
+                Ok(data) => plan.downloads.push(CcmFlashResource {
+                    label: "Font",
+                    region: "font",
+                    data,
+                    address,
+                }),
+                Err(error) => plan.warnings.push(format!("Cannot read hzfont_builtin_ttf.bin ({error}); skipping font")),
+            }
         } else {
             plan.warnings
                 .push(format!("SOC declares font address 0x{address:08X}, but hzfont_builtin_ttf.bin is missing; skipping font"));
         }
     }
 
-    let tts_path = soc_dir.join("16k.bin");
     if let Some(address) = addresses.tts {
-        if tts_path.exists() {
-            plan.downloads.push(CcmFlashResource {
-                label: "TTS",
-                region: "tts",
-                path: tts_path,
-                address,
-            });
+        if archive.exists("16k.bin") {
+            match archive.read("16k.bin") {
+                Ok(data) => plan.downloads.push(CcmFlashResource {
+                    label: "TTS",
+                    region: "tts",
+                    data,
+                    address,
+                }),
+                Err(error) => plan.warnings.push(format!("Cannot read 16k.bin ({error}); skipping TTS")),
+            }
         } else {
             plan.warnings
                 .push(format!("SOC declares TTS address 0x{address:08X}, but 16k.bin is missing; skipping TTS"));
         }
     }
 
-    let fs_path = soc_dir.join("fs.bin");
-    if let (true, Some(address)) = (fs_path.exists(), info.fs_addr()) {
-        plan.downloads.push(CcmFlashResource {
-            label: "Filesystem",
-            region: "fs",
-            path: fs_path,
-            address,
-        });
+    if let (true, Some(address)) = (archive.exists("fs.bin"), info.fs_addr()) {
+        match archive.read("fs.bin") {
+            Ok(data) => plan.downloads.push(CcmFlashResource {
+                label: "Filesystem",
+                region: "fs",
+                data,
+                address,
+            }),
+            Err(error) => plan.warnings.push(format!("Cannot read fs.bin ({error}); skipping filesystem")),
+        }
     }
 
     plan
@@ -872,30 +879,26 @@ fn soc_reset_device(port: &mut Box<dyn SerialPort>) -> Result<()> {
 /// via ISP+SOC protocol.
 /// `script_overlay` replaces the `script.bin` packaged in the SOC when `flash run --script` is used.
 pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCallback, cancel: Arc<AtomicBool>, script_overlay: Option<&[u8]>) -> Result<()> {
-    // Extract .soc
-    on_progress(&FlashProgress::info("Extract", 0.0, "Unpacking .soc file"));
-    let tmpdir = tempfile::tempdir().context("Create temp dir")?;
-    let unpacked = luatos_soc::unpack_soc(soc_path, tmpdir.path())?;
-    let info = &unpacked.info;
-    let soc_dir = tmpdir.path();
-    let script_path = soc_dir.join(&info.script.file);
+    // Read .soc in memory
+    on_progress(&FlashProgress::info("Extract", 0.0, "Reading .soc file"));
+    let mut archive = luatos_soc::SocArchive::open(soc_path)?;
+    let info = archive.info().clone();
     let script_data = if let Some(overlay) = script_overlay {
         Some(overlay.to_vec())
-    } else if script_path.exists() {
-        Some(std::fs::read(&script_path).context("Failed to read script")?)
+    } else if archive.exists(&info.script.file) {
+        Some(archive.read(&info.script.file).context("Failed to read script")?)
     } else {
         None
     };
     if let Some(data) = &script_data {
-        crate::validate_script_image(info, data.len(), 1)?;
+        crate::validate_script_image(&info, data.len(), 1)?;
     }
 
-    let include_path = soc_dir.join("include.txt");
-    let mut resource_plan = if include_path.exists() {
-        match std::fs::read_to_string(&include_path) {
-            Ok(contents) => build_ccm_resource_plan(soc_dir, info, parse_ccm_resource_addresses(&contents)),
+    let mut resource_plan = if archive.exists("include.txt") {
+        match archive.read("include.txt").map(|bytes| String::from_utf8_lossy(&bytes).into_owned()) {
+            Ok(contents) => build_ccm_resource_plan(&mut archive, &info, parse_ccm_resource_addresses(&contents)),
             Err(error) => {
-                let mut plan = build_ccm_resource_plan(soc_dir, info, CcmResourceAddresses::default());
+                let mut plan = build_ccm_resource_plan(&mut archive, &info, CcmResourceAddresses::default());
                 plan.warnings.push(format!("Cannot read optional include.txt ({error}); skipping font and TTS resources"));
                 plan
             }
@@ -903,30 +906,11 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
     } else {
         // Older CCM4211 SOC files do not carry the build-time resource map.
         // They may still carry fs.bin, which is addressed from info.json.
-        build_ccm_resource_plan(soc_dir, info, CcmResourceAddresses::default())
+        build_ccm_resource_plan(&mut archive, &info, CcmResourceAddresses::default())
     };
 
     // Load ramrun from SOC or use default
-    let ramrun_path = soc_dir.join("ramrun.bin");
-    let ramrun_data = if ramrun_path.exists() {
-        std::fs::read(&ramrun_path).context("Failed to read ramrun.bin from SOC")?
-    } else {
-        // Try a default ramrun next to the soc file
-        let soc_parent = std::path::Path::new(soc_path).parent();
-        let default_path = soc_parent.map(|p| p.join("ccm4211_ramrun_default.bin"));
-        if let Some(ref dp) = default_path {
-            if dp.exists() {
-                std::fs::read(dp).context("Failed to read default ramrun")?
-            } else {
-                bail!(
-                    "No ramrun.bin found in SOC archive. \
-                     Place ccm4211_ramrun_default.bin next to the .soc file."
-                );
-            }
-        } else {
-            bail!("No ramrun.bin found");
-        }
-    };
+    let ramrun_data = load_ramrun_data(soc_path, &mut archive)?;
 
     if cancel.load(Ordering::Relaxed) {
         bail!("Cancelled");
@@ -972,16 +956,14 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
         on_progress(&FlashProgress::info("Warning", 18.0, &warning));
     }
 
-    // Load files from SOC directory
-    let bl_path = soc_dir.join("bootloader.bin");
-    let core_path = soc_dir.join(&info.rom.file);
+    // Load files from the SOC archive
     let bl_addr = info.bl_addr().unwrap_or(0x10000000);
     let core_addr = info.app_addr().unwrap_or(0x14000000);
     let script_addr = info.script_addr();
 
     // Download bootloader
-    if bl_path.exists() {
-        let bl_data = std::fs::read(&bl_path).context("Failed to read bootloader.bin")?;
+    if archive.exists("bootloader.bin") {
+        let bl_data = archive.read("bootloader.bin").context("Failed to read bootloader.bin")?;
         on_progress(&FlashProgress::info("Bootloader", 20.0, "Downloading bootloader").with_region("bootloader"));
         soc_download_file(&mut port, &mut parser, &mut sn, bl_addr, &bl_data, block_len, on_progress, "Bootloader", 20.0, 35.0)?;
         on_progress(&FlashProgress::info("Bootloader", 35.0, "Bootloader OK").with_region("bootloader"));
@@ -993,15 +975,25 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
 
     // LuaTools writes the optional external font before the application core.
     if let Some(resource) = resource_plan.resource("font") {
-        let data = std::fs::read(&resource.path).with_context(|| format!("Failed to read {}", resource.path.display()))?;
         on_progress(&FlashProgress::info(resource.label, 35.0, "Downloading font resource").with_region(resource.region));
-        soc_download_file(&mut port, &mut parser, &mut sn, resource.address, &data, block_len, on_progress, resource.label, 35.0, 45.0)?;
+        soc_download_file(
+            &mut port,
+            &mut parser,
+            &mut sn,
+            resource.address,
+            &resource.data,
+            block_len,
+            on_progress,
+            resource.label,
+            35.0,
+            45.0,
+        )?;
         on_progress(&FlashProgress::info(resource.label, 45.0, "Font resource OK").with_region(resource.region));
     }
 
     // Download core firmware
-    if core_path.exists() {
-        let core_data = std::fs::read(&core_path).with_context(|| format!("Failed to read {}", info.rom.file))?;
+    if archive.exists(&info.rom.file) {
+        let core_data = archive.read(&info.rom.file).with_context(|| format!("Failed to read {}", info.rom.file))?;
         on_progress(&FlashProgress::info("Core", 45.0, "Downloading core firmware").with_region("core"));
         soc_download_file(&mut port, &mut parser, &mut sn, core_addr, &core_data, block_len, on_progress, "Core", 45.0, 70.0)?;
         on_progress(&FlashProgress::info("Core", 70.0, "Core firmware OK").with_region("core"));
@@ -1013,16 +1005,36 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
 
     // LuaTools writes TTS after core, then an optional filesystem image.
     if let Some(resource) = resource_plan.resource("tts") {
-        let data = std::fs::read(&resource.path).with_context(|| format!("Failed to read {}", resource.path.display()))?;
         on_progress(&FlashProgress::info(resource.label, 70.0, "Downloading TTS resource").with_region(resource.region));
-        soc_download_file(&mut port, &mut parser, &mut sn, resource.address, &data, block_len, on_progress, resource.label, 70.0, 78.0)?;
+        soc_download_file(
+            &mut port,
+            &mut parser,
+            &mut sn,
+            resource.address,
+            &resource.data,
+            block_len,
+            on_progress,
+            resource.label,
+            70.0,
+            78.0,
+        )?;
         on_progress(&FlashProgress::info(resource.label, 78.0, "TTS resource OK").with_region(resource.region));
     }
 
     if let Some(resource) = resource_plan.resource("fs") {
-        let data = std::fs::read(&resource.path).with_context(|| format!("Failed to read {}", resource.path.display()))?;
         on_progress(&FlashProgress::info(resource.label, 78.0, "Downloading filesystem resource").with_region(resource.region));
-        soc_download_file(&mut port, &mut parser, &mut sn, resource.address, &data, block_len, on_progress, resource.label, 78.0, 88.0)?;
+        soc_download_file(
+            &mut port,
+            &mut parser,
+            &mut sn,
+            resource.address,
+            &resource.data,
+            block_len,
+            on_progress,
+            resource.label,
+            78.0,
+            88.0,
+        )?;
         on_progress(&FlashProgress::info(resource.label, 88.0, "Filesystem resource OK").with_region(resource.region));
     }
 
@@ -1044,13 +1056,12 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
 
 /// Flash only the script partition for CCM4211/Air1601.
 pub fn flash_script_ccm4211(soc_path: &str, port_name: &str, script_data: &[u8], on_progress: &ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
-    on_progress(&FlashProgress::info("Extract", 0.0, "Unpacking .soc file"));
-    let tmpdir = tempfile::tempdir().context("Create temp dir")?;
-    let unpacked = luatos_soc::unpack_soc(soc_path, tmpdir.path())?;
-    let info = &unpacked.info;
-    crate::validate_script_image(info, script_data.len(), 1)?;
+    on_progress(&FlashProgress::info("Extract", 0.0, "Reading .soc file"));
+    let mut archive = luatos_soc::SocArchive::open(soc_path)?;
+    let info = archive.info().clone();
+    crate::validate_script_image(&info, script_data.len(), 1)?;
 
-    let ramrun_data = load_ramrun_data(soc_path, tmpdir.path())?;
+    let ramrun_data = load_ramrun_data(soc_path, &mut archive)?;
 
     if cancel.load(Ordering::Relaxed) {
         bail!("Cancelled");
@@ -1096,12 +1107,11 @@ pub fn flash_script_ccm4211(soc_path: &str, port_name: &str, script_data: &[u8],
 
 /// Erase a flash partition (FSKV or filesystem).
 pub fn erase_partition_ccm4211(soc_path: &str, port_name: &str, partition_addr: u32, partition_name: &str, on_progress: &ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
-    on_progress(&FlashProgress::info("Extract", 0.0, "Unpacking .soc file"));
-    let tmpdir = tempfile::tempdir().context("Create temp dir")?;
-    let unpacked = luatos_soc::unpack_soc(soc_path, tmpdir.path())?;
-    let info = &unpacked.info;
+    on_progress(&FlashProgress::info("Extract", 0.0, "Reading .soc file"));
+    let mut archive = luatos_soc::SocArchive::open(soc_path)?;
+    let info = archive.info().clone();
 
-    let ramrun_data = load_ramrun_data(soc_path, tmpdir.path())?;
+    let ramrun_data = load_ramrun_data(soc_path, &mut archive)?;
 
     if cancel.load(Ordering::Relaxed) {
         bail!("Cancelled");
@@ -1158,10 +1168,9 @@ pub fn clear_fskv(soc_path: &str, port_name: &str, on_progress: &ProgressCallbac
 
 /// 读取 ramrun 字节：优先用 SOC 包内的 `ramrun.bin`，否则回退到同目录
 /// 的 `ccm4211_ramrun_default.bin`。
-fn load_ramrun_data(soc_path: &str, soc_dir: &Path) -> Result<Vec<u8>> {
-    let bundled = soc_dir.join("ramrun.bin");
-    if bundled.exists() {
-        return std::fs::read(&bundled).context("read ramrun.bin");
+fn load_ramrun_data(soc_path: &str, archive: &mut luatos_soc::SocArchive) -> Result<Vec<u8>> {
+    if archive.exists("ramrun.bin") {
+        return archive.read("ramrun.bin").context("read ramrun.bin");
     }
     let fallback = Path::new(soc_path).parent().map(|p| p.join("ccm4211_ramrun_default.bin"));
     match fallback {
@@ -1185,13 +1194,10 @@ pub struct Ccm4211Raw {
 
 /// 进入 CCM4211 SOC 协议会话并返回 raw 句柄（ISP → ramrun → SOC 帧协议）。
 pub fn open_raw(soc_path: &str, port_name: &str, cancel: Arc<AtomicBool>, on_progress: ProgressCallback) -> Result<Box<dyn crate::raw::RawFlashDevice>> {
-    on_progress(&FlashProgress::info("Extract", 0.0, "Unpacking .soc file"));
-    let tmpdir = tempfile::tempdir().context("Create temp dir")?;
-    let unpacked = luatos_soc::unpack_soc(soc_path, tmpdir.path())?;
-    let dl_baud = unpacked.info.flash_baud_rate();
-    let ramrun_data = load_ramrun_data(soc_path, tmpdir.path())?;
-    // ramrun 已读入内存，SOC 包可以立即释放
-    drop(tmpdir);
+    on_progress(&FlashProgress::info("Extract", 0.0, "Reading .soc file"));
+    let mut archive = luatos_soc::SocArchive::open(soc_path)?;
+    let dl_baud = archive.info().flash_baud_rate();
+    let ramrun_data = load_ramrun_data(soc_path, &mut archive)?;
 
     crate::raw::check_cancel(&cancel)?;
     let mut port = isp_load_ramrun(port_name, &ramrun_data, &on_progress)?;
@@ -1332,7 +1338,6 @@ impl crate::raw::RawFlashDevice for Ccm4211Raw {
 mod tests {
     use super::*;
     use std::cell::RefCell;
-    use std::fs;
 
     fn resource_test_info(fs_addr: Option<&str>) -> luatos_soc::SocInfo {
         let fs_addr = fs_addr.map(|address| format!(r#""fs_addr":"{address}""#));
@@ -1341,6 +1346,22 @@ mod tests {
             r#"{{"chip":{{"type":"air1602"}},"rom":{{"file":"luatos.bin"}},"script":{{"file":"script.bin"}},"download":{download}}}"#
         ))
         .unwrap()
+    }
+
+    /// 构造最小 ZIP .soc（含给定 info.json 与附加文件）并以 SocArchive 打开。
+    fn archive_for_plan_test(info_json: &str, files: &[(&str, &[u8])]) -> (tempfile::NamedTempFile, luatos_soc::SocArchive) {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut zw = zip::ZipWriter::new(file.reopen().unwrap());
+        let opts = zip::write::SimpleFileOptions::default();
+        zw.start_file("info.json", opts).unwrap();
+        std::io::Write::write_all(&mut zw, info_json.as_bytes()).unwrap();
+        for (name, data) in files {
+            zw.start_file(*name, opts).unwrap();
+            std::io::Write::write_all(&mut zw, data).unwrap();
+        }
+        zw.finish().unwrap();
+        let archive = luatos_soc::SocArchive::open(file.path().to_str().unwrap()).unwrap();
+        (file, archive)
     }
 
     /// 固件代码段的替身：重复 Thumb 指令模式，可压缩。
@@ -1440,15 +1461,11 @@ mod tests {
 
     #[test]
     fn ccm_resource_plan_orders_font_tts_fs_for_complete_soc() {
-        let tempdir = tempfile::tempdir().unwrap();
-        let dir = tempdir.path();
-        fs::write(dir.join("hzfont_builtin_ttf.bin"), b"font").unwrap();
-        fs::write(dir.join("16k.bin"), b"tts").unwrap();
-        fs::write(dir.join("fs.bin"), b"fs").unwrap();
-
         let info = resource_test_info(Some("14e80000"));
+        let info_json = serde_json::to_string(&info).unwrap();
+        let (_guard, mut archive) = archive_for_plan_test(&info_json, &[("hzfont_builtin_ttf.bin", b"font"), ("16k.bin", b"tts"), ("fs.bin", b"fs")]);
         let plan = build_ccm_resource_plan(
-            dir,
+            &mut archive,
             &info,
             CcmResourceAddresses {
                 font: Some(0x1004_0000),
@@ -1465,18 +1482,22 @@ mod tests {
 
     #[test]
     fn ccm_resource_plan_keeps_old_soc_without_include_addresses_unchanged() {
-        let tempdir = tempfile::tempdir().unwrap();
-        let plan = build_ccm_resource_plan(tempdir.path(), &resource_test_info(None), CcmResourceAddresses::default());
+        let info = resource_test_info(None);
+        let info_json = serde_json::to_string(&info).unwrap();
+        let (_guard, mut archive) = archive_for_plan_test(&info_json, &[]);
+        let plan = build_ccm_resource_plan(&mut archive, &info, CcmResourceAddresses::default());
         assert!(plan.downloads.is_empty());
         assert!(plan.warnings.is_empty());
     }
 
     #[test]
     fn ccm_resource_plan_warns_when_declared_resources_are_missing() {
-        let tempdir = tempfile::tempdir().unwrap();
+        let info = resource_test_info(None);
+        let info_json = serde_json::to_string(&info).unwrap();
+        let (_guard, mut archive) = archive_for_plan_test(&info_json, &[]);
         let plan = build_ccm_resource_plan(
-            tempdir.path(),
-            &resource_test_info(None),
+            &mut archive,
+            &info,
             CcmResourceAddresses {
                 font: Some(0x1004_0000),
                 tts: Some(0x1488_0000),
@@ -1490,14 +1511,16 @@ mod tests {
 
     #[test]
     fn ccm_resource_plan_skips_fs_without_image_or_address() {
-        let tempdir = tempfile::tempdir().unwrap();
-        let dir = tempdir.path();
-        fs::write(dir.join("fs.bin"), b"fs").unwrap();
-        let no_address_plan = build_ccm_resource_plan(dir, &resource_test_info(None), CcmResourceAddresses::default());
+        let info = resource_test_info(None);
+        let info_json = serde_json::to_string(&info).unwrap();
+        let (_guard, mut archive) = archive_for_plan_test(&info_json, &[("fs.bin", b"fs")]);
+        let no_address_plan = build_ccm_resource_plan(&mut archive, &info, CcmResourceAddresses::default());
         assert!(no_address_plan.resource("fs").is_none());
 
-        fs::remove_file(dir.join("fs.bin")).unwrap();
-        let no_image_plan = build_ccm_resource_plan(dir, &resource_test_info(Some("14e80000")), CcmResourceAddresses::default());
+        let info = resource_test_info(Some("14e80000"));
+        let info_json = serde_json::to_string(&info).unwrap();
+        let (_guard, mut archive) = archive_for_plan_test(&info_json, &[]);
+        let no_image_plan = build_ccm_resource_plan(&mut archive, &info, CcmResourceAddresses::default());
         assert!(no_image_plan.resource("fs").is_none());
     }
 
@@ -1759,10 +1782,8 @@ mod tests {
         let soc = std::env::var("HW_SOC").unwrap_or_else(|_| "refs/soc_files/LuatOS-SoC_V1021_Air1601.soc".into());
 
         let info = luatos_soc::read_soc_info(&soc).expect("read soc info");
-        let tmpdir = tempfile::tempdir().expect("tempdir");
-        luatos_soc::unpack_soc(&soc, tmpdir.path()).expect("unpack soc");
-        let ramrun = load_ramrun_data(&soc, tmpdir.path()).expect("load ramrun");
-        drop(tmpdir);
+        let mut archive = luatos_soc::SocArchive::open(&soc).expect("open soc");
+        let ramrun = load_ramrun_data(&soc, &mut archive).expect("load ramrun");
 
         let on_progress: ProgressCallback = Box::new(|p| println!("  [progress] {} {} {}", p.stage, p.percent, p.message));
         let mut port_handle = isp_load_ramrun(&port, &ramrun, &on_progress).expect("isp_load_ramrun");
@@ -1825,10 +1846,8 @@ mod tests {
         let port = std::env::var("HW_PORT").unwrap_or_else(|_| "COM23".into());
         let soc = std::env::var("HW_SOC").unwrap_or_else(|_| "refs/soc_files/LuatOS-SoC_V1021_Air1601.soc".into());
         let info = luatos_soc::read_soc_info(&soc).expect("read soc info");
-        let tmpdir = tempfile::tempdir().expect("tempdir");
-        luatos_soc::unpack_soc(&soc, tmpdir.path()).expect("unpack soc");
-        let ramrun = load_ramrun_data(&soc, tmpdir.path()).expect("load ramrun");
-        drop(tmpdir);
+        let mut archive = luatos_soc::SocArchive::open(&soc).expect("open soc");
+        let ramrun = load_ramrun_data(&soc, &mut archive).expect("load ramrun");
 
         let base: u32 = info.script_addr();
         let on_progress: ProgressCallback = Box::new(|_| {});

@@ -641,7 +641,6 @@ fn flash_device(
                         args.progress_step,
                         format,
                         &args.reset,
-                        None,
                         0,
                     )
                     .context("flash run failed")?;
@@ -657,8 +656,6 @@ fn flash_device(
                     args.progress_step,
                     format,
                     &args.reset,
-                    None,
-                    args.baud,
                 )
                 .context("flash script partition failed")?;
             }
@@ -675,7 +672,6 @@ fn flash_device(
                     args.progress_step,
                     format,
                     &args.reset,
-                    None,
                     0,
                 )
                 .context("flash run failed")?;

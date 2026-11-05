@@ -69,7 +69,7 @@ fn apply_os_args(cmd: &mut Command, target_os: &str) {
     }
 }
 
-fn build_lua_helper(lua_src: &str, out_dir: &Path, bitw: u32, target_os: &str) {
+fn build_lua_helper(lua_src: &Path, out_dir: &Path, bitw: u32, target_os: &str) {
     let mut build = cc::Build::new();
     build.include(lua_src).warnings(false);
     if bitw == 32 {
@@ -78,11 +78,13 @@ fn build_lua_helper(lua_src: &str, out_dir: &Path, bitw: u32, target_os: &str) {
     apply_os_defines(&mut build, target_os);
 
     let compiler = build.get_compiler();
-    let helper_src = PathBuf::from("csrc/luac_helper.c");
+    let helper_src = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set")).join("csrc/luac_helper.c");
     let output = out_dir.join(format!("luac{}_helper{}", bitw, env::consts::EXE_SUFFIX));
 
     let mut cmd = compiler.to_command();
-    for file in core_files(lua_src) {
+    // cl.exe 会把中间 .obj 写到当前目录；切到 OUT_DIR 避免污染源码目录
+    cmd.current_dir(out_dir);
+    for file in core_files(&lua_src.to_string_lossy()) {
         cmd.arg(file);
     }
     cmd.arg(&helper_src);
@@ -101,7 +103,7 @@ fn build_lua_helper(lua_src: &str, out_dir: &Path, bitw: u32, target_os: &str) {
     println!("cargo:rustc-env=LUA53_HELPER_EMBED_{}={}", bitw, output.display());
 }
 
-fn build_mklfs_helper(lfs_src: &str, out_dir: &Path, target_os: &str) {
+fn build_mklfs_helper(lfs_src: &Path, out_dir: &Path, target_os: &str) {
     let mut build = cc::Build::new();
     build.include(lfs_src).warnings(false);
     // Disable LFS tracing/debug in release builds
@@ -110,12 +112,14 @@ fn build_mklfs_helper(lfs_src: &str, out_dir: &Path, target_os: &str) {
     build.define("LFS_NO_ERROR", None);
 
     let compiler = build.get_compiler();
-    let helper_src = PathBuf::from("csrc/mklfs_helper.c");
-    let lfs_c = format!("{}/lfs.c", lfs_src);
-    let lfs_util_c = format!("{}/lfs_util.c", lfs_src);
+    let helper_src = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set")).join("csrc/mklfs_helper.c");
+    let lfs_c = lfs_src.join("lfs.c");
+    let lfs_util_c = lfs_src.join("lfs_util.c");
     let output = out_dir.join(format!("mklfs_helper{}", env::consts::EXE_SUFFIX));
 
     let mut cmd = compiler.to_command();
+    // cl.exe 会把中间 .obj 写到当前目录；切到 OUT_DIR 避免污染源码目录
+    cmd.current_dir(out_dir);
     cmd.arg(&helper_src);
     cmd.arg(&lfs_c);
     cmd.arg(&lfs_util_c);
@@ -137,14 +141,15 @@ fn build_mklfs_helper(lfs_src: &str, out_dir: &Path, target_os: &str) {
 }
 
 fn main() {
-    let lua_src = "lua-5.3.6/src";
-    let lfs_src = "lfs";
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
+    let lua_src = manifest_dir.join("lua-5.3.6/src");
+    let lfs_src = manifest_dir.join("lfs");
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
 
-    build_lua_helper(lua_src, &out_dir, 32, &target_os);
-    build_lua_helper(lua_src, &out_dir, 64, &target_os);
-    build_mklfs_helper(lfs_src, &out_dir, &target_os);
+    build_lua_helper(&lua_src, &out_dir, 32, &target_os);
+    build_lua_helper(&lua_src, &out_dir, 64, &target_os);
+    build_mklfs_helper(&lfs_src, &out_dir, &target_os);
 
     println!("cargo:rerun-if-changed=lua-5.3.6/src");
     println!("cargo:rerun-if-changed=csrc/luac_helper.c");

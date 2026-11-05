@@ -9,20 +9,10 @@ description = "LuatOS CLI tool — flash, log, project management"
 name = "luatos-cli"
 path = "src/main.rs"
 
-[features]
-# SF32LB 系列默认全部关闭（可裁剪约 2.4MB 内嵌 RAM stub 数据与协议代码）。
-# 刷机功能只需：--features sf32lb58
-default = []
-sf32lb52 = ["luatos-flash/sf32lb52"]
-sf32lb55 = ["luatos-flash/sf32lb55"]
-sf32lb56 = ["luatos-flash/sf32lb56"]
-sf32lb57 = ["luatos-flash/sf32lb57"]
-sf32lb58 = ["luatos-flash/sf32lb58"]
-
 [dependencies]
 luatos-soc = { path = "../luatos-soc" }
 luatos-luadb = { path = "../luatos-luadb" }
-luatos-flash = { path = "../luatos-flash", default-features = false }
+luatos-flash = { path = "../luatos-flash" }
 luatos-serial = { path = "../luatos-serial" }
 luatos-project = { path = "../luatos-project" }
 luatos-log = { path = "../luatos-log" }

@@ -54,9 +54,6 @@ pub fn cmd_soc_unpack(path: &str, output: Option<&str>, format: &OutputFormat) -
             println!("Extracted to: {}", out_path.display());
             println!("  Chip:  {}", unpacked.info.chip.chip_type);
             println!("  ROM:   {}", unpacked.rom_path.display());
-            if let Some(ref exe) = unpacked.flash_exe {
-                println!("  Exe:   {}", exe.display());
-            }
         }
         OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(
             format,
@@ -66,7 +63,6 @@ pub fn cmd_soc_unpack(path: &str, output: Option<&str>, format: &OutputFormat) -
                 "dir": out_path.display().to_string(),
                 "chip": unpacked.info.chip.chip_type,
                 "rom": unpacked.rom_path.display().to_string(),
-                "flash_exe": unpacked.flash_exe.map(|p| p.display().to_string()),
             }),
         )?,
     }

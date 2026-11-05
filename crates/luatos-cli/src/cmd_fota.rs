@@ -504,9 +504,10 @@ fn build_air6208_fota(new_soc: &str, out_base: &Path) -> Result<Air6208FotaResul
     let up = unpack(new_soc, &tmp.path().join("soc"))?;
     let info = &up.info;
 
-    let flash_exe = up
-        .flash_exe
-        .as_ref()
+    let flash_exe = ["air602_flash.exe", "air101_flash.exe"]
+        .iter()
+        .map(|name| up.dir.join(name))
+        .find(|p| p.exists())
         .ok_or_else(|| anyhow::anyhow!("air101_flash.exe not found inside the Air6208 .soc archive"))?;
 
     let app_addr = info.download.app_addr.as_deref().or(info.download.core_addr.as_deref()).unwrap_or("8010000");
@@ -534,7 +535,7 @@ fn build_air6208_fota(new_soc: &str, out_base: &Path) -> Result<Air6208FotaResul
 
     let mid_base = tmp.path().join("fota_mid");
     run_cmd({
-        let mut c = Command::new(flash_exe);
+        let mut c = Command::new(&flash_exe);
         c.args([
             "-b",
             &rom_bin.to_string_lossy(),
@@ -575,7 +576,7 @@ fn build_air6208_fota(new_soc: &str, out_base: &Path) -> Result<Air6208FotaResul
     let fw_base = tmp.path().join("fw_fota");
     let fc_str = compress_type.to_string();
     run_cmd({
-        let mut c = Command::new(flash_exe);
+        let mut c = Command::new(&flash_exe);
         c.args([
             "-b",
             &stripped_path.to_string_lossy(),
@@ -610,7 +611,7 @@ fn build_air6208_fota(new_soc: &str, out_base: &Path) -> Result<Air6208FotaResul
         let s_base = tmp.path().join("script_sota");
         let res = (|| -> Result<()> {
             run_cmd({
-                let mut c = Command::new(flash_exe);
+                let mut c = Command::new(&flash_exe);
                 c.args([
                     "-b",
                     &script_bin.to_string_lossy(),
@@ -987,8 +988,8 @@ pub fn cmd_fota_build(
             }
         }
 
-        // 其余族（Sf32lb58 / Air6201 / Unknown）不支持 FOTA
-        ChipFamily::Sf32lb58 | ChipFamily::Air6201 | ChipFamily::Unknown => bail!(
+        // 其余族（Air6201 / Unknown）不支持 FOTA
+        ChipFamily::Air6201 | ChipFamily::Unknown => bail!(
             "FOTA not supported for chip '{chip}'. \
              Supported: EC7xx/EC618/Air8000 (differential), Air1601/Air1602/CCM4211 (full or --script-only), Air8101/BK72XX (new-format full or --script-only), Air6208/XT804 (full), Air724UG/RDA8910 (full or --script-only)."
         ),

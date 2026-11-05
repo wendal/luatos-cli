@@ -12,7 +12,6 @@ members = [
     "crates/luatos-log-ffi",
     "crates/luatos-resource",
     "crates/luatos-testcase",
-    "crates/sftool-lib",
     # "crates/luatos-gui/src-tauri",  # GUI 暂时禁用
 ]
 
@@ -49,6 +48,3 @@ tokio = { version = "1", features = ["io-util", "macros", "rt-multi-thread", "sy
 lto = "fat"
 opt-level = "z"
 strip = "symbols"
-
-[patch."https://github.com/wendal/sftool"]
-sftool-lib = { path = "crates/sftool-lib" }

@@ -3,8 +3,9 @@
 // SOC files are archives (ZIP for Air8101, 7z for others) containing:
 //   - info.json: metadata (chip type, ROM path, addresses, baud rates)
 //   - ROM binary (e.g. luatos.bin)
-//   - Optional: air602_flash.exe, luac, etc.
+//   - Optional: script.bin, resource images, etc.
 
+mod archive;
 pub mod binpkg_diff;
 mod chip;
 pub mod combine;
@@ -13,6 +14,7 @@ pub mod ota;
 pub mod pack;
 mod unpack;
 
+pub use archive::SocArchive;
 pub use chip::*;
 pub use combine::combine_ec7xx_soc;
 pub use info::*;

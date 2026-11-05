@@ -144,29 +144,3 @@ fn ec_full_flash_checks_overlay_before_loading_firmware() {
     .to_string();
     assert!(error.contains("超过分区容量（409600 字节"), "{error}");
 }
-
-#[cfg(feature = "sf32lb58")]
-#[test]
-fn sf32_script_checks_capacity_before_reset_or_serial() {
-    let dir = tempfile::tempdir().unwrap();
-    let source = dir.path().join("source");
-    let scripts = dir.path().join("scripts");
-    std::fs::create_dir(&source).unwrap();
-    std::fs::create_dir(&scripts).unwrap();
-    std::fs::write(scripts.join("data.bin"), vec![0u8; 500 * 1024]).unwrap();
-    std::fs::write(source.join("info.json"), serde_json::to_vec(&info("sf32lb58", 400.into())).unwrap()).unwrap();
-    let soc = dir.path().join("test.soc");
-    luatos_soc::pack_soc_zip(&source, soc.to_str().unwrap()).unwrap();
-    let error = luatos_flash::sf32lb5x::flash_script_sf32lb5x(
-        soc.to_str().unwrap(),
-        "INVALID_PORT",
-        &[scripts.to_str().unwrap()],
-        Box::new(|_| {}),
-        Arc::new(AtomicBool::new(false)),
-        None,
-        None,
-    )
-    .unwrap_err()
-    .to_string();
-    assert!(error.contains("超过分区容量（409600 字节"), "{error}");
-}

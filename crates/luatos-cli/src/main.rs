@@ -206,21 +206,6 @@ enum SocCommands {
     },
 }
 
-/// DTR/RTS 引脚电平选择（用于 SF32LB58 CH340X 改装硬件调试）
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
-pub(crate) enum SignalLevel {
-    /// 高电平
-    High,
-    /// 低电平
-    Low,
-}
-
-impl SignalLevel {
-    pub(crate) fn as_bool(self) -> bool {
-        matches!(self, SignalLevel::High)
-    }
-}
-
 #[derive(Subcommand)]
 enum FlashCommands {
     /// Full firmware flash (ROM + optional script)
@@ -243,9 +228,6 @@ enum FlashCommands {
         /// RTS reset and boot-wait options
         #[command(flatten)]
         reset: reset_args::ResetArgs,
-        /// SF32LB58 自动复位参数（CH340X 增强 DTR 改装硬件）
-        #[command(flatten)]
-        reset_sf32: reset_args::Sf32ResetArgs,
         /// 刷机完成后继续监听串口日志秒数（0=不监听）
         #[arg(long, default_value = "0")]
         tail_log_secs: u64,
@@ -258,9 +240,6 @@ enum FlashCommands {
         /// Serial port (e.g. COM6)
         #[arg(long)]
         port: String,
-        /// 刷写波特率（stub 加载后协商，CH342K 支持最高 3000000；默认不切换）
-        #[arg(long)]
-        baud: Option<u32>,
         /// Script folders containing .lua files (can specify multiple)
         #[arg(long)]
         script: Vec<String>,
@@ -273,9 +252,6 @@ enum FlashCommands {
         /// RTS reset and boot-wait options
         #[command(flatten)]
         reset: reset_args::ResetArgs,
-        /// SF32LB58 自动复位参数（CH340X 增强 DTR 改装硬件）
-        #[command(flatten)]
-        reset_sf32: reset_args::Sf32ResetArgs,
     },
     /// Clear filesystem partition (erase to 0xFF)
     ClearFs {
@@ -324,15 +300,9 @@ enum FlashCommands {
         /// Serial port (e.g. COM6)
         #[arg(long)]
         port: String,
-        /// 刷写波特率（stub 加载后协商，仅 SF32LB58；默认不切换）
-        #[arg(long)]
-        baud: Option<u32>,
         /// RTS reset and boot-wait options
         #[command(flatten)]
         reset: reset_args::ResetArgs,
-        /// SF32LB58 自动复位参数（CH340X 增强 DTR 改装硬件）
-        #[command(flatten)]
-        reset_sf32: reset_args::Sf32ResetArgs,
     },
     /// Air6201 external SPI flash programming (write to script/fskv/lfs partition)
     ExtFlash {
@@ -821,79 +791,38 @@ fn main() {
                 script,
                 luac_debug,
                 reset,
-                reset_sf32,
                 tail_log_secs,
             } => {
                 let script_opt = if script.is_empty() { None } else { Some(script.as_slice()) };
-                let reset_config = reset_sf32.to_reset_config();
-                cmd_flash::cmd_flash_run(&soc, &port, baud, script_opt, luac_debug, progress_step, &cli.format, &reset, reset_config, tail_log_secs)
+                cmd_flash::cmd_flash_run(&soc, &port, baud, script_opt, luac_debug, progress_step, &cli.format, &reset, tail_log_secs)
             }
             FlashCommands::Script {
                 soc,
                 port,
-                baud,
                 script,
                 luac_debug,
                 bin,
                 reset,
-                reset_sf32,
             } => {
                 if let Some(bin_path) = bin {
                     let on_progress = cmd_flash::make_progress_callback(&cli.format, "flash.script".to_string(), progress_step);
                     cmd_flash::cmd_flash_script_bin(&soc, &port, &bin_path, &on_progress).and_then(|_| cmd_flash::print_script_result(&cli.format))
                 } else {
-                    let reset_config = reset_sf32.to_reset_config();
                     let script_opt: Option<&[String]> = if script.is_empty() { None } else { Some(script.as_slice()) };
-                    cmd_flash::cmd_flash_partition("script", &soc, &port, script_opt, luac_debug, progress_step, &cli.format, &reset, reset_config, baud)
+                    cmd_flash::cmd_flash_partition("script", &soc, &port, script_opt, luac_debug, progress_step, &cli.format, &reset)
                 }
             }
             FlashCommands::ClearFs { soc, port, reset } => {
-                cmd_flash::cmd_flash_partition("clear-fs", &soc, &port, None, luatos_luadb::LUAC_DEBUG_ALL, progress_step, &cli.format, &reset, None, None)
+                cmd_flash::cmd_flash_partition("clear-fs", &soc, &port, None, luatos_luadb::LUAC_DEBUG_ALL, progress_step, &cli.format, &reset)
             }
-            FlashCommands::FlashFs { soc, port, script, reset } => cmd_flash::cmd_flash_partition(
-                "flash-fs",
-                &soc,
-                &port,
-                Some(&script),
-                luatos_luadb::LUAC_DEBUG_ALL,
-                progress_step,
-                &cli.format,
-                &reset,
-                None,
-                None,
-            ),
-            FlashCommands::FlashRes { soc, port, resource, reset } => cmd_flash::cmd_flash_partition(
-                "flash-res",
-                &soc,
-                &port,
-                Some(&resource),
-                luatos_luadb::LUAC_DEBUG_ALL,
-                progress_step,
-                &cli.format,
-                &reset,
-                None,
-                None,
-            ),
-            FlashCommands::ClearKv {
-                soc,
-                port,
-                baud,
-                reset,
-                reset_sf32,
-            } => {
-                let reset_config = reset_sf32.to_reset_config();
-                cmd_flash::cmd_flash_partition(
-                    "clear-kv",
-                    &soc,
-                    &port,
-                    None,
-                    luatos_luadb::LUAC_DEBUG_ALL,
-                    progress_step,
-                    &cli.format,
-                    &reset,
-                    reset_config,
-                    baud,
-                )
+            FlashCommands::FlashFs { soc, port, script, reset } => {
+                cmd_flash::cmd_flash_partition("flash-fs", &soc, &port, Some(&script), luatos_luadb::LUAC_DEBUG_ALL, progress_step, &cli.format, &reset)
+            }
+            FlashCommands::FlashRes { soc, port, resource, reset } => {
+                cmd_flash::cmd_flash_partition("flash-res", &soc, &port, Some(&resource), luatos_luadb::LUAC_DEBUG_ALL, progress_step, &cli.format, &reset)
+            }
+            FlashCommands::ClearKv { soc, port, reset } => {
+                cmd_flash::cmd_flash_partition("clear-kv", &soc, &port, None, luatos_luadb::LUAC_DEBUG_ALL, progress_step, &cli.format, &reset)
             }
             FlashCommands::ExtFlash {
                 port,
@@ -1235,55 +1164,6 @@ mod tests {
         // --soc-tools 死参数已删除，旧命令应解析失败
         let result = Cli::try_parse_from(["luatos-cli", "fota", "build", "--new", "a.soc", "--soc-tools", "x.exe"]);
         assert!(result.is_err(), "--soc-tools 已移除，应解析失败");
-    }
-
-    fn parse_flash_reset(args: &[&str]) -> FlashCommands {
-        let mut cli_args = vec!["luatos-cli", "flash", "run"];
-        cli_args.extend_from_slice(args);
-        let cli = Cli::try_parse_from(cli_args).expect("flash run 参数解析失败");
-        let Commands::Flash { action, .. } = cli.command else {
-            panic!("未解析到 flash 子命令");
-        };
-        action
-    }
-
-    #[test]
-    fn flash_run_sf32_reset_args_flatten_parses() {
-        let action = parse_flash_reset(&[
-            "--soc",
-            "soc.bin",
-            "--port",
-            "COM6",
-            "--auto-reset",
-            "--dtr-boot",
-            "high",
-            "--sf32-rts-reset",
-            "low",
-            "--reset-ms",
-            "200",
-            "--sf32-boot-wait-ms",
-            "800",
-        ]);
-        let FlashCommands::Run { reset_sf32, .. } = action else {
-            panic!("未解析到 flash run 命令");
-        };
-        assert!(reset_sf32.auto_reset);
-        // SignalLevel 是 crate 私有枚举，此处只校验配置转换结果
-        let cfg = reset_sf32.to_reset_config().expect("auto_reset=true 时应有复位配置");
-        assert!(cfg.dtr_boot, "dtr-boot high 应转换为 true");
-        assert!(!cfg.rts_reset, "sf32-rts-reset low 应转换为 false");
-        assert_eq!(cfg.reset_ms, 200);
-        assert_eq!(cfg.boot_wait_ms, 800);
-    }
-
-    #[test]
-    fn flash_run_sf32_reset_args_disabled_when_auto_reset_absent() {
-        let action = parse_flash_reset(&["--soc", "soc.bin", "--port", "COM6"]);
-        let FlashCommands::Run { reset_sf32, .. } = action else {
-            panic!("未解析到 flash run 命令");
-        };
-        assert!(!reset_sf32.auto_reset);
-        assert!(reset_sf32.to_reset_config().is_none(), "auto_reset=false 时应返回 None");
     }
 
     fn parse_trun_run(args: &[&str]) -> cmd_trun::TrunCommands {

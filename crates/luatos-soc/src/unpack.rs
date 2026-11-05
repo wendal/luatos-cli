@@ -18,8 +18,6 @@ pub struct UnpackedSoc {
     pub dir: PathBuf,
     /// Path to the ROM binary.
     pub rom_path: PathBuf,
-    /// Path to flash tool executable if present (e.g. air602_flash.exe, air101_flash.exe).
-    pub flash_exe: Option<PathBuf>,
 }
 
 /// Archive format detected from magic bytes.
@@ -62,9 +60,10 @@ fn read_soc_info_zip(soc_path: &str) -> Result<SocInfo> {
 }
 
 fn read_soc_info_7z(soc_path: &str) -> Result<SocInfo> {
-    let tempdir = tempfile::tempdir().context("Create temp dir")?;
-    extract_7z(soc_path, tempdir.path())?;
-    let info: SocInfo = serde_json::from_reader(std::fs::File::open(tempdir.path().join("info.json")).context("info.json missing after 7z extract")?).context("Parse info.json")?;
+    let file = std::fs::File::open(soc_path).with_context(|| format!("Cannot open: {soc_path}"))?;
+    let mut reader = sevenz_rust2::ArchiveReader::new(file, sevenz_rust2::Password::empty()).context("Failed to read 7z archive")?;
+    let data = reader.read_file("info.json").context("info.json not found in 7z")?;
+    let info: SocInfo = serde_json::from_slice(&data).context("Parse info.json")?;
     Ok(info)
 }
 
@@ -94,14 +93,10 @@ fn finalize_unpacked(out_dir: &Path) -> Result<UnpackedSoc> {
 
     let rom_path = out_dir.join(&info.rom.file);
 
-    // Look for known flash executables
-    let flash_exe = ["air602_flash.exe", "air101_flash.exe"].iter().map(|name| out_dir.join(name)).find(|p| p.exists());
-
     Ok(UnpackedSoc {
         info,
         dir: out_dir.to_path_buf(),
         rom_path,
-        flash_exe,
     })
 }
 
@@ -198,38 +193,5 @@ mod tests {
         let files = list_soc_files(soc).expect("list_soc_files");
         assert!(!files.is_empty());
         assert!(files.iter().any(|f| f == "info.json"));
-    }
-
-    #[test]
-    fn read_sf32lb58_soc() {
-        let soc = r"d:\github\luatos-cli\refs\soc_files\LuatOS-SoC_V0001_SF32LB58.soc";
-        if !Path::new(soc).exists() {
-            eprintln!("Skipping: {soc} not found");
-            return;
-        }
-        let fmt = detect_soc_format(soc).unwrap();
-        assert_eq!(fmt, SocFormat::Zip, "SF32LB58 SOC 应为 ZIP 格式");
-        let info = read_soc_info(soc).expect("read_soc_info");
-        assert_eq!(info.chip.chip_type, "sf32lb58");
-        // 验证 NAND 分区地址
-        assert_eq!(info.app_addr(), Some(0x68000000), "app_addr");
-        assert_eq!(info.script_addr(), 0x69800000, "script_addr");
-        // 验证 NOR 分区地址（需 pack_soc.py 已写入，旧版 SOC 可能为 None）
-        if let Some(bl) = info.bl_addr() {
-            assert_eq!(bl, 0x1C020000, "bl_addr");
-        } else {
-            eprintln!("bl_addr 为 None（旧版 SOC 文件，请用最新 pack_soc.py 重新打包）");
-        }
-        if let Some(ftab) = info.ftab_addr() {
-            assert_eq!(ftab, 0x1C000000, "ftab_addr");
-        } else {
-            eprintln!("ftab_addr 为 None（旧版 SOC 文件，请用最新 pack_soc.py 重新打包）");
-        }
-        // 验证 rom.files 数组
-        let files = info.rom.files.as_ref().expect("rom.files 应存在");
-        assert!(files.iter().any(|f| f.name == "bootloader"), "缺 bootloader 条目");
-        assert!(files.iter().any(|f| f.name == "ftab"), "缺 ftab 条目");
-        println!("SF32LB58 chip: {}", info.chip.chip_type);
-        println!("files: {:?}", files.iter().map(|f| &f.name).collect::<Vec<_>>());
     }
 }

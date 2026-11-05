@@ -546,13 +546,3 @@ luatos-cli flash raw --soc Air6208.soc --port COM6 \
 | Flash 擦除 | 无限制（120s 总超时）| 100ms 读取超时 |
 | XMODEM 数据块 | 100 次/块 | 5s ACK 超时 |
 | XMODEM EOT | 3 次 | 2s ACK 超时 |
-
----
-
-## 备用刷机方式
-
-如果 .soc 包中包含 `air101_flash.exe`，可使用子进程方式刷机：
-
-```
-air101_flash.exe -ds <baud> -p <COM> -rs at -eo all -dl <fls_file>
-```

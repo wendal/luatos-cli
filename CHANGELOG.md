@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 移除
+
+#### 删除 SF32LB58 支持与外部刷机进程
+
+- 移除 SF32LB58 全部支持：`ChipFamily::Sf32lb58`、`luatos-flash::sf32lb5x` 模块、本地 `sftool-lib` crate 与 `[patch]` 覆盖、`sf32lb52`~`sf32lb58` feature、`flash run` 的 `--auto-reset`/`--dtr-boot`/`--sf32-rts-reset`/`--sf32-boot-wait-ms` 参数、`guide model` 的 sf32 条目及相关文档
+- 移除 `flash_ec718_exe` 回退路径与 XT804/BK7258 的 `flash_via_subprocess`，刷机只保留纯 Rust 实现
+- `flash script` / `flash clear-kv` 的 `--baud` 参数随 SF32 一并移除（其余芯片未使用）
+
+### 变更
+
+#### SOC 包资源纯内存读取
+
+- 新增 `luatos_soc::SocArchive`：ZIP/7z 统一内存读取接口（`open`/`info`/`read`/`exists`/`names`）
+- 全部芯片刷机路径（EC718、XT804、BK7258、CCM4211、RDA8910）改为直接从 SOC 包内存读取 rom.bin/fdl/ramrun/info.json，不再解压到临时目录；`UnpackedSoc.flash_exe` 字段随之删除
+- `luatos-luadb` 构建脚本生成的中间 `.obj` 改写到 `OUT_DIR`，不再污染源码目录
+
 ### 新增
 
 #### EC716S / Air780EL / Air780ET AT binpkg 烧录
