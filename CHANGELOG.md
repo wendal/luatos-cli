@@ -20,6 +20,10 @@ All notable changes to this project will be documented in this file.
 - 移除 `flash_ec718_exe` 回退路径与 XT804/BK7258 的 `flash_via_subprocess`，刷机只保留纯 Rust 实现
 - `flash script` / `flash clear-kv` 的 `--baud` 参数随 SF32 一并移除（其余芯片未使用）
 
+#### 移除 `luatos-mcp` crate
+
+- 移除 `crates/luatos-mcp/`（MCP Server 二进制，735 行 `src/main.rs`）及其 workspace 依赖，`Cargo.lock` 随之精简；现有 CLI 子命令不受影响
+
 ### 变更
 
 #### 架构收敛（P0 / P1 / P2 / P3）
@@ -49,6 +53,13 @@ All notable changes to this project will be documented in this file.
 
 ### 新增
 
+#### 资源分区下载（`flash flash-res`）
+
+- 新增 `flash flash-res --soc --port --resource <DIR>`：把一个或多个目录打包写入 SOC 声明的资源分区，靠后的目录覆盖前面同名相对路径；支持 CCM4211 外置字库/TTS 资源与 BK72xx（Air8101）资源分区
+- `luatos-soc` 解析并校验 `rom.fs.res` 元数据（地址 / 容量 / 类型 / 是否帧化），`soc info` 打印实际资源分区信息
+- 打包与容量校验在连接串口前完成，超限直接拒绝；真机验收脚本见 `tests/air8101_resource_download/`
+- 后续镜像格式改为帧化 romfs，见「资源分区格式改为帧化 romfs（需配套新固件）」
+
 #### EC716S / Air780EL / Air780ET AT binpkg 烧录
 
 - `flash run` 的固件参数新增 `--binpkg` 别名，支持直接读取 `EC716S_PRD` pkgmode 包，无需合成 SOC；保留文本、JSON 和 JSONL 输出
@@ -57,8 +68,6 @@ All notable changes to this project will be documented in this file.
 - AT binpkg 不提供 Lua 脚本元数据，拒绝 `--script` 与 `--tail-log-secs`；AT 版本验证应使用运行时 AT 口，不套用 LuatOS 日志闭环
 - Air780ET 真机使用 `AirM2M_780EL_V1001_LTE_AT_TU.binpkg`：关闭占用串口的软件后免 BOOT 切换 COM3 → COM6，三分区烧录及设备端校验成功，复位后 COM3 的 `AT` 返回 OK，`ATI` / `AT+CGMR` 返回 `AirM2M_780ET_V1001_LTE_AT_TU`（EL/ET 固件通用）
 
-### 新增
-
 #### trun run 支持 `--libs` 追加脚本库目录
 
 - `trun run` 新增 `--libs <DIR>`（可重复传入）：把 testcase `require` testrunner/common 之外的
@@ -66,7 +75,8 @@ All notable changes to this project will be documented in this file.
   script.bin，打在 testcase scripts 之后（高优先级）、ctx.json 之前
 - 目录需调用方自行精简（如只拷贝 `libnet.lua` 的 `libs_min/`），脚本分区容量有限，
   不建议整目录传入 `script/libs`
-### 新增：HZV 视频转换
+
+#### HZV 视频转换
 
 - Windows x64 FFmpeg 改为面向 HZV 的源码精简构建，保留常见视频解码、MJPEG/MP3/PCM 输出及必要滤镜，去掉网络、字幕、设备、硬件加速和无关编码器；源码版本与 SHA256、重建脚本均入库。
 - 随包验证改用 12 个固定的合成媒体样本，覆盖 H.264/HEVC/MPEG-4/VP8/VP9/ProRes/WMV 等输入，精简程序无需携带测试图生成器。
@@ -78,6 +88,17 @@ All notable changes to this project will be documented in this file.
 - 支持全局 text/json/jsonl 输出，新增 `luatos-hzv` 库、容器与媒体解析测试及 `docs/hzv.md` 使用说明。
 
 ### 修复
+
+#### 下载前校验脚本分区容量
+
+- 各芯片刷机路径在连接硬件之前，按 SOC `info.json` 的 `rom.fs.script.size` 校验合成后的脚本镜像（含写入对齐后的实际长度）；超容量直接报错，不再把装不下的镜像写到设备上
+- 新增 `crates/luatos-flash/tests/script_capacity.rs` 回归测试；统一判定函数见「架构收敛（P0 / P1 / P2 / P3）」中的 `luatos_flash::ensure_image_fits`，离线 `build filesystem` 也复用该口径
+
+#### BK72XX FOTA 升级后 `/luadb/` 挂载失败（脚本二次帧化）
+
+- `.soc` 内的 `script.bin` 本身已是 BK CRC 帧化形态，旧打包代码又帧化一次（每 32 字节数据多 2 字节），设备端 CPU 窗口按 34 字节解帧后数据整体漂移：全量 FOTA 与脚本-only FOTA 升级后都出现 `mount error`、`main.lua` 找不到
+- 新增 `bk72xx_deframe_framed`（现委托 `luatos_codec::bk_crc_deframe`）作为帧化的逆操作：全量包打包前先解帧（bootloader 会帧化一次），脚本-only 包先解帧再帧化一次，保证净单帧化
+- Air8101(COM12) 实机验证：两种 FOTA 升级后 `luadb mounted`、脚本正常运行，脚本区 dump 与正确帧化镜像逐字节一致
 
 #### `flash dump` 在开串口前拦截不支持读回的协议
 
@@ -195,7 +216,7 @@ All notable changes to this project will be documented in this file.
 - 新增 `luatos-cli flash raw --soc --port --addr --file [--erase] [--verify] [--force] [--flash-size] [--no-reboot]`，绕过 `info.json` 分区定义按地址直接擦写。适用于单独补刷分区表覆盖不到的外置资源（如 `include.txt` 声明了 `LUAT_FONT_ADDRESS` 但 `.soc` 内缺字库文件）
 - BK7258 复用 `erase_range` / `write_sector_4k` / `check_crc`；CCM4211 复用 `soc_download_file` / `FLASH_ERASE_BLOCK` / `CHECK_CODE`。均未新增协议帧解析
 - **护栏**（全部在连硬件之前生效，不占用串口）：bootloader+core 区间默认拒绝写入需 `--force`、BK7258 写入地址强制 4K 对齐、`--flash-size` 容量越界检查、空文件拒绝
-- **校验能力如实区分**：CCM4211 用 `CHECK_CODE` 回读 MD5 可真校验；BK7258 只能拿到设备端 CRC32，主机端无法复现该算法，因此 `--verify` 仅记录数值、加 `--verify` 时主动告警、JSON 输出用 `"verified": false` 标注，不把"拿到一个数"误报为"校验通过"
+- **校验能力如实区分**：CCM4211 用 `CHECK_CODE` 回读设备端 MD5 可真校验；BK7258 早期只记录设备端 CRC32，现已补齐 SDK 的 `FLASH_CMD_READ`(0x08) / `FLASH_CMD_SECTOR_READ`(0x09) 真读回通道，`--verify` 改为主机端逐字节比对，不一致时给出双方 MD5 与首个差异字节位置；XT804 无读回命令，不支持 `--verify`。三颗芯片中仅 BK7258 提供 `flash dump` 读回
 - 新增 `docs/flash-raw-design.md`，并在 `docs/air8101-flash-protocol.md` / `docs/ccm4211-flash-protocol.md` 补充 raw 路径与能力边界
 
 ### 变更
