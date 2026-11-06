@@ -52,8 +52,15 @@ All notable changes to this project will be documented in this file.
 - **CCM4211**：`hw_probe_raw_capabilities` 复测 `block_len=262144`、`GET_FLASH_DATA` 无应答、CHECK_CODE 可用；全 0xFF no-op 写入同时覆盖 LZMA 回退与 `LUATOS_CCM_LZMA=0` 明文两条设备端 MD5 比对路径；`flash dump` 在开串口前被能力表拒绝，text 与 JSON 错误信封都正确
 - **XT804**（首次接入）：`hw_probe_rom` 确认带 CRC16-CCITT-FALSE 的 ROM 命令帧被设备接受（QFlash ID / ROM 版本 / 上一错误均有应答）；`hw_probe_baud_crc` 的 460800 / 921600 / 1000000 / 2000000 四档全部切换并重新同步成功，其中 921600 与 1000000 正是此前 CRC 算错的两档；`flash dump`、`--verify`、非 4096 整数倍的 `--erase` 都在连接硬件前被能力表拒绝；`--format jsonl soc info` 单行契约正常
 - **离线**：`refs/origin_tools/tools/soc_tools.exe` 可用，两个 ignored 对比测试（LZMA 输出、FOTA 全流程）与官方工具产物逐字节一致，为归一后的 FOTA 包头 MD5 补上权威比对
-- 全程未向 Flash 数据区写入新内容（BK7258 原样写回、CCM4211 全 0xFF no-op、XT804 纯只读）。未跑项：`hw_measure_erase_granularity` 会用图案覆盖并擦除整块 256KB 脚本分区且 CCM4211 无读回通道可备份，需显式授权；`ec718_live_flash` 与两个 `rda_live_*` 因 Air8000 / Air724 未接入而不适用
+- 常规回归全程未向 Flash 数据区写入新内容（BK7258 原样写回、CCM4211 全 0xFF no-op、XT804 纯只读）；用户另行授权后补跑了会改写脚本分区的 `hw_measure_erase_granularity`，结论见下一节，并已重刷脚本恢复设备。`ec718_live_flash` 与两个 `rda_live_*` 因 Air8000 / Air724 未接入而不适用
 - 附带诊断：`doctor` 在沙箱里的「Lua 编译器」失败只因默认 helper 缓存目录不可写，设置 `LUATOS_CLI_HELPER_CACHE` 指向工作区内目录后即通过；其余未通过项是当前目录并非 LuatOS 项目目录所致，与代码无关
+
+#### CCM4211 擦除粒度实测（授权后补跑）
+
+- `hw_measure_erase_granularity` 用 256KB 非 0xFF 图案填满脚本分区起始块 `0x14700000..0x14740000`，再只对块内非对齐地址 `0x14701000` 发一次 `FLASH_ERASE_BLOCK`
+- 实测 `base+0x00000 / +0x1000 / +0x2000 / +0x8000 / +0x10000 / +0x30000 / +0x3F000` 全部变成 `md5(4K 0xFF)=6ae59e64…`，而下一块 `base+0x40000` 未被波及：确认**擦除地址向下对齐到 256KB 块边界并整块擦除**，与 2026-10 在 V1027 固件上的结论一致（本次设备固件为 V1029）
+- 这解释了 `flash raw --erase` 最危险的行为：只想擦 4KB 会连带清掉同一块内相邻的 252KB；`erase_aligns_down()` 与连硬件前的对齐预检因此不可移除
+- 写入/擦除范围完全落在 1024KB 脚本分区内：bootloader/core 保护区止于 `0x14700000`、FS 分区在 `0x14D00000`，设备不会变砖。测试后已用 `flash script --script tests/air1601_test_script` 重刷 594 字节 LuaDB 镜像恢复，脚本区 CHECK_CODE MD5 由 `6ae59e64…`（全 0xFF）变为 `4d40b963…`；设备重启后日志显示 `soc poweron` / `BASEINFO` / `+HW: Air1601_A11` 正常启动（`log view-binary --probe` 仅回放到上电三行，未单独验证 Lua 应用输出）
 
 #### SOC 包资源纯内存读取
 
