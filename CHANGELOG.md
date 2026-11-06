@@ -45,6 +45,16 @@ All notable changes to this project will be documented in this file.
 - 真机回归通过（2026-11-06，Air8101 @ COM24 / Air1601 @ COM26）：`flash dump` 的摘要与 Python `hashlib` 对同一 4K 文件的结果一致（`65699b46…`），BK7258 原样写回后读回比对通过且前后 4096 字节逐字节相同，CCM4211 设备端 CHECK_CODE 返回 `md5(4K 0xFF)=6ae59e64…` 与 `md5_hex` 比对通过（压缩回退与明文单次路径各验一次）；验证全程未改动设备 Flash 内容
 - 同时确认 `--format json` 的 `flash.raw-dump.md5` 字段与 `flash dump` 对 CCM4211 在开串口前的拒绝行为均未受影响
 
+#### 三平台真机回归（Air8101 / Air1601 / XT804，2026-11-06）
+
+- 三台设备同时在线：Air8101（BK7258）@ COM24、Air1601（CCM4211）@ COM26、Air6208（XT804）@ COM12；软件基线 `cargo test --workspace` 482 通过 / 11 个 ignored 硬件测试
+- **BK7258**：`hw_probe_bk7258_read` 确认 `FLASH_CMD_READ` / `SECTOR_READ` 应答应与脚本区 MD5 `65699b46…`；`bk_live_handshake` 的 LinkCheck / 2Mbps 切换 / Flash MID / 解保护全部通过；`flash dump` 的 text 与 `--format json` 信封、原样写回 `--verify` 均通过。该测试原先把串口硬编码为 `COM6`，现改为读取 `HW_PORT`
+- **CCM4211**：`hw_probe_raw_capabilities` 复测 `block_len=262144`、`GET_FLASH_DATA` 无应答、CHECK_CODE 可用；全 0xFF no-op 写入同时覆盖 LZMA 回退与 `LUATOS_CCM_LZMA=0` 明文两条设备端 MD5 比对路径；`flash dump` 在开串口前被能力表拒绝，text 与 JSON 错误信封都正确
+- **XT804**（首次接入）：`hw_probe_rom` 确认带 CRC16-CCITT-FALSE 的 ROM 命令帧被设备接受（QFlash ID / ROM 版本 / 上一错误均有应答）；`hw_probe_baud_crc` 的 460800 / 921600 / 1000000 / 2000000 四档全部切换并重新同步成功，其中 921600 与 1000000 正是此前 CRC 算错的两档；`flash dump`、`--verify`、非 4096 整数倍的 `--erase` 都在连接硬件前被能力表拒绝；`--format jsonl soc info` 单行契约正常
+- **离线**：`refs/origin_tools/tools/soc_tools.exe` 可用，两个 ignored 对比测试（LZMA 输出、FOTA 全流程）与官方工具产物逐字节一致，为归一后的 FOTA 包头 MD5 补上权威比对
+- 全程未向 Flash 数据区写入新内容（BK7258 原样写回、CCM4211 全 0xFF no-op、XT804 纯只读）。未跑项：`hw_measure_erase_granularity` 会用图案覆盖并擦除整块 256KB 脚本分区且 CCM4211 无读回通道可备份，需显式授权；`ec718_live_flash` 与两个 `rda_live_*` 因 Air8000 / Air724 未接入而不适用
+- 附带诊断：`doctor` 在沙箱里的「Lua 编译器」失败只因默认 helper 缓存目录不可写，设置 `LUATOS_CLI_HELPER_CACHE` 指向工作区内目录后即通过；其余未通过项是当前目录并非 LuatOS 项目目录所致，与代码无关
+
 #### SOC 包资源纯内存读取
 
 - 新增 `luatos_soc::SocArchive`：ZIP/7z 统一内存读取接口（`open`/`info`/`read`/`exists`/`names`）
