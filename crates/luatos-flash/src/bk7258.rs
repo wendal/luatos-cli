@@ -1323,14 +1323,17 @@ mod tests {
     }
 
     /// Non-destructive handshake test.
-    /// Run with: cargo test bk_live_handshake -- --ignored --nocapture
+    /// Run with: `HW_PORT=COM24 cargo test -p luatos-flash bk_live_handshake -- --ignored --nocapture --exact`
     #[test]
-    #[ignore = "requires Air8101 physically connected on COM6"]
+    #[ignore = "requires Air8101 physically connected; set HW_PORT"]
     fn bk_live_handshake() {
-        let port = "COM6";
+        let port = std::env::var("HW_PORT").unwrap_or_else(|_| "COM6".into());
         println!("\n=== BK7231 live handshake test on {port} ===");
 
-        let mut serial = serialport::new(port, 115_200).timeout(Duration::from_millis(200)).open().expect("open COM6");
+        let mut serial = serialport::new(&port, 115_200)
+            .timeout(Duration::from_millis(200))
+            .open()
+            .unwrap_or_else(|e| panic!("open {port}: {e}"));
 
         println!("[1] get_bus …");
         let ok = get_bus(&mut *serial).expect("get_bus");
