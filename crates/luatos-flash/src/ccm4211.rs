@@ -17,7 +17,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use md5;
 use serialport::{self, Parity, SerialPort};
 
 use crate::{FlashProgress, ProgressCallback};
@@ -820,9 +819,8 @@ fn soc_verify_md5(port: &mut Box<dyn SerialPort>, parser: &mut SocFrameParser, s
     let resp = soc_send_cmd(port, parser, SOC_CMD_CHECK_CODE, address, &total_len_bytes, sn, Duration::from_secs(10)).context("SOC MD5 check failed")?;
 
     // Verify MD5
-    let expected_md5 = md5::compute(data);
     let device_md5_hex = resp.data.iter().map(|b| format!("{b:02x}")).collect::<String>();
-    let expected_md5_hex = format!("{:x}", expected_md5);
+    let expected_md5_hex = crate::md5_hex(data);
 
     if device_md5_hex != expected_md5_hex {
         bail!("MD5 mismatch: device={device_md5_hex}, expected={expected_md5_hex}");
@@ -1283,7 +1281,7 @@ impl crate::raw::RawFlashDevice for Ccm4211Raw {
         )
         .context("SOC MD5 check failed")?;
         let device_md5_hex = resp.data.iter().map(|b| format!("{b:02x}")).collect::<String>();
-        let expected_md5_hex = format!("{:x}", md5::compute(data));
+        let expected_md5_hex = crate::md5_hex(data);
         if device_md5_hex != expected_md5_hex {
             bail!("MD5 mismatch: device={device_md5_hex}, expected={expected_md5_hex}");
         }
@@ -1845,7 +1843,7 @@ mod tests {
             r.data.iter().take(16).map(|b| format!("{b:02x}")).collect()
         };
 
-        let md5_ff4k = format!("{:x}", md5::compute(&[0xFFu8; 4096]));
+        let md5_ff4k = crate::md5_hex(&[0xFFu8; 4096]);
         println!(">>> MD5(4096 × 0xFF) = {md5_ff4k}");
         let before: Vec<String> = offsets.iter().map(|o| md5_at(&mut p, &mut parser, &mut sn, base + o)).collect();
         println!(">>> 擦除前各偏移 MD5:");

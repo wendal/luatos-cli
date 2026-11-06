@@ -113,3 +113,36 @@ pub fn validate_script_image(info: &luatos_soc::SocInfo, image_len: usize, align
     let capacity = capacity_kb.checked_mul(1024).context("脚本分区容量溢出")?;
     ensure_image_fits(image_len, capacity, alignment)
 }
+
+/// 计算数据的 MD5，返回 32 位小写十六进制字符串。
+///
+/// 全项目统一用 `md-5` 0.10（RustCrypto，Rust 库名仍为 `md5`），与 `sha2` 共用
+/// `digest` 0.10；原 `md5 0.7` 的 `format!("{:x}", md5::compute(..))` 已移除。
+/// 输出格式逐字节一致：每字节两位小写十六进制，设备端校验与 FOTA 包头都按此约定。
+pub fn md5_hex(data: &[u8]) -> String {
+    use md5::{Digest, Md5};
+
+    Md5::digest(data).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::md5_hex;
+
+    /// 标准 MD5 向量：换实现后摘要必须逐字节不变。
+    #[test]
+    fn md5_hex_与标准向量一致() {
+        assert_eq!(md5_hex(b""), "d41d8cd98f00b204e9800998ecf8427e");
+        assert_eq!(md5_hex(b"abc"), "900150983cd24fb0d6963f7d28e17f72");
+        assert_eq!(md5_hex(b"123456789"), "25f9e794323b453885f5181f1b624d0b");
+    }
+
+    /// 刷机校验里常见的 4K 全 0xFF 扇区，锁住大写/补零行为。
+    #[test]
+    fn md5_hex_输出固定32位小写且补零() {
+        assert_eq!(md5_hex(&[0xFFu8; 4096]), "6ae59e64850377ee5470c854761551ea");
+        let hex = md5_hex(&[0x00, 0x0f, 0x10]);
+        assert_eq!(hex.len(), 32);
+        assert!(hex.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')), "实际输出: {hex}");
+    }
+}

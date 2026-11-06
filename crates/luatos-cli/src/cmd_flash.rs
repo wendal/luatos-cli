@@ -538,7 +538,7 @@ pub fn cmd_flash_raw_dump(soc: &str, port: &str, addr: &str, len: &str, output: 
     let data = dev.read(addr, len)?;
 
     std::fs::write(output, &data).with_context(|| format!("无法写入输出文件: {output}"))?;
-    let digest = format!("{:x}", md5::compute(&data));
+    let digest = luatos_flash::md5_hex(&data);
 
     match format {
         OutputFormat::Text => {

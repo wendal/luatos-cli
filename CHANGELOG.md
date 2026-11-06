@@ -32,6 +32,13 @@ All notable changes to this project will be documented in this file.
 - P3：`luatos_flash::raw::RawChip::from_family` 成为 `ChipFamily → raw 协议` 的唯一映射入口，`flash raw` 与 `flash dump` 不再各写一份 `match family`；`RawChip` 与 `ChipFamily` 语义不同，保持两个枚举不合并
 - P3：`CLAUDE.md` 补齐 `luatos-hzv` crate 与独立 `hzv` 子命令的说明（按约定保留，不并入其他链路）
 
+#### MD5 实现归一到 `md-5` 0.10
+
+- 原先 `luatos-cli` / `luatos-flash` 用 `md5 0.7`（`md5::compute` + `{:x}`），`luatos-soc` 用 `md-5 0.10`（RustCrypto，`Md5::digest`）；两个包在 Rust 源码里的库名都叫 `md5`，但 API 不兼容，且同一 crate 不能同时依赖两者
+- 全 workspace 统一到 `md-5 0.10`（与 `sha2 0.10` 共用 `digest 0.10`，不新增传递依赖），`Cargo.lock` 移除 `md5 0.7.0`；`luatos-cli` 不再直接声明 MD5 依赖
+- 新增 `luatos_flash::md5_hex` 作为刷机侧唯一的「MD5 → 32 位小写十六进制」入口，替换 7 处 `md5::compute`；输出格式与旧实现逐字节一致（每字节两位小写十六进制）
+- 新增固定向量单测（空串 / `abc` / `123456789` / 4K 全 0xFF），锁住写后校验、CCM4211 设备端 MD5 比对与 FOTA 包头的摘要结果不变；刷机协议逻辑未改动
+
 #### SOC 包资源纯内存读取
 
 - 新增 `luatos_soc::SocArchive`：ZIP/7z 统一内存读取接口（`open`/`info`/`read`/`exists`/`names`）

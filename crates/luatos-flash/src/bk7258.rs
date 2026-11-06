@@ -1238,9 +1238,9 @@ impl crate::raw::RawFlashDevice for Bk7258Raw {
         // SDK `FLASH_CMD_READ`(0x08) / `FLASH_CMD_SECTOR_READ`(0x09) 提供真读回，
         // 所以这里能直接在主机端比对，不需要依赖设备端 CRC。
         let actual = read_flash_range(&mut *self.port, addr, data.len() as u64)?;
-        let expected_digest = format!("{:x}", md5::compute(data));
+        let expected_digest = crate::md5_hex(data);
         if actual != data {
-            let actual_digest = format!("{:x}", md5::compute(&actual));
+            let actual_digest = crate::md5_hex(&actual);
             // 找到第一个不一致的字节，便于定位
             let first_diff = actual.iter().zip(data.iter()).position(|(a, b)| a != b).unwrap_or(0);
             bail!(
@@ -1475,7 +1475,7 @@ mod resource_download_tests {
                     let preview: Vec<String> = data.iter().take(16).map(|b| format!("{b:02x}")).collect();
                     println!("    4096 字节全为 0xFF? {all_ff}");
                     println!("    data[0..16]: {}", preview.join(" "));
-                    println!("    md5(sector) = {:x}", md5::compute(data));
+                    println!("    md5(sector) = {}", crate::md5_hex(data));
                 }
                 Err(e) => println!(">>> CMD 0x09: ERR {e}"),
             }

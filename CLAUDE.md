@@ -51,6 +51,9 @@ Cargo workspace（`Cargo.toml`）包含 12 个 crate：
 ### 错误处理
 所有 crate 统一使用 `anyhow::Result`，**没有自定义错误枚举**。`bail!()` / `.context()` / `ensure!()` 即可。CI 强制 `clippy -D warnings`。
 
+### MD5 摘要
+全 workspace 只用 `md-5` 0.10（workspace 依赖，与 `sha2` 共用 `digest` 0.10）。注意它**包名是 `md-5`、Rust 库名是 `md5`**，源码里写 `use md5::{Digest, Md5}`；不要重新引入 `md5 0.7`（库名冲突、API 不同）。刷机侧的「MD5 → 32 位小写十六进制」统一走 `luatos_flash::md5_hex`，输出格式与设备端校验、FOTA 包头约定一致，改动时务必保留 `crates/luatos-flash/src/lib.rs` 里的固定向量单测。
+
 ### 芯片族判定的边界
 `luatos_soc::ChipFamily`（`crates/luatos-soc/src/chip.rs`）是 **chip_type → 芯片族** 归一化的唯一来源，新增型号别名只加在这里。但下列字符串表**有意不经过 ChipFamily**，不要顺手「收敛」：
 
