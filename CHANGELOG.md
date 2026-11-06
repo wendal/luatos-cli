@@ -38,6 +38,8 @@ All notable changes to this project will be documented in this file.
 - 全 workspace 统一到 `md-5 0.10`（与 `sha2 0.10` 共用 `digest 0.10`，不新增传递依赖），`Cargo.lock` 移除 `md5 0.7.0`；`luatos-cli` 不再直接声明 MD5 依赖
 - 新增 `luatos_flash::md5_hex` 作为刷机侧唯一的「MD5 → 32 位小写十六进制」入口，替换 7 处 `md5::compute`；输出格式与旧实现逐字节一致（每字节两位小写十六进制）
 - 新增固定向量单测（空串 / `abc` / `123456789` / 4K 全 0xFF），锁住写后校验、CCM4211 设备端 MD5 比对与 FOTA 包头的摘要结果不变；刷机协议逻辑未改动
+- 真机回归通过（2026-11-06，Air8101 @ COM24 / Air1601 @ COM26）：`flash dump` 的摘要与 Python `hashlib` 对同一 4K 文件的结果一致（`65699b46…`），BK7258 原样写回后读回比对通过且前后 4096 字节逐字节相同，CCM4211 设备端 CHECK_CODE 返回 `md5(4K 0xFF)=6ae59e64…` 与 `md5_hex` 比对通过（压缩回退与明文单次路径各验一次）；验证全程未改动设备 Flash 内容
+- 同时确认 `--format json` 的 `flash.raw-dump.md5` 字段与 `flash dump` 对 CCM4211 在开串口前的拒绝行为均未受影响
 
 #### SOC 包资源纯内存读取
 
