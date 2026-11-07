@@ -398,10 +398,25 @@ fn rom_error_hint(code: u8) -> &'static str {
 ///
 /// 对应厂商文档的「QFlash 擦除(2M)」`21 0a 00 c3 35 32 00 00 00 02 00 fe 01`：
 /// `index = 2`（保留扇区 0..2 的参数区）、`count = 0x01FE`。
+/// 1MB 版本使用 count=0x00FE；部分 1MB XT804 模组（如 Air103）会拒绝 2M
+/// 参数并返回错误码 `S`，此时回退到 1M 全擦。
 /// 仅用于 `flash run` 的整片重刷，绝不用于 raw 的按区间擦除。
 fn erase_flash(port: &mut dyn serialport::SerialPort, cancel: &AtomicBool, on_progress: &ProgressCallback) -> Result<()> {
     const ERASE_ALL_2M_SECTORS: u32 = 0x01FE;
-    erase_sectors(port, XT804_PRESERVED_SECTORS, ERASE_ALL_2M_SECTORS, cancel, on_progress)
+    const ERASE_ALL_1M_SECTORS: u32 = 0x00FE;
+
+    match erase_sectors(port, XT804_PRESERVED_SECTORS, ERASE_ALL_2M_SECTORS, cancel, on_progress) {
+        Ok(()) => Ok(()),
+        Err(error) if is_rom_param_error(&error) => {
+            on_progress(&FlashProgress::info("Erase", 30.0, "2M 全擦被 ROM 拒绝（S），回退 1M 全擦…"));
+            erase_sectors(port, XT804_PRESERVED_SECTORS, ERASE_ALL_1M_SECTORS, cancel, on_progress)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn is_rom_param_error(error: &anyhow::Error) -> bool {
+    error.to_string().contains("应答错误码 'S'")
 }
 
 // ─── XMODEM-1K transfer ──────────────────────────────────────────────────────
@@ -1074,6 +1089,12 @@ impl crate::raw::RawFlashDevice for Xt804Raw {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rom_param_error_detects_only_s_code() {
+        assert!(is_rom_param_error(&anyhow::anyhow!("xt804 ROM 拒绝擦除，应答错误码 'S'（命令参数错）")));
+        assert!(!is_rom_param_error(&anyhow::anyhow!("xt804 ROM 拒绝擦除，应答错误码 'R'（校验错）")));
+    }
 
     #[test]
     fn script_debug_override_changes_image_before_serial_connection() {

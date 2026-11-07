@@ -120,6 +120,15 @@ All notable changes to this project will be documented in this file.
 
 ### 修复
 
+#### XT804 1MB 模组全擦回退与刷机链路真机验证（2026-11-07）
+
+- `flash run` 的全擦先按厂商 2M 命令（`index=2, count=0x01FE`）执行；1MB XT804 模组（本次 COM12 实测 Air103，QFlash `FID:85,14`）返回 `S`（参数错），现自动回退到 1M 全擦（`count=0x00FE`）后继续 XMODEM 写入
+- Air103 @ COM12（SOC V0008）：全量刷机、全量 + 脚本（两阶段）、脚本-only、`trun` 默认/`--full`、`flash test --script`、`flash script --bin`、`--keep-soc` 全部通过；设备可读 `/luadb/ctx.json` 并输出 `test_id`，`--keep-soc` 只生成 `script.bin`
+- Air8101B @ COM14（SOC V2015）：全量刷机、脚本-only、`trun` 默认/`--full`、`flash flash-fs` 多目录合并、`--keep-soc` 全部通过；设备启动信息为 `+HW: Air8101B A12`，`/luadb/ctx.json` 可读
+- Air1601 @ COM26（SOC V1021）：全量刷机、脚本-only、`trun` 默认/`--full`、`flash test --script`、`--keep-soc` 全部通过；`/luadb/ctx.json` 可读
+- 零临时文件：以上刷机全程把 `TEMP`/`TMP` 指向空 watch 目录，命令结束后目录为空
+- 备注：Air103 的 SOC 没有 filesystem 分区，因此 XT804 `flash flash-fs` 本次只由 `luatos-luadb` 多目录 mklfs 单测覆盖，未做该设备硬件验证
+
 #### 下载前校验脚本分区容量
 
 - 各芯片刷机路径在连接硬件之前，按 SOC `info.json` 的 `rom.fs.script.size` 校验合成后的脚本镜像（含写入对齐后的实际长度）；超容量直接报错，不再把装不下的镜像写到设备上
