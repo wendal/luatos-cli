@@ -11,5 +11,7 @@ log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 walkdir.workspace = true
-tempfile.workspace = true
 luatos-luadb = { path = "../luatos-luadb" }
+
+[dev-dependencies]
+tempfile.workspace = true

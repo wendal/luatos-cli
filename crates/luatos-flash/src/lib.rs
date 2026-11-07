@@ -17,6 +17,7 @@ pub mod device;
 pub mod ec718;
 pub mod raw;
 pub mod rda8910;
+pub mod script;
 pub mod xt804;
 
 use serde::Serialize;

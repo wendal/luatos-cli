@@ -15,7 +15,7 @@ use clap::{Args, Subcommand};
 use serde::Serialize;
 
 use luatos_soc::ChipFamily;
-use luatos_testcase::{build_ctx, build_script_bin, inject_identifiers, resolve_testcase, scan_testcases, write_ctx_to_temp, ResolvedTestcase, ScriptBinParams};
+use luatos_testcase::{build_ctx, ctx_entry, inject_identifiers, ordered_script_dirs, resolve_testcase, scan_testcases, ResolvedTestcase};
 
 use crate::cmd_flash;
 use crate::cmd_log;
@@ -206,7 +206,7 @@ pub struct KeywordHit {
 pub struct ArtifactSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub script_bin: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// 兼容旧消费者保留；零临时文件改造后不再生成 combined.soc，恒为 null。
     pub combined_soc: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keep_dir: Option<String>,
@@ -376,34 +376,19 @@ pub fn cmd_trun_run(args: &TrunRunArgs, format: &OutputFormat) -> Result<Verdict
     let common_scripts = resolve_common_scripts(args, &root);
     let built_ctx = prepare_ctx(args, &root, common_scripts.as_deref())?;
     let ctx_test_id = built_ctx.test_id.clone();
-    // 把 ctx.json 写入临时目录，保持到 flash 阶段结束
-    let (ctx_tmp, _ctx_path) = write_ctx_to_temp(&built_ctx.value).context("write ctx.json to temp failed")?;
+    let extra_entries = [ctx_entry(&built_ctx.value).context("build ctx.json entry failed")?];
     phase_durations.insert(Phase::Ctx.as_str().to_string(), start.elapsed().as_millis() as u64);
 
-    // 5. 阶段：build（自动把 ctx.json 烧入 script.bin）
+    // 5. 阶段：build（自动把 ctx.json 烧入 script.bin；全程内存）
     let start = Instant::now();
-    let script_bin = build_script_image_with_ctx(args, &resolved, &soc_info, &ctx_tmp)?;
+    let script_bin = build_testcase_script_image(args, &resolved, &soc_info, &extra_entries)?;
+    luatos_flash::script::validate_script_image_for_family(soc_info.family(), &soc_info, script_bin.len()).context("script.bin 超过脚本分区容量")?;
     let script_bin_path = write_script_bin(&script_bin, args.keep_soc.as_deref())?;
-    // 仅非 bk72xx 在全量模式时才需要合成 combined.soc
-    let combined_soc = if args.full && !matches!(soc_info.family(), ChipFamily::Bk72xx) {
-        Some(combine_soc(args, &script_bin, &soc_info)?)
-    } else {
-        None
-    };
     phase_durations.insert(Phase::Build.as_str().to_string(), start.elapsed().as_millis() as u64);
 
     // 6. 阶段：flash
     let start = Instant::now();
-    let boot_entries = flash_device(
-        args,
-        &resolved,
-        common_scripts.as_deref(),
-        &ctx_tmp,
-        &script_bin_path,
-        combined_soc.as_deref(),
-        format,
-        &cancel,
-    )?;
+    let boot_entries = flash_device(args, &script_bin, format, &cancel)?;
     phase_durations.insert(Phase::Flash.as_str().to_string(), start.elapsed().as_millis() as u64);
 
     // 7. 阶段：log_capture（--flash-only 时跳过）
@@ -450,8 +435,8 @@ pub fn cmd_trun_run(args: &TrunRunArgs, format: &OutputFormat) -> Result<Verdict
         boot_log_count: all_entries.len(),
         smart_diagnostics: smart_diag,
         artifacts: ArtifactSummary {
-            script_bin: Some(script_bin_path.display().to_string()),
-            combined_soc: combined_soc.as_ref().map(|p| p.display().to_string()),
+            script_bin: script_bin_path.as_ref().map(|p| p.display().to_string()),
+            combined_soc: None,
             keep_dir: args.keep_soc.clone(),
         },
         phase_durations_ms: phase_durations,
@@ -492,7 +477,7 @@ fn resolve_common_scripts(args: &TrunRunArgs, root: &Path) -> Option<PathBuf> {
     }
 }
 
-fn build_script_image_with_ctx(args: &TrunRunArgs, resolved: &ResolvedTestcase, soc_info: &luatos_soc::SocInfo, ctx_tmp: &tempfile::TempDir) -> Result<Vec<u8>> {
+fn build_testcase_script_image(args: &TrunRunArgs, resolved: &ResolvedTestcase, soc_info: &luatos_soc::SocInfo, extra_entries: &[luatos_luadb::LuadbEntry]) -> Result<Vec<u8>> {
     let common = resolve_common_scripts(args, &resolve_luatos_root(args.luatos_root.as_deref())?);
     let mut script_dirs: Vec<&Path> = vec![resolved.scripts_dir.as_path()];
     for lib in &args.libs {
@@ -503,48 +488,25 @@ fn build_script_image_with_ctx(args: &TrunRunArgs, resolved: &ResolvedTestcase, 
             bail!("libs 目录不存在: {}", p.display());
         }
     }
-    // 编译参数一律取自 SOC 包元数据(与 flash 路径同源). 不能按芯片名查表:
-    // ccm4211 家族(air1601/1602/1603/1604)是 64 位 Lua VM, 漏一个型号就会刷出
-    // "lua_Integer size mismatch in precompiled chunk"(Lua VM 起不来).
-    let params = ScriptBinParams::from_soc(
-        soc_info.script_bitw(),
-        soc_info.script_use_luac(),
-        // soc 没写 bkcrc 时, BK72xx 家族仍按 BK 格式加 CRC16(历史行为, 只增不减)
-        soc_info.use_bkcrc() || matches!(soc_info.family(), ChipFamily::Bk72xx),
-    );
-    build_script_bin(&script_dirs, common.as_deref(), Some(ctx_tmp.path()), params).context("build script.bin 失败")
+
+    let ordered = ordered_script_dirs(&script_dirs, common.as_deref())?;
+    let dir_refs: Vec<&Path> = ordered.iter().map(|p| p.as_path()).collect();
+    let family = soc_info.family();
+    // soc 没写 bkcrc 时, BK72xx 家族仍按 BK 格式加 CRC16(历史行为, 只增不减)
+    let force_bk_crc = family == ChipFamily::Bk72xx;
+
+    luatos_flash::script::build_script_image(family, &dir_refs, soc_info, luatos_luadb::LUAC_DEBUG_ALL, extra_entries, force_bk_crc).context("build script.bin 失败")
 }
 
-fn write_script_bin(image: &[u8], keep_dir: Option<&str>) -> Result<PathBuf> {
-    let dir = match keep_dir {
-        Some(d) => PathBuf::from(d),
-        None => std::env::temp_dir().join("luatos_testcase"),
+fn write_script_bin(image: &[u8], keep_dir: Option<&str>) -> Result<Option<PathBuf>> {
+    let Some(dir) = keep_dir else {
+        return Ok(None);
     };
-    std::fs::create_dir_all(&dir).ok();
+    let dir = PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).with_context(|| format!("failed to create keep dir {}", dir.display()))?;
     let p = dir.join("script.bin");
     std::fs::write(&p, image).with_context(|| format!("failed to write {}", p.display()))?;
-    Ok(p)
-}
-
-fn combine_soc(args: &TrunRunArgs, script_bin: &[u8], soc_info: &luatos_soc::SocInfo) -> Result<PathBuf> {
-    let dir = match &args.keep_soc {
-        Some(d) => PathBuf::from(d),
-        None => std::env::temp_dir().join("luatos_testcase"),
-    };
-    std::fs::create_dir_all(&dir).ok();
-    let out = dir.join("combined.soc");
-    if soc_info.family().is_ec718() {
-        let script_addr = soc_info.script_addr();
-        luatos_soc::combine_ec7xx_soc(&args.soc, script_bin, script_addr, out.to_str().unwrap()).context("combine_ec7xx_soc failed")?;
-    } else {
-        // 非 EC7xx：unpack → 替换 script.bin → pack
-        let tmp = tempfile::tempdir().context("tempdir failed")?;
-        luatos_soc::unpack_soc(&args.soc, tmp.path()).context("unpack_soc failed")?;
-        let script_in_unpack = tmp.path().join("script.bin");
-        std::fs::write(&script_in_unpack, script_bin).context("write script.bin in unpack dir failed")?;
-        luatos_soc::pack_soc(tmp.path(), out.to_str().unwrap()).context("pack_soc failed")?;
-    }
-    Ok(out)
+    Ok(Some(p))
 }
 
 fn prepare_ctx(args: &TrunRunArgs, root: &Path, _common_scripts: Option<&Path>) -> Result<luatos_testcase::CtxBuildResult> {
@@ -557,104 +519,32 @@ fn merge_ctx_layers(args: &TrunRunArgs, root: &Path) -> Result<luatos_testcase::
     build_ctx(root, None, args.ctx.as_deref().map(Path::new), args.full_ctx.as_deref().map(Path::new), 0)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn flash_device(
-    args: &TrunRunArgs,
-    resolved: &ResolvedTestcase,
-    common_scripts: Option<&Path>,
-    ctx_tmp: &tempfile::TempDir,
-    script_bin_path: &Path,
-    combined_soc: Option<&Path>,
-    format: &OutputFormat,
-    cancel: &Arc<AtomicBool>,
-) -> Result<Vec<LogEntry>> {
+fn flash_device(args: &TrunRunArgs, script_bin: &[u8], format: &OutputFormat, cancel: &Arc<AtomicBool>) -> Result<Vec<LogEntry>> {
     if cancel.load(Ordering::Relaxed) {
         bail!("cancelled before flash");
     }
 
-    let soc_for_flash = combined_soc.and_then(|p| p.to_str()).unwrap_or(args.soc.as_str());
-    let on_progress = cmd_flash::make_progress_callback(format, "testcase.run", args.progress_step);
-
-    // 收集脚本源目录：testcase scripts → libs → common scripts → ctx 临时目录（最后，最高优先级）
-    let mut script_folders: Vec<String> = vec![resolved.scripts_dir.display().to_string()];
-    for lib in &args.libs {
-        script_folders.push(lib.clone());
-    }
-    if let Some(common) = common_scripts {
-        script_folders.push(common.display().to_string());
-    }
-    script_folders.push(ctx_tmp.path().display().to_string());
-
-    let info = luatos_soc::read_soc_info(soc_for_flash)?;
+    let info = luatos_soc::read_soc_info(&args.soc)?;
     let family = info.family();
 
-    match family {
-        ChipFamily::Bk72xx => {
-            if args.clear_fs {
-                let cb = cmd_flash::make_progress_callback(format, "testcase.run", args.progress_step);
-                luatos_flash::bk7258::clear_filesystem(soc_for_flash, &args.port, cancel.clone(), cb).context("clear filesystem failed")?;
-            }
+    if !args.full {
+        let on_progress = cmd_flash::make_progress_callback(format, "testcase.run", args.progress_step);
+        cmd_flash::cmd_flash_script_data(&args.soc, &args.port, script_bin, &on_progress, cancel.clone()).context("flash script partition failed")?;
+        return Ok(Vec::new());
+    }
 
-            if args.full {
-                if args.flash_only {
-                    // flash_only 模式：只负责合成+刷机，不抓 boot log，避免串口占用。
-                    let folders_refs: Option<Vec<&str>> = Some(script_folders.iter().map(|s| s.as_str()).collect());
-                    luatos_flash::bk7258::flash_bk7258(soc_for_flash, folders_refs.as_deref(), &args.port, args.baud, cancel.clone(), on_progress, false)
-                        .context("flash run failed")?;
-                    // air602_flash.exe 刷完 firmware 后会自行重启；随后 native ISP 刷 script 分区
-                    // 仅关闭串口并不会让设备从 flash 启动，因此需要显式 RTS 复位确保新 script 跑起来。
-                    args.reset.execute(&args.port).context("post-flash reset failed")?;
-                } else {
-                    // 全量：底层固件 + 脚本分区
-                    cmd_flash::cmd_flash_run(
-                        soc_for_flash,
-                        &args.port,
-                        args.baud,
-                        Some(&script_folders),
-                        luatos_luadb::LUAC_DEBUG_ALL,
-                        args.progress_step,
-                        format,
-                        &args.reset,
-                        0,
-                    )
-                    .context("flash run failed")?;
-                }
-            } else {
-                // 仅刷脚本分区
-                cmd_flash::cmd_flash_partition(
-                    "script",
-                    soc_for_flash,
-                    &args.port,
-                    Some(&script_folders),
-                    luatos_luadb::LUAC_DEBUG_ALL,
-                    args.progress_step,
-                    format,
-                    &args.reset,
-                )
-                .context("flash script partition failed")?;
-            }
-        }
-        _ => {
-            if combined_soc.is_some() {
-                // 冷路径：刷整个 soc
-                cmd_flash::cmd_flash_run(
-                    soc_for_flash,
-                    &args.port,
-                    args.baud,
-                    None,
-                    luatos_luadb::LUAC_DEBUG_ALL,
-                    args.progress_step,
-                    format,
-                    &args.reset,
-                    0,
-                )
-                .context("flash run failed")?;
-            } else {
-                // 快路径：刷 script.bin
-                let bin_str = script_bin_path.to_str().context("script_bin_path is not valid utf-8")?;
-                cmd_flash::cmd_flash_script_bin(soc_for_flash, &args.port, bin_str, &on_progress).context("flash script.bin failed")?;
-            }
-        }
+    if family == ChipFamily::Bk72xx && args.clear_fs {
+        let cb = cmd_flash::make_progress_callback(format, "testcase.run", args.progress_step);
+        luatos_flash::bk7258::clear_filesystem(&args.soc, &args.port, cancel.clone(), cb).context("clear filesystem failed")?;
+    }
+
+    // 全量：底层固件 + 脚本分区（XT804 由核心内部执行两阶段）
+    cmd_flash::cmd_flash_run_with_script(&args.soc, &args.port, args.baud, Some(script_bin), args.progress_step, format, &args.reset, 0).context("flash run failed")?;
+
+    if family == ChipFamily::Bk72xx && args.flash_only {
+        // flash_only 模式：只负责合成+刷机，不抓 boot log，避免串口占用。
+        // 仅关闭串口并不会让设备从 flash 启动，因此需要显式 RTS 复位确保新 script 跑起来。
+        args.reset.execute(&args.port).context("post-flash reset failed")?;
     }
 
     // 简化：boot_entries 暂时为空，由后续 log_capture 阶段抓取
@@ -808,6 +698,16 @@ mod tests {
             crate::event::install_cancel_handler(&crate::OutputFormat::Text, "flash.run", &cancel);
         });
         assert!(res.is_ok(), "second set_handler must not panic");
+    }
+
+    #[test]
+    fn write_script_bin_only_writes_when_keep_dir_requested() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(write_script_bin(b"image", None).unwrap().is_none());
+
+        let path = write_script_bin(b"image", Some(dir.path().to_str().unwrap())).unwrap().unwrap();
+        assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("script.bin"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"image");
     }
 
     #[test]

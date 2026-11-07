@@ -550,11 +550,19 @@ pub fn capture_log_lines(
 
     let info = luatos_soc::read_soc_info(soc).with_context(|| format!("无法读取 soc: {soc}"))?;
     let chip = info.chip.chip_type.as_str();
+    let family = info.family();
     let (use_binary, is_ec718, log_baud) = resolve_log_mode(chip, info.log_baud_rate());
     let baud = baud_override.unwrap_or(log_baud);
+    let is_rda = family == ChipFamily::Rda8910;
 
     let log_port: String = if is_ec718 {
         match luatos_flash::ec718::wait_for_log_port(15) {
+            Some(p) => p,
+            None => port.to_string(),
+        }
+    } else if is_rda {
+        // RDA 刷机后下载口会消失，运行口（x.6 soc_log）重新枚举；与 tail_log_after_flash 一致。
+        match luatos_flash::rda8910::wait_for_rda8910_log_port(15) {
             Some(p) => p,
             None => port.to_string(),
         }
@@ -570,7 +578,31 @@ pub fn capture_log_lines(
     let _timer = spawn_cancel_timer(stop.clone(), cancel.clone(), Duration::from_secs(timeout_secs));
 
     // 2. 启动流
-    if use_binary {
+    if is_rda {
+        let decoder = Arc::new(Mutex::new(luatos_log::Rda8910LogDecoder::new()));
+        let analyzer = Arc::new(Mutex::new(luatos_log::smart::SmartAnalyzer::new()));
+        let outcome = outcome.clone();
+        let stop_for_cb = stop.clone();
+        let fmt = *format;
+        let res = luatos_serial::stream_binary(
+            &log_port,
+            baud,
+            stop.clone(),
+            Box::new(move |data| {
+                if let Ok(mut dec) = decoder.lock() {
+                    for entry in dec.feed(data) {
+                        push_entry(&outcome, &analyzer, &entry, &stop_for_cb, &keywords, &fmt);
+                    }
+                }
+            }),
+            None,
+            true, // RDA8910 运行口需要 DTR/RTS 拉高才有数据流
+        );
+        if res.is_err() {
+            stop.store(true, Ordering::Relaxed);
+        }
+        res?;
+    } else if use_binary {
         let decoder = Arc::new(Mutex::new(if is_ec718 { None } else { Some(luatos_log::SocLogDecoder::new()) }));
         let ec718_decoder = Arc::new(Mutex::new(if is_ec718 { Some(luatos_log::Ec718LogDecoder::new()) } else { None }));
         let analyzer = Arc::new(Mutex::new(luatos_log::smart::SmartAnalyzer::new()));

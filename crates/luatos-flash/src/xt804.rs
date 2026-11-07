@@ -3,7 +3,7 @@
 // Protocol reference: wm_tool.c from luatos-soc-air101
 //
 // Flash sequence:
-//   1. Extract .soc (7z) to temp dir; parse info.json.
+//   1. Read .soc in memory; parse info.json.
 //   2. Open COM port at 115200 baud.
 //   3. Toggle DTR/RTS to reset device into bootloader.
 //   4. Send ESC (0x1B) repeatedly until 3 consecutive 'C' or 'P' replies.
@@ -657,26 +657,15 @@ pub fn flash_script_only(soc_path: &str, port: &str, script_files: &[String], on
     flash_script_only_with_debug(soc_path, port, script_files, on_progress, cancel, None)
 }
 
-/// 仅刷脚本并可覆盖 Lua 调试级别；未指定时保持 SOC 配置。
-pub fn flash_script_only_with_debug(
-    soc_path: &str,
-    port: &str,
-    script_files: &[String],
-    on_progress: ProgressCallback,
-    cancel: Arc<AtomicBool>,
-    luac_debug: Option<u8>,
-) -> Result<()> {
-    // Parse SOC for addresses and compilation settings
-    let info = luatos_soc::read_soc_info(soc_path)?;
-    let script_addr = info.script_addr();
-    let flash_br = info.flash_baud_rate();
+/// 从文件列表构建脚本 LuaDB（不做 XT804 镜像头封装）。
+///
+/// `.lua` 文件按 SOC 配置在内存中编译；`extra_entries` 是最终字节，
+/// 在文件列表之后追加（如 `ctx.json`）。
+pub fn build_script_image_from_files(script_files: &[String], info: &luatos_soc::SocInfo, luac_debug: Option<u8>, extra_entries: &[luatos_luadb::LuadbEntry]) -> Result<Vec<u8>> {
     let use_luac = info.script_use_luac();
     let bitw = info.script_bitw();
     let debug_mode = luac_debug.unwrap_or_else(|| info.script_debug_mode());
 
-    on_progress(&FlashProgress::info("Build", 0.0, &format!("Building LuaDB for {} files", script_files.len())));
-
-    // Build LuaDB entries from file paths, compiling .lua if use_luac
     let mut entries = Vec::new();
     for path_str in script_files {
         let path = std::path::Path::new(path_str);
@@ -698,31 +687,93 @@ pub fn flash_script_only_with_debug(
             data: final_data,
         });
     }
-    let luadb_data = luatos_luadb::pack_luadb(&entries)?;
-    crate::validate_script_image(&info, luadb_data.len(), 1024)?;
+
+    entries.extend(extra_entries.iter().cloned());
+    luatos_luadb::pack_luadb(&entries)
+}
+
+/// 从目录列表构建 XT804 脚本 LuaDB。
+///
+/// 与 CLI `flash script --script <DIR>` 一致：递归收集所有文件、按 basename
+/// 扁平化、跳过 VCS 目录；后目录中的同名文件仍是独立条目（沿用既有行为）。
+pub fn build_script_image_from_dirs(dirs: &[&std::path::Path], info: &luatos_soc::SocInfo, luac_debug: Option<u8>, extra_entries: &[luatos_luadb::LuadbEntry]) -> Result<Vec<u8>> {
+    let files = collect_script_files_from_dirs(dirs)?;
+    build_script_image_from_files(&files, info, luac_debug, extra_entries)
+}
+
+const SCRIPT_VCS_DIRS: &[&str] = &[".git", ".svn", ".hg"];
+
+fn collect_script_files_from_dirs(dirs: &[&std::path::Path]) -> Result<Vec<String>> {
+    let mut files = Vec::new();
+    for dir in dirs {
+        anyhow::ensure!(dir.exists(), "脚本目录不存在: {}", dir.display());
+        anyhow::ensure!(dir.is_dir(), "指定路径不是目录: {}", dir.display());
+        for entry in walkdir::WalkDir::new(dir).into_iter().filter_entry(|e| {
+            !e.file_type().is_dir() || {
+                let name = e.file_name().to_string_lossy();
+                !SCRIPT_VCS_DIRS.iter().any(|vcs| name.eq_ignore_ascii_case(vcs))
+            }
+        }) {
+            let entry = entry?;
+            if entry.file_type().is_file() {
+                files.push(entry.path().to_string_lossy().to_string());
+            }
+        }
+    }
+    if files.is_empty() {
+        bail!("脚本目录中没有找到任何文件: {:?}", dirs);
+    }
+    Ok(files)
+}
+
+/// 刷写已经构建好的脚本 LuaDB；内部自动加 XT804 镜像头。
+pub fn flash_script_data(soc_path: &str, port: &str, script_data: &[u8], on_progress: &ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
+    let info = luatos_soc::read_soc_info(soc_path)?;
+    let script_addr = info.script_addr();
+    let flash_br = info.flash_baud_rate();
+
+    crate::validate_script_image(&info, script_data.len(), 1024)?;
 
     on_progress(&FlashProgress::info(
         "Build",
         10.0,
-        &format!("Script image: {} bytes → addr 0x{:X}", luadb_data.len(), script_addr),
+        &format!("Script image: {} bytes → addr 0x{:X}", script_data.len(), script_addr),
     ));
 
     // Wrap in XT804 image header (partition config: SRAM header, img_type=1)
-    let final_data = build_xt804_image(&luadb_data, script_addr, &partition_image_config());
+    let final_data = build_xt804_image(script_data, script_addr, &partition_image_config());
 
     // Connect to bootloader
-    let mut serial = connect_bootloader(port, flash_br, &cancel, &on_progress)?;
+    let mut serial = connect_bootloader(port, flash_br, &cancel, on_progress)?;
 
     // No erase for script-only flash — only the target partition is overwritten.
     // The XT804 bootloader uses the image header's run_img_addr to determine
     // where to write, so erasing the entire flash is unnecessary and destructive.
     on_progress(&FlashProgress::info("Write", 40.0, "Writing script...").with_region("script"));
-    xmodem_transfer(serial.as_mut(), &final_data, &cancel, &on_progress, "script")?;
+    xmodem_transfer(serial.as_mut(), &final_data, &cancel, on_progress, "script")?;
 
     // Reset
     reset_device(serial.as_mut())?;
     on_progress(&FlashProgress::done_ok("Script flash completed"));
     Ok(())
+}
+
+/// 仅刷脚本并可覆盖 Lua 调试级别；未指定时保持 SOC 配置。
+pub fn flash_script_only_with_debug(
+    soc_path: &str,
+    port: &str,
+    script_files: &[String],
+    on_progress: ProgressCallback,
+    cancel: Arc<AtomicBool>,
+    luac_debug: Option<u8>,
+) -> Result<()> {
+    // Parse SOC for addresses and compilation settings
+    let info = luatos_soc::read_soc_info(soc_path)?;
+
+    on_progress(&FlashProgress::info("Build", 0.0, &format!("Building LuaDB for {} files", script_files.len())));
+    let luadb_data = build_script_image_from_files(script_files, &info, luac_debug, &[])?;
+
+    flash_script_data(soc_path, port, &luadb_data, &on_progress, cancel)
 }
 
 /// Flash the LittleFS filesystem partition of an XT804 device.
@@ -736,17 +787,16 @@ pub fn flash_filesystem(soc_path: &str, port: &str, fs_dirs: &[String], on_progr
 
     on_progress(&FlashProgress::info("Build", 0.0, &format!("Building LittleFS image ({} KB)", fs_size / 1024)));
 
-    // Prepare a temp dir with all files from all fs_dirs
-    let tmpdir = tempfile::tempdir().context("failed to create temp directory")?;
-    for dir_str in fs_dirs {
-        let src = std::path::Path::new(dir_str);
-        if !src.is_dir() {
-            bail!("Not a directory: {}", dir_str);
+    // Directly merge all fs_dirs into the LFS image; later directories override
+    // files with the same relative path. No intermediate directory is created.
+    let dir_refs: Vec<&std::path::Path> = fs_dirs.iter().map(String::as_str).map(std::path::Path::new).collect();
+    for dir in &dir_refs {
+        if !dir.is_dir() {
+            bail!("Not a directory: {}", dir.display());
         }
-        copy_dir_contents(src, tmpdir.path()).with_context(|| format!("failed to copy files from {}", dir_str))?;
     }
 
-    let fs_image = luatos_luadb::build::build_littlefs_image(tmpdir.path(), fs_size, 4096).context("failed to build LittleFS image")?;
+    let fs_image = luatos_luadb::build::build_littlefs_image_from_dirs(&dir_refs, fs_size, 4096).context("failed to build LittleFS image")?;
 
     on_progress(&FlashProgress::info("Build", 10.0, &format!("LFS image: {} bytes → addr 0x{:X}", fs_image.len(), fs_addr)));
 
@@ -1019,24 +1069,6 @@ impl crate::raw::RawFlashDevice for Xt804Raw {
     fn reset(&mut self) {
         let _ = reset_device(&mut *self.port);
     }
-}
-
-/// Copy all files/dirs from src to dst (non-recursive merge).
-fn copy_dir_contents(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
-    for entry in walkdir::WalkDir::new(src).min_depth(1) {
-        let entry = entry?;
-        let rel = entry.path().strip_prefix(src).context("strip_prefix failed")?;
-        let target = dst.join(rel);
-        if entry.file_type().is_dir() {
-            std::fs::create_dir_all(&target)?;
-        } else {
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::copy(entry.path(), &target)?;
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

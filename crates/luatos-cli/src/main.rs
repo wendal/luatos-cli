@@ -241,7 +241,7 @@ enum FlashCommands {
         /// luac 调试信息保留级别: 0=无, 1=仅行号, 2=仅变量名, 99=全部
         #[arg(long, default_value = "99", value_parser = parse_luac_debug)]
         luac_debug: u8,
-        /// Pre-compiled script.bin (skip Lua compilation, use external tool like Luatools)
+        /// Pre-compiled script image (LuaDB; XT804 header added automatically, BK CRC must already be framed)
         #[arg(long)]
         bin: Option<String>,
         /// RTS reset and boot-wait options

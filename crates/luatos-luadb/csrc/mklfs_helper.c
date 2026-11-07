@@ -182,28 +182,52 @@ static int compact(lfs_t *lfs, const char *lfs_prefix, const char *host_dir)
     return 0;
 }
 
+static void print_usage(const char *prog)
+{
+    fprintf(stderr, "usage: %s <source_dir> <fs_size_bytes> [block_size] [read_size] [prog_size]\n", prog);
+    fprintf(stderr, "       %s --merge <fs_size_bytes> <block_size> <read_size> <prog_size> <dir> [dir...]\n", prog);
+    fprintf(stderr, "  --merge packs directories in order; later directories override same-path files.\n");
+}
+
 int main(int argc, char **argv)
 {
 #ifdef _WIN32
     _setmode(_fileno(stdout), _O_BINARY);
 #endif
 
-    if (argc < 3) {
-        fprintf(stderr, "usage: %s <source_dir> <fs_size_bytes> [block_size] [read_size] [prog_size]\n", argv[0]);
-        return 2;
-    }
-
-    const char *source_dir = argv[1];
-    flash_size = (lfs_size_t)strtoul(argv[2], NULL, 10);
+    const char *single_dir = NULL;
+    const char **source_dirs = NULL;
+    int source_dir_count = 0;
     lfs_size_t block_size = 4096;
     lfs_size_t read_size  = 256;
     lfs_size_t prog_size  = 256;
 
-    if (argc > 3) block_size = (lfs_size_t)strtoul(argv[3], NULL, 10);
-    if (argc > 4) read_size  = (lfs_size_t)strtoul(argv[4], NULL, 10);
-    if (argc > 5) prog_size  = (lfs_size_t)strtoul(argv[5], NULL, 10);
+    if (argc >= 2 && strcmp(argv[1], "--merge") == 0) {
+        if (argc < 7) {
+            print_usage(argv[0]);
+            return 2;
+        }
+        flash_size = (lfs_size_t)strtoul(argv[2], NULL, 10);
+        block_size = (lfs_size_t)strtoul(argv[3], NULL, 10);
+        read_size  = (lfs_size_t)strtoul(argv[4], NULL, 10);
+        prog_size  = (lfs_size_t)strtoul(argv[5], NULL, 10);
+        source_dirs = (const char **)&argv[6];
+        source_dir_count = argc - 6;
+    } else {
+        if (argc < 3) {
+            print_usage(argv[0]);
+            return 2;
+        }
+        single_dir = argv[1];
+        flash_size = (lfs_size_t)strtoul(argv[2], NULL, 10);
+        if (argc > 3) block_size = (lfs_size_t)strtoul(argv[3], NULL, 10);
+        if (argc > 4) read_size  = (lfs_size_t)strtoul(argv[4], NULL, 10);
+        if (argc > 5) prog_size  = (lfs_size_t)strtoul(argv[5], NULL, 10);
+        source_dirs = &single_dir;
+        source_dir_count = 1;
+    }
 
-    if (flash_size == 0 || block_size == 0) {
+    if (flash_size == 0 || block_size == 0 || read_size == 0 || prog_size == 0) {
         fprintf(stderr, "invalid size parameters\n");
         return 1;
     }
@@ -244,11 +268,13 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    err = compact(&lfs, "", source_dir);
-    if (err) {
-        lfs_unmount(&lfs);
-        free(flash_buf);
-        return 1;
+    for (int i = 0; i < source_dir_count; i++) {
+        err = compact(&lfs, "", source_dirs[i]);
+        if (err) {
+            lfs_unmount(&lfs);
+            free(flash_buf);
+            return 1;
+        }
     }
 
     lfs_unmount(&lfs);

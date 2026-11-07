@@ -69,73 +69,78 @@ fn apply_os_args(cmd: &mut Command, target_os: &str) {
     }
 }
 
+fn link_helper(build: &cc::Build, out_dir: &Path, output: &Path, target_os: &str, label: &str) {
+    // 先逐文件编译成 .obj/.o，再链接。MSVC 的 cl.exe 在单条命令里塞入
+    // 大量 Lua 源文件时可能触发 D8050（命令行无法写入调试记录）；拆成
+    // “逐文件编译 + 短链接命令”后不再受命令行长度影响。
+    let objects = build.try_compile_intermediates().unwrap_or_else(|e| panic!("Failed to compile {label}: {e}"));
+
+    let compiler = build.get_compiler();
+    let mut cmd = compiler.to_command();
+    cmd.current_dir(out_dir);
+    cmd.env("TMP", out_dir);
+    cmd.env("TEMP", out_dir);
+    for object in &objects {
+        cmd.arg(object);
+    }
+    if compiler.is_like_msvc() {
+        cmd.arg(format!("/Fe:{}", output.display()));
+    } else {
+        cmd.arg("-o").arg(output);
+        apply_os_args(&mut cmd, target_os);
+    }
+
+    let status = cmd.status().unwrap_or_else(|e| panic!("Failed to spawn {label} linker: {e}"));
+    if !status.success() {
+        panic!("Failed to link {label}");
+    }
+}
+
 fn build_lua_helper(lua_src: &Path, out_dir: &Path, bitw: u32, target_os: &str) {
     let mut build = cc::Build::new();
+    // 辅助可执行文件不需要调试信息；MSVC 的 -Z7/-Brepro 组合在部分环境会触发
+    // cl 的 D8050（无法把命令行写入调试记录）。
+    build.debug(false);
     build.include(lua_src).warnings(false);
+    // 把编译器/链接器的临时文件固定到 OUT_DIR：部分 Windows 环境对系统 TEMP
+    // 下的 cl 调试记录/链接响应文件创建失败（D8050/D8018）。
+    build.env("TMP", out_dir);
+    build.env("TEMP", out_dir);
     if bitw == 32 {
         build.define("LUA_32BITS", None);
     }
     apply_os_defines(&mut build, target_os);
 
-    let compiler = build.get_compiler();
     let helper_src = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set")).join("csrc/luac_helper.c");
-    let output = out_dir.join(format!("luac{}_helper{}", bitw, env::consts::EXE_SUFFIX));
-
-    let mut cmd = compiler.to_command();
-    // cl.exe 会把中间 .obj 写到当前目录；切到 OUT_DIR 避免污染源码目录
-    cmd.current_dir(out_dir);
     for file in core_files(&lua_src.to_string_lossy()) {
-        cmd.arg(file);
+        build.file(file);
     }
-    cmd.arg(&helper_src);
-    cmd.arg("-I").arg(lua_src);
-    if bitw == 32 {
-        cmd.arg("-DLUA_32BITS");
-    }
-    apply_os_args(&mut cmd, target_os);
-    cmd.arg("-o").arg(&output);
+    build.file(&helper_src);
 
-    let status = cmd.status().expect("Failed to spawn Lua helper compiler");
-    if !status.success() {
-        panic!("Failed to build Lua {}-bit helper", bitw);
-    }
+    let output = out_dir.join(format!("luac{}_helper{}", bitw, env::consts::EXE_SUFFIX));
+    link_helper(&build, out_dir, &output, target_os, &format!("Lua {bitw}-bit helper"));
 
     println!("cargo:rustc-env=LUA53_HELPER_EMBED_{}={}", bitw, output.display());
 }
 
 fn build_mklfs_helper(lfs_src: &Path, out_dir: &Path, target_os: &str) {
     let mut build = cc::Build::new();
+    build.debug(false);
     build.include(lfs_src).warnings(false);
+    build.env("TMP", out_dir);
+    build.env("TEMP", out_dir);
     // Disable LFS tracing/debug in release builds
     build.define("LFS_NO_DEBUG", None);
     build.define("LFS_NO_WARN", None);
     build.define("LFS_NO_ERROR", None);
 
-    let compiler = build.get_compiler();
     let helper_src = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set")).join("csrc/mklfs_helper.c");
-    let lfs_c = lfs_src.join("lfs.c");
-    let lfs_util_c = lfs_src.join("lfs_util.c");
+    build.file(helper_src);
+    build.file(lfs_src.join("lfs.c"));
+    build.file(lfs_src.join("lfs_util.c"));
+
     let output = out_dir.join(format!("mklfs_helper{}", env::consts::EXE_SUFFIX));
-
-    let mut cmd = compiler.to_command();
-    // cl.exe 会把中间 .obj 写到当前目录；切到 OUT_DIR 避免污染源码目录
-    cmd.current_dir(out_dir);
-    cmd.arg(&helper_src);
-    cmd.arg(&lfs_c);
-    cmd.arg(&lfs_util_c);
-    cmd.arg("-I").arg(lfs_src);
-    cmd.arg("-DLFS_NO_DEBUG");
-    cmd.arg("-DLFS_NO_WARN");
-    cmd.arg("-DLFS_NO_ERROR");
-    if target_os == "linux" {
-        cmd.arg("-lm");
-    }
-    cmd.arg("-o").arg(&output);
-
-    let status = cmd.status().expect("Failed to spawn mklfs helper compiler");
-    if !status.success() {
-        panic!("Failed to build mklfs helper");
-    }
+    link_helper(&build, out_dir, &output, target_os, "mklfs helper");
 
     println!("cargo:rustc-env=MKLFS_HELPER_EMBED={}", output.display());
 }

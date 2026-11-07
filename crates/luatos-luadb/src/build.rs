@@ -125,6 +125,25 @@ pub fn collect_script_entries(dirs: &[&Path]) -> Result<Vec<LuadbEntry>> {
     // Use a map to handle deduplication: later dirs override earlier ones.
     let mut map = std::collections::HashMap::<String, Vec<u8>>::new();
 
+    for_each_script_file(dirs, |filename, path| {
+        let data = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+        map.insert(filename.to_string(), data);
+        Ok(())
+    })?;
+
+    Ok(entries_from_map(map))
+}
+
+fn is_main(name: &str) -> bool {
+    // 支持根目录的 main.lua/main.luac，以及子目录中的
+    let basename = name.rsplit('/').next().unwrap_or(name);
+    (basename == "main.lua" || basename == "main.luac") && !name.contains('/')
+}
+
+/// 遍历多个脚本目录，按“后目录覆盖前目录”的语义逐个访问文件。
+///
+/// 只负责计算相对路径并跳过 VCS 目录；是否编译由调用方决定。
+fn for_each_script_file(dirs: &[&Path], mut visit: impl FnMut(&str, &Path) -> Result<()>) -> Result<()> {
     for dir in dirs {
         anyhow::ensure!(dir.exists(), "脚本目录不存在: {}", dir.display());
         for entry in WalkDir::new(dir).into_iter().filter_entry(|e| !e.file_type().is_dir() || !is_vcs_dir(e.file_name())) {
@@ -136,66 +155,84 @@ pub fn collect_script_entries(dirs: &[&Path]) -> Result<Vec<LuadbEntry>> {
             // 使用相对路径作为文件名，支持子目录结构
             let rel_path = entry.path().strip_prefix(dir).context("failed to compute relative path")?;
             let filename = rel_path.to_string_lossy().into_owned().replace('\\', "/");
-
-            let data = fs::read(entry.path()).with_context(|| format!("failed to read {}", entry.path().display()))?;
-
-            map.insert(filename, data);
+            visit(&filename, entry.path())?;
         }
     }
+    Ok(())
+}
 
-    let mut entries: Vec<LuadbEntry> = map.into_iter().map(|(filename, data)| LuadbEntry { filename, data }).collect();
-
+fn sort_entries(entries: &mut [LuadbEntry]) {
     // Sort: main.lua / main.luac first, then alphabetical.
     entries.sort_by(|a, b| {
         let a_main = is_main(&a.filename);
         let b_main = is_main(&b.filename);
         b_main.cmp(&a_main).then_with(|| a.filename.cmp(&b.filename))
     });
-
-    Ok(entries)
 }
 
-fn is_main(name: &str) -> bool {
-    // 支持根目录的 main.lua/main.luac，以及子目录中的
-    let basename = name.rsplit('/').next().unwrap_or(name);
-    (basename == "main.lua" || basename == "main.luac") && !name.contains('/')
+fn entries_from_map(map: std::collections::HashMap<String, Vec<u8>>) -> Vec<LuadbEntry> {
+    let mut entries: Vec<LuadbEntry> = map.into_iter().map(|(filename, data)| LuadbEntry { filename, data }).collect();
+    sort_entries(&mut entries);
+    entries
+}
+
+/// 收集脚本目录中的文件。非 `.lua` 文件原样读取；`.lua` 文件在 `use_luac`
+/// 为真时编译为 `.luac`，全程在内存完成，不创建任何临时目录。
+///
+/// 后目录覆盖前目录的同名文件；`main.lua` / `main.luac` 排在最前。
+pub fn collect_script_entries_compiled(dirs: &[&Path], use_luac: bool, bitw: u32, debug_mode: u8) -> Result<Vec<LuadbEntry>> {
+    let mut map = std::collections::HashMap::<String, Vec<u8>>::new();
+
+    for_each_script_file(dirs, |filename, path| {
+        let data = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+
+        if use_luac && Path::new(filename).extension().and_then(|e| e.to_str()) == Some("lua") {
+            let chunk_name = format!(
+                "@{}",
+                Path::new(filename)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| filename.to_string())
+            );
+            let bytecode = compile_lua_bytes(&data, &chunk_name, debug_mode, bitw).with_context(|| format!("Failed to compile {}", path.display()))?;
+            let luac_name = Path::new(filename).with_extension("luac").to_string_lossy().into_owned().replace('\\', "/");
+            map.insert(luac_name, bytecode);
+        } else {
+            map.insert(filename.to_string(), data);
+        }
+
+        Ok(())
+    })?;
+
+    Ok(entries_from_map(map))
+}
+
+/// 在目录产物之后合入内存条目（如 `ctx.json`）；同名条目覆盖目录产物。
+///
+/// `extra_entries` 被视为最终字节，不再参与 Lua 编译。
+pub fn build_script_image_with_entries(script_dirs: &[&Path], extra_entries: &[LuadbEntry], use_luac: bool, bitw: u32, use_bkcrc: bool, debug_mode: u8) -> Result<Vec<u8>> {
+    let base = collect_script_entries_compiled(script_dirs, use_luac, bitw, debug_mode)?;
+    let mut map: std::collections::HashMap<String, Vec<u8>> = base.into_iter().map(|entry| (entry.filename, entry.data)).collect();
+    for entry in extra_entries {
+        map.insert(entry.filename.clone(), entry.data.clone());
+    }
+
+    let entries = entries_from_map(map);
+    anyhow::ensure!(!entries.is_empty(), "脚本目录中没有找到任何文件");
+    log::info!("packing {} entries into LuaDB image", entries.len());
+
+    let image = pack_luadb(&entries)?;
+    let result = if use_bkcrc { add_bk_crc(&image) } else { image };
+    Ok(result)
 }
 
 /// High-level: compile (optional) → collect entries → pack LuaDB → add BK CRC (optional).
 ///
 /// Accepts multiple script source directories. If `use_luac` is true, `.lua`
-/// files from all directories are compiled to `.luac` in a single temporary
-/// directory before packing. `debug_mode` 为调试信息保留级别：0=无、1=仅行号、2=仅变量名、99=全部。
-/// Later directories override earlier ones when filenames collide.
-/// Returns the final binary image.
+/// files are compiled in memory. Later directories override earlier ones when
+/// filenames collide. Returns the final binary image.
 pub fn build_script_image(script_dirs: &[&Path], use_luac: bool, bitw: u32, use_bkcrc: bool, debug_mode: u8) -> Result<Vec<u8>> {
-    // _tmp_guard 持有 TempDir：use_luac 时临时目录必须存活到函数末尾，
-    // 因为 collect_script_entries 依赖其中的 luac 编译产物读取文件；
-    // 函数返回时 TempDir 自动删除目录，无需（也不应）手动 remove_dir_all，避免 Windows 残留
-    let (collect_dirs, _tmp_guard): (Vec<PathBuf>, Option<tempfile::TempDir>) = if use_luac {
-        let tmp = tempfile::tempdir().context("failed to create temp directory")?;
-        for dir in script_dirs {
-            compile_lua_dir(dir, tmp.path(), bitw, debug_mode)?;
-        }
-        // TempDir 存活期间路径始终有效；collect_script_entries 在函数内同步完成读取，返回前数据已全部读入内存
-        (vec![tmp.path().to_path_buf()], Some(tmp))
-    } else {
-        (script_dirs.iter().map(|d| d.to_path_buf()).collect(), None)
-    };
-
-    let dir_refs: Vec<&Path> = collect_dirs.iter().map(|p| p.as_path()).collect();
-    let entries = collect_script_entries(&dir_refs)?;
-    anyhow::ensure!(!entries.is_empty(), "脚本目录中没有找到任何文件");
-    log::info!("packing {} entries into LuaDB image", entries.len());
-
-    let image = pack_luadb(&entries)?;
-
-    let result = if use_bkcrc { add_bk_crc(&image) } else { image };
-
-    // 显式释放守卫，触发 TempDir 自动清理（collect_script_entries 已完成读取，此时删除目录是安全的）
-    drop(_tmp_guard);
-
-    Ok(result)
+    build_script_image_with_entries(script_dirs, &[], use_luac, bitw, use_bkcrc, debug_mode)
 }
 
 /// Build the resource partition image.
@@ -283,20 +320,29 @@ pub fn payload_limit(capacity: usize, framed: bool) -> usize {
     }
 }
 
-/// Build a LittleFS image from a directory using the embedded mklfs helper.
+/// Build a LittleFS image from one or more directories using the embedded mklfs helper.
 ///
-/// * `source_dir` — directory of files to pack into the LFS image.
+/// * `source_dirs` — directories of files to pack into the LFS image, in merge order.
+///   Later directories override files with the same relative path.
 /// * `fs_size` — total filesystem size in bytes.
 /// * `block_size` — erase block size (default 4096).
 ///
 /// Returns the raw LFS image bytes (exactly `fs_size` bytes).
-pub fn build_littlefs_image(source_dir: &Path, fs_size: usize, block_size: usize) -> Result<Vec<u8>> {
+pub fn build_littlefs_image_from_dirs(source_dirs: &[&Path], fs_size: usize, block_size: usize) -> Result<Vec<u8>> {
+    anyhow::ensure!(!source_dirs.is_empty(), "At least one source directory is required");
+    for dir in source_dirs {
+        anyhow::ensure!(dir.is_dir(), "Source directory does not exist or is not a directory: {}", dir.display());
+    }
+
     let helper = ensure_mklfs_helper().map_err(|e| anyhow::anyhow!("failed to prepare mklfs helper: {e}"))?;
 
-    let output = Command::new(&helper)
-        .arg(source_dir.to_str().context("non-UTF8 path")?)
-        .arg(fs_size.to_string())
-        .arg(block_size.to_string())
+    let mut command = Command::new(&helper);
+    command.arg("--merge").arg(fs_size.to_string()).arg(block_size.to_string()).arg("256").arg("256");
+    for dir in source_dirs {
+        command.arg(dir.to_str().context("non-UTF8 path")?);
+    }
+
+    let output = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -311,6 +357,12 @@ pub fn build_littlefs_image(source_dir: &Path, fs_size: usize, block_size: usize
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         bail!("mklfs failed: {}", if stderr.is_empty() { "unknown error".to_string() } else { stderr });
     }
+}
+
+/// Build a LittleFS image from a single directory. Kept as a convenience wrapper
+/// for callers that only have one source directory.
+pub fn build_littlefs_image(source_dir: &Path, fs_size: usize, block_size: usize) -> Result<Vec<u8>> {
+    build_littlefs_image_from_dirs(&[source_dir], fs_size, block_size)
 }
 
 #[cfg(test)]
@@ -470,6 +522,41 @@ mod tests {
     }
 
     #[test]
+    fn collect_script_entries_compiled_is_in_memory_and_later_dir_wins() {
+        let first = TempDir::new().unwrap();
+        fs::write(first.path().join("main.lua"), b"return 1").unwrap();
+        fs::write(first.path().join("only_first.txt"), b"first").unwrap();
+
+        let second = TempDir::new().unwrap();
+        fs::write(second.path().join("main.lua"), b"return 2").unwrap();
+        fs::write(second.path().join("only_second.txt"), b"second").unwrap();
+
+        let entries = super::collect_script_entries_compiled(&[first.path(), second.path()], true, 32, crate::LUAC_DEBUG_ALL).unwrap();
+        assert_eq!(entries[0].filename, "main.luac", "main 应排在最前");
+        assert_eq!(&entries[0].data[..4], b"\x1bLua", "应直接产出 Lua 字节码");
+        assert!(entries.iter().any(|entry| entry.filename == "only_first.txt"));
+        assert!(entries.iter().any(|entry| entry.filename == "only_second.txt"));
+
+        let second_only = super::collect_script_entries_compiled(&[second.path()], true, 32, crate::LUAC_DEBUG_ALL).unwrap();
+        assert_eq!(entries[0].data, second_only[0].data, "后目录的 main.lua 应覆盖前目录");
+    }
+
+    #[test]
+    fn build_script_image_with_entries_overlays_ctx_json() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("main.lua"), b"print('hi')").unwrap();
+
+        let extra = LuadbEntry {
+            filename: "ctx.json".into(),
+            data: br#"{"test_id":"x"}"#.to_vec(),
+        };
+        let image = super::build_script_image_with_entries(&[dir.path()], &[extra], true, 32, false, crate::LUAC_DEBUG_ALL).unwrap();
+        assert!(image.windows(b"ctx.json".len()).any(|window| window == b"ctx.json"));
+        assert!(image.windows(b"\"test_id\"".len()).any(|window| window == b"\"test_id\""));
+        assert!(image.windows(b"main.luac".len()).any(|window| window == b"main.luac"));
+    }
+
+    #[test]
     fn build_littlefs_image_basic() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("test.txt"), b"hello littlefs").unwrap();
@@ -479,6 +566,22 @@ mod tests {
         let image = super::build_littlefs_image(dir.path(), fs_size, 4096).unwrap();
         assert_eq!(image.len(), fs_size);
         // LittleFS superblock is in the first block; it shouldn't be all 0xFF
+        assert_ne!(&image[0..16], &[0xFF; 16]);
+    }
+
+    #[test]
+    fn build_littlefs_image_multi_dir_merge() {
+        let first = TempDir::new().unwrap();
+        fs::write(first.path().join("same.txt"), b"first").unwrap();
+        fs::write(first.path().join("only_first.txt"), b"first-only").unwrap();
+
+        let second = TempDir::new().unwrap();
+        fs::write(second.path().join("same.txt"), b"second").unwrap();
+        fs::write(second.path().join("only_second.txt"), b"second-only").unwrap();
+
+        let fs_size = 64 * 1024;
+        let image = super::build_littlefs_image_from_dirs(&[first.path(), second.path()], fs_size, 4096).unwrap();
+        assert_eq!(image.len(), fs_size);
         assert_ne!(&image[0..16], &[0xFF; 16]);
     }
 

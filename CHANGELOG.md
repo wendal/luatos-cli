@@ -26,6 +26,20 @@ All notable changes to this project will be documented in this file.
 
 ### 变更
 
+#### 刷机链路零临时文件
+
+- `luatos-luadb::build_script_image` 在 `use_luac=true` 时改为逐文件内存编译，不再创建 `.luac` 临时目录；新增 `collect_script_entries_compiled` 与 `build_script_image_with_entries`（ctx.json 等内存条目最后合入，同名覆盖）
+- 新增 `luatos_flash::script` 统一构建入口：`build_script_image` / `validate_script_image_for_family` / `script_write_alignment`；BK7258 保持 basename + BK CRC 语义，XT804 保持 basename 扁平 LuaDB，CCM4211/EC718/RDA8910 使用相对路径 LuaDB
+- 新增字节入口 `bk7258::flash_bk7258_with_overlay` / `bk7258::flash_script_data`、`xt804::build_script_image_from_dirs` / `xt804::flash_script_data`；`luatos_flash::script` 成为 CLI 与 `trun` 的唯一脚本构建入口
+- `trun` 删除 `ctx.json` 临时目录、默认 `script.bin` 临时文件与 `combined.soc`/unpack-pack 临时路径；ctx.json 以内存条目烧入，刷机阶段直接传 `&[u8]`。`--keep-soc` 现在只在用户指定目录保留 `script.bin`（`artifacts.combined_soc` 恒为 null）
+- `trun` 的脚本目录优先级统一为 common → testcase scripts → `--libs` → ctx.json（BK 也走同一顺序）；XT804/RDA8910 的仅脚本路径从“不支持”变为可用
+- XT804 `flash run --script` / `flash test --script` 由“报错拒绝”改为“固件 + 脚本分区两阶段刷写”；`flash flash-fs` 直接把多个目录交给 `mklfs_helper --merge`，删除合并临时目录
+- `flash script --bin` 统一走 `cmd_flash_script_data`，支持 BK7258/XT804/CCM4211/EC718/RDA8910；XT804 输入为原始 LuaDB（自动加 XT804 头），BK 输入须已 BK CRC 帧化
+- `trun` 的 RDA8910 日志抓取增加运行口等待与 `Rda8910LogDecoder` 路径，与 `flash run --tail-log-secs` 对齐（RDA/XT804 的 trun 真机验证待补）
+- `luatos-luadb` 辅助可执行文件构建改为“逐文件编译 + 短链接命令”，并把编译器临时文件固定到 OUT_DIR，规避部分 Windows/MSVC 环境的 D8050/D8018
+- `luatos-luadb` / `luatos-flash` / `luatos-testcase` 的 `tempfile` 降为 dev-dependency；生产刷机路径不再引用
+- 新增设计说明 `docs/in-memory-flash-pipeline.md`；`CLAUDE.md` 增加“刷机链路禁止临时文件”约定
+
 #### 架构收敛（P0 / P1 / P2 / P3）
 
 - 新增零依赖 crate `luatos-codec`，统一 Beken CRC16 帧化/解帧与 CRC16-Modbus；`luatos-luadb`、`luatos-soc`、`luatos-log`、`luatos-flash` 不再各写一份（设备侧 CRC16 为 init=0 变体，勿改成标准 MODBUS 初值）

@@ -10,10 +10,12 @@ luatos-codec = { path = "../luatos-codec" }
 anyhow.workspace = true
 log.workspace = true
 walkdir.workspace = true
-tempfile.workspace = true
 sha2.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [build-dependencies]
 cc = "1"

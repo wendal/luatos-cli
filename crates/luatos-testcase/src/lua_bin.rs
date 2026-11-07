@@ -39,15 +39,38 @@ impl ScriptBinParams {
     }
 }
 
-/// 把 ctx.json 写入临时目录，用于烧入 script.bin
+/// 把 ctx 序列化为 LuaDB 内存条目（`ctx.json`），供构建器最后合入。
+pub fn ctx_entry(ctx: &serde_json::Value) -> Result<luatos_luadb::LuadbEntry> {
+    let data = serde_json::to_vec_pretty(ctx).context("failed to serialize ctx.json")?;
+    Ok(luatos_luadb::LuadbEntry {
+        filename: "ctx.json".into(),
+        data,
+    })
+}
+
+/// 按固定优先级排列脚本目录：公共脚本 → testcase scripts → `--libs`。
 ///
-/// 返回 `(临时目录, ctx.json 路径)`，调用方负责清理临时目录。
-pub fn write_ctx_to_temp(ctx: &serde_json::Value) -> Result<(tempfile::TempDir, PathBuf)> {
-    let tmp = tempfile::tempdir().context("failed to create temp dir for ctx.json")?;
-    let path = tmp.path().join("ctx.json");
-    let content = serde_json::to_string_pretty(ctx).context("failed to serialize ctx.json")?;
-    std::fs::write(&path, content).with_context(|| format!("failed to write {}", path.display()))?;
-    Ok((tmp, path))
+/// 后目录覆盖前目录同名文件；ctx 由调用方作为 `extra_entries` 最后传入。
+pub fn ordered_script_dirs(script_dirs: &[&Path], common_scripts: Option<&Path>) -> Result<Vec<PathBuf>> {
+    let mut ordered: Vec<PathBuf> = Vec::new();
+
+    if let Some(common) = common_scripts {
+        if common.is_dir() {
+            ordered.push(common.to_path_buf());
+        } else {
+            log::debug!("公共脚本目录不存在，跳过: {}", common.display());
+        }
+    }
+
+    for dir in script_dirs {
+        if dir.is_dir() {
+            ordered.push(dir.to_path_buf());
+        } else {
+            bail!("scripts 目录不存在: {}", dir.display());
+        }
+    }
+
+    Ok(ordered)
 }
 
 /// 构建 script.bin
@@ -55,46 +78,26 @@ pub fn write_ctx_to_temp(ctx: &serde_json::Value) -> Result<(tempfile::TempDir, 
 /// 参数：
 /// - `script_dirs`: 多个源码目录，按数组顺序合并（**后写覆盖前写**）
 /// - `common_scripts`: 公共脚本目录（若不存在则忽略）
-/// - `ctx_tmp_dir`: 含 ctx.json 的临时目录（若 Some 则加入）
+/// - `extra_entries`: 最终内存条目（如 ctx.json），在目录产物之后合入
 /// - `params`: 编译参数（由 SOC 包元数据推导，见 [`ScriptBinParams::from_soc`]）
-pub fn build_script_bin(script_dirs: &[&Path], common_scripts: Option<&Path>, ctx_tmp_dir: Option<&Path>, params: ScriptBinParams) -> Result<Vec<u8>> {
-    let mut ordered: Vec<PathBuf> = Vec::new();
-    // 顺序：公共脚本（先）→ testcase scripts（中）→ ctx 临时目录（最后，最高优先级）
-    if let Some(c) = common_scripts {
-        if c.is_dir() {
-            ordered.push(c.to_path_buf());
-        } else {
-            log::debug!("公共脚本目录不存在，跳过: {}", c.display());
-        }
-    }
-    for d in script_dirs {
-        if d.is_dir() {
-            ordered.push(d.to_path_buf());
-        } else {
-            bail!("scripts 目录不存在: {}", d.display());
-        }
-    }
-    if let Some(c) = ctx_tmp_dir {
-        if c.is_dir() {
-            ordered.push(c.to_path_buf());
-        }
-    }
-
+pub fn build_script_bin(script_dirs: &[&Path], common_scripts: Option<&Path>, extra_entries: &[luatos_luadb::LuadbEntry], params: ScriptBinParams) -> Result<Vec<u8>> {
+    let ordered = ordered_script_dirs(script_dirs, common_scripts)?;
     if ordered.is_empty() {
         bail!("没有任何 scripts 目录可用于构建 script.bin");
     }
 
     let refs: Vec<&Path> = ordered.iter().map(|p| p.as_path()).collect();
     log::debug!(
-        "build_script_image: dirs={:?} bitw={} use_luac={} use_bkcrc={} debug_mode={}",
+        "build_script_image: dirs={:?} extras={} bitw={} use_luac={} use_bkcrc={} debug_mode={}",
         ordered.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        extra_entries.len(),
         params.bitw,
         params.use_luac,
         params.use_bkcrc,
         params.debug_mode
     );
-    let image = luatos_luadb::build::build_script_image(&refs, params.use_luac, params.bitw, params.use_bkcrc, params.debug_mode).context("build_script_image failed")?;
-    Ok(image)
+    luatos_luadb::build::build_script_image_with_entries(&refs, extra_entries, params.use_luac, params.bitw, params.use_bkcrc, params.debug_mode)
+        .context("build_script_image failed")
 }
 
 #[cfg(test)]
@@ -139,35 +142,51 @@ mod tests {
         fs::create_dir_all(&scripts).unwrap();
         write_lua(&scripts, "main.lua", "local lib = require 'lib' print(lib)");
 
-        let image = build_script_bin(&[scripts.as_path()], Some(common.as_path()), None, ScriptBinParams::from_soc(32, true, false)).unwrap();
+        let image = build_script_bin(&[scripts.as_path()], Some(common.as_path()), &[], ScriptBinParams::from_soc(32, true, false)).unwrap();
         assert!(!image.is_empty());
         // 验证 image 至少包含 main.lua 内容（虽然是被 luac 编译，但 magic 一定在）
         assert!(image.len() > 100);
     }
 
     #[test]
-    fn build_with_ctx_in_temp() {
+    fn build_with_ctx_in_memory() {
         let tmp = TempDir::new().unwrap();
         let scripts = tmp.path().join("scripts");
         fs::create_dir_all(&scripts).unwrap();
         write_lua(&scripts, "main.lua", "print('hi')");
 
         let ctx = serde_json::json!({"test_id": "x", "foo": 1});
-        let (ctx_tmp, _ctx_path) = write_ctx_to_temp(&ctx).unwrap();
-
-        let image = build_script_bin(&[scripts.as_path()], None, Some(ctx_tmp.path()), ScriptBinParams::from_soc(32, true, false)).unwrap();
+        let extra = ctx_entry(&ctx).unwrap();
+        let image = build_script_bin(&[scripts.as_path()], None, &[extra], ScriptBinParams::from_soc(32, true, false)).unwrap();
         assert!(!image.is_empty());
+        assert!(image.windows(b"ctx.json".len()).any(|window| window == b"ctx.json"));
+        assert!(image.windows(b"\"test_id\"".len()).any(|window| window == b"\"test_id\""));
+    }
+
+    #[test]
+    fn ordered_dirs_put_common_first_and_reject_missing_script_dir() {
+        let tmp = TempDir::new().unwrap();
+        let common = tmp.path().join("common");
+        let scripts = tmp.path().join("scripts");
+        fs::create_dir_all(&common).unwrap();
+        fs::create_dir_all(&scripts).unwrap();
+
+        let ordered = ordered_script_dirs(&[scripts.as_path()], Some(common.as_path())).unwrap();
+        assert_eq!(ordered, vec![common, scripts]);
+
+        let missing = tmp.path().join("missing");
+        assert!(ordered_script_dirs(&[missing.as_path()], None).is_err());
     }
 
     #[test]
     fn build_no_dirs_errors() {
-        let r = build_script_bin(&[], None, None, ScriptBinParams::from_soc(32, true, false));
+        let r = build_script_bin(&[], None, &[], ScriptBinParams::from_soc(32, true, false));
         assert!(r.is_err());
     }
 
     #[test]
     fn build_missing_dir_errors() {
-        let r = build_script_bin(&[Path::new("nonexistent_xyz")], None, None, ScriptBinParams::from_soc(32, true, false));
+        let r = build_script_bin(&[Path::new("nonexistent_xyz")], None, &[], ScriptBinParams::from_soc(32, true, false));
         assert!(r.is_err());
     }
 }

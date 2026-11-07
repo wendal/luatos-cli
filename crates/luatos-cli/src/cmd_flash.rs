@@ -14,26 +14,15 @@ fn script_folders_present(folders: Option<&[String]>) -> bool {
     folders.is_some_and(|dirs| !dirs.is_empty())
 }
 
-fn build_script_overlay(script_folders: Option<&[String]>, info: &luatos_soc::SocInfo, luac_debug: u8) -> anyhow::Result<Option<Vec<u8>>> {
+fn build_script_overlay(script_folders: Option<&[String]>, info: &luatos_soc::SocInfo, family: ChipFamily, luac_debug: u8) -> anyhow::Result<Option<Vec<u8>>> {
     let Some(folders) = script_folders.filter(|dirs| !dirs.is_empty()) else {
         return Ok(None);
     };
-    Ok(Some(build_script_image_checked(folders, info, luac_debug)?))
-}
-
-fn build_script_image_checked(folders: &[String], info: &luatos_soc::SocInfo, luac_debug: u8) -> anyhow::Result<Vec<u8>> {
     let folder_paths: Vec<std::path::PathBuf> = folders.iter().map(std::path::PathBuf::from).collect();
     let path_refs: Vec<&std::path::Path> = folder_paths.iter().map(|p| p.as_path()).collect();
-    let script_data = luatos_luadb::build::build_script_image(&path_refs, info.script_use_luac(), info.script_bitw(), info.use_bkcrc(), luac_debug)?;
-    luatos_flash::validate_script_image(info, script_data.len(), 1)?;
-    Ok(script_data)
-}
-
-fn check_full_flash_script_support(family: ChipFamily, script_folders: Option<&[String]>) -> anyhow::Result<()> {
-    if family == ChipFamily::Xt804 && script_folders.is_some_and(|folders| !folders.is_empty()) {
-        anyhow::bail!("XT804 全量刷机暂不支持 --script 覆盖，请先执行 flash run，再使用 flash script --script <目录> --luac-debug <级别>");
-    }
-    Ok(())
+    let script_data = luatos_flash::script::build_script_image(family, &path_refs, info, luac_debug, &[], false)?;
+    luatos_flash::script::validate_script_image_for_family(family, info, script_data.len())?;
+    Ok(Some(script_data))
 }
 
 fn tail_log_after_flash(soc: &str, port: &str, timeout_secs: u64, format: &OutputFormat) -> anyhow::Result<()> {
@@ -162,12 +151,6 @@ pub fn cmd_flash_run(
     tail_log_secs: u64,
 ) -> anyhow::Result<()> {
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-    // Set up Ctrl+C handler (容错: trun 流程下, trun 已经注册过, 第二次注册返回
-    // Error::MultipleHandlers, 这里静默忽略。单独调用 cmd_flash run 时,
-    // 这是首次注册, 正常生效。)
-    event::install_cancel_handler(format, "flash.run", &cancel);
-
     let on_progress = make_progress_callback(format, "flash.run", step);
 
     if std::path::Path::new(soc).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("binpkg")) {
@@ -184,22 +167,62 @@ pub fn cmd_flash_run(
         return event::emit_result(format, "flash.run", "ok", serde_json::json!({"chip":"ec716s", "firmware_format":"binpkg"}));
     }
 
-    // Detect chip type from SOC info.json
     let info = luatos_soc::read_soc_info(soc)?;
     let family = info.family();
-
     if !family_flash_supported(family) {
         anyhow::bail!(
             "Unsupported chip type: {}. Supported: bk72xx, air6208, air101, air1601, air1602, air1603, air1604, ec7xx, uis8910",
             info.chip.chip_type
         );
     }
-    check_full_flash_script_support(family, script_folders)?;
+
+    let overlay = build_script_overlay(script_folders, &info, family, luac_debug)?;
+    cmd_flash_run_with_script(soc, port, baud, overlay.as_deref(), step, format, reset, tail_log_secs)
+}
+
+/// 全量刷机核心：脚本镜像已由调用方在内存中构建好。
+///
+/// `script_overlay` 为 `None` 时只刷固件；`Some` 时按芯片族覆盖/追加脚本分区。
+/// 该入口不创建/读取任何脚本目录，供 `trun` 等调用方直接传入内存字节。
+#[allow(clippy::too_many_arguments)]
+pub fn cmd_flash_run_with_script(
+    soc: &str,
+    port: &str,
+    baud: Option<u32>,
+    script_overlay: Option<&[u8]>,
+    step: u8,
+    format: &OutputFormat,
+    reset: &ResetArgs,
+    tail_log_secs: u64,
+) -> anyhow::Result<()> {
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // Set up Ctrl+C handler (容错: trun 流程下, trun 已经注册过, 第二次注册返回
+    // Error::MultipleHandlers, 这里静默忽略。单独调用 cmd_flash run 时,
+    // 这是首次注册, 正常生效。)
+    event::install_cancel_handler(format, "flash.run", &cancel);
+    let on_progress = make_progress_callback(format, "flash.run", step);
+
+    let info = luatos_soc::read_soc_info(soc)?;
+    let family = info.family();
+    if !family_flash_supported(family) {
+        anyhow::bail!(
+            "Unsupported chip type: {}. Supported: bk72xx, air6208, air101, air1601, air1602, air1603, air1604, ec7xx, uis8910",
+            info.chip.chip_type
+        );
+    }
+
+    if script_overlay.is_some() {
+        event::emit_message(format, "flash.run", MessageLevel::Info, "Applying script overlay...")?;
+    }
+    if let Some(overlay) = script_overlay {
+        // 全量刷机前校验；XT804 必须在擦除固件前发现脚本超限。
+        luatos_flash::script::validate_script_image_for_family(family, &info, overlay.len())?;
+    }
 
     match family {
         ChipFamily::Bk72xx => {
-            let folders_refs: Option<Vec<&str>> = script_folders.map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
-            let lines = luatos_flash::bk7258::flash_bk7258_with_debug(soc, folders_refs.as_deref(), port, baud, cancel, on_progress, true, Some(luac_debug))?;
+            let lines = luatos_flash::bk7258::flash_bk7258_with_overlay(soc, script_overlay, port, baud, cancel, on_progress, true, None)?;
             match format {
                 OutputFormat::Text => {
                     if !lines.is_empty() {
@@ -214,7 +237,13 @@ pub fn cmd_flash_run(
         }
         ChipFamily::Xt804 => {
             reset.execute(port)?;
-            luatos_flash::xt804::flash_xt804(soc, port, on_progress, cancel)?;
+            let on_progress_flash = make_progress_callback(format, "flash.run", step);
+            let cancel_for_script = cancel.clone();
+            luatos_flash::xt804::flash_xt804(soc, port, on_progress_flash, cancel)?;
+            if let Some(overlay) = script_overlay {
+                let on_progress_script = make_progress_callback(format, "flash.run", step);
+                luatos_flash::xt804::flash_script_data(soc, port, overlay, &on_progress_script, cancel_for_script)?;
+            }
             match format {
                 OutputFormat::Text => {
                     println!("XT804 flash completed successfully.");
@@ -223,11 +252,7 @@ pub fn cmd_flash_run(
             }
         }
         ChipFamily::Ccm4211 => {
-            let overlay = build_script_overlay(script_folders, &info, luac_debug)?;
-            if overlay.is_some() {
-                event::emit_message(format, "flash.run", MessageLevel::Info, "Applying script overlay from --script folders...")?;
-            }
-            luatos_flash::ccm4211::flash_ccm4211(soc, port, &on_progress, cancel, overlay.as_deref())?;
+            luatos_flash::ccm4211::flash_ccm4211(soc, port, &on_progress, cancel, script_overlay)?;
             match format {
                 OutputFormat::Text => {
                     println!("CCM4211 flash completed successfully.");
@@ -237,12 +262,8 @@ pub fn cmd_flash_run(
         }
         ChipFamily::Ec718 => {
             // EC718 series: auto-detect boot mode, reboot if needed
-            let overlay = build_script_overlay(script_folders, &info, luac_debug)?;
-            if overlay.is_some() {
-                event::emit_message(format, "flash.run", MessageLevel::Info, "Applying script overlay from --script folders...")?;
-            }
             let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress)?;
-            luatos_flash::ec718::flash_ec718(soc, &boot_port, &on_progress, cancel, overlay.as_deref())?;
+            luatos_flash::ec718::flash_ec718(soc, &boot_port, &on_progress, cancel, script_overlay)?;
             let chip_name = if matches!(info.chip.chip_type.to_ascii_lowercase().as_str(), "ec618" | "air780e" | "air780eg") {
                 "ec618"
             } else if matches!(info.chip.chip_type.to_ascii_lowercase().as_str(), "ec716s" | "air780el" | "air780et") {
@@ -265,12 +286,8 @@ pub fn cmd_flash_run(
         ChipFamily::Rda8910 => {
             // --port auto 支持：自动探测下载口（SPRD U2S Diag, VID 0525:PID a4a7）
             // --script 覆盖：全量刷机时把用户脚本写入 LUA 分区（与 EC718/CCM4211 行为一致）
-            let overlay = build_script_overlay(script_folders, &info, luac_debug)?;
-            if overlay.is_some() {
-                event::emit_message(format, "flash.run", MessageLevel::Info, "Applying script overlay from --script folders...")?;
-            }
             let boot_port = luatos_flash::rda8910::auto_enter_boot_mode(Some(port), &on_progress)?;
-            luatos_flash::rda8910::flash_rda8910(soc, &boot_port, &on_progress, cancel, overlay.as_deref())?;
+            luatos_flash::rda8910::flash_rda8910(soc, &boot_port, &on_progress, cancel, script_overlay)?;
             match format {
                 OutputFormat::Text => {
                     println!("RDA8910 flash completed successfully.");
@@ -346,101 +363,78 @@ pub fn cmd_flash_partition(
     if op == "flash-res" && family != ChipFamily::Bk72xx {
         anyhow::bail!("Resource download currently supports BK72xx only (chip: {})", info.chip.chip_type);
     }
-    match family {
-        ChipFamily::Bk72xx => match op {
-            "script" => {
-                let folders = script_folders.expect("script folder required");
-                let refs: Vec<&str> = folders.iter().map(|s| s.as_str()).collect();
-                luatos_flash::bk7258::flash_script_only_with_debug(soc, &refs, port, cancel, &on_progress, Some(luac_debug))?;
-            }
-            "clear-fs" => {
-                luatos_flash::bk7258::clear_filesystem(soc, port, cancel, on_progress)?;
-            }
-            "flash-fs" => {
-                let folders = script_folders.expect("script folder required");
-                let refs: Vec<&str> = folders.iter().map(|s| s.as_str()).collect();
-                luatos_flash::bk7258::flash_filesystem(soc, &refs, port, cancel, on_progress)?;
-            }
-            "flash-res" => {
-                let folders = script_folders.context("resource directory required")?;
-                let refs: Vec<&str> = folders.iter().map(String::as_str).collect();
-                let skipped = luatos_flash::bk7258::flash_resources(soc, &refs, port, cancel, on_progress)?;
-                for path in &skipped {
-                    event::emit_message(format, &command, MessageLevel::Warn, format!("跳过目录深度超过 4 层的资源: {path}"))?;
-                }
-            }
-            "clear-kv" => {
-                luatos_flash::bk7258::clear_fskv(soc, port, cancel, on_progress)?;
-            }
-            _ => unreachable!(),
-        },
-        ChipFamily::Xt804 => {
+    if op == "script" {
+        let folders = script_folders.context("script folder required")?;
+        let overlay = build_script_overlay(Some(folders), &info, family, luac_debug)?.context("script folder required")?;
+        if family == ChipFamily::Xt804 {
             reset.execute(port)?;
-            match op {
-                "script" => {
-                    let folders = script_folders.expect("script folder required");
-                    let files = collect_script_files(folders)?;
-                    luatos_flash::xt804::flash_script_only_with_debug(soc, port, &files, on_progress, cancel, Some(luac_debug))?;
-                }
+        }
+        cmd_flash_script_data(soc, port, &overlay, &on_progress, cancel)?;
+    } else {
+        match family {
+            ChipFamily::Bk72xx => match op {
                 "clear-fs" => {
-                    luatos_flash::xt804::clear_filesystem(soc, port, on_progress, cancel)?;
+                    luatos_flash::bk7258::clear_filesystem(soc, port, cancel, on_progress)?;
                 }
                 "flash-fs" => {
-                    let folders = script_folders.expect("fs folder required");
-                    let dir_strings: Vec<String> = folders.to_vec();
-                    luatos_flash::xt804::flash_filesystem(soc, port, &dir_strings, on_progress, cancel)?;
+                    let folders = script_folders.expect("script folder required");
+                    let refs: Vec<&str> = folders.iter().map(|s| s.as_str()).collect();
+                    luatos_flash::bk7258::flash_filesystem(soc, &refs, port, cancel, on_progress)?;
+                }
+                "flash-res" => {
+                    let folders = script_folders.context("resource directory required")?;
+                    let refs: Vec<&str> = folders.iter().map(String::as_str).collect();
+                    let skipped = luatos_flash::bk7258::flash_resources(soc, &refs, port, cancel, on_progress)?;
+                    for path in &skipped {
+                        event::emit_message(format, &command, MessageLevel::Warn, format!("跳过目录深度超过 4 层的资源: {path}"))?;
+                    }
                 }
                 "clear-kv" => {
-                    luatos_flash::xt804::clear_kv(soc, port, on_progress, cancel)?;
+                    luatos_flash::bk7258::clear_fskv(soc, port, cancel, on_progress)?;
                 }
                 _ => unreachable!(),
+            },
+            ChipFamily::Xt804 => {
+                reset.execute(port)?;
+                match op {
+                    "clear-fs" => {
+                        luatos_flash::xt804::clear_filesystem(soc, port, on_progress, cancel)?;
+                    }
+                    "flash-fs" => {
+                        let folders = script_folders.expect("fs folder required");
+                        let dir_strings: Vec<String> = folders.to_vec();
+                        luatos_flash::xt804::flash_filesystem(soc, port, &dir_strings, on_progress, cancel)?;
+                    }
+                    "clear-kv" => {
+                        luatos_flash::xt804::clear_kv(soc, port, on_progress, cancel)?;
+                    }
+                    _ => unreachable!(),
+                }
             }
-        }
-        ChipFamily::Ccm4211 => match op {
-            "script" => {
-                let folders = script_folders.expect("script folder required");
-                let script_data = build_script_image_checked(folders, &info, luac_debug)?;
-                luatos_flash::ccm4211::flash_script_ccm4211(soc, port, &script_data, &on_progress, cancel)?;
-            }
-            "clear-fs" => {
-                luatos_flash::ccm4211::clear_filesystem(soc, port, &on_progress, cancel)?;
-            }
-            "clear-kv" => {
-                luatos_flash::ccm4211::clear_fskv(soc, port, &on_progress, cancel)?;
-            }
-            _ => unreachable!(),
-        },
-        ChipFamily::Ec718 => match op {
-            "script" => {
-                let folders = script_folders.expect("script folder required");
-                let script_data = build_script_image_checked(folders, &info, luac_debug)?;
-                let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress)?;
-                luatos_flash::ec718::flash_script_ec718(soc, &boot_port, &script_data, &on_progress, cancel)?;
-            }
-            _ => {
+            ChipFamily::Ccm4211 => match op {
+                "clear-fs" => {
+                    luatos_flash::ccm4211::clear_filesystem(soc, port, &on_progress, cancel)?;
+                }
+                "clear-kv" => {
+                    luatos_flash::ccm4211::clear_fskv(soc, port, &on_progress, cancel)?;
+                }
+                _ => unreachable!(),
+            },
+            ChipFamily::Ec718 => {
                 anyhow::bail!(
                     "EC718 only supports 'script' partition operation currently. \
                      Use 'flash run' for full firmware flash."
                 );
             }
-        },
-        ChipFamily::Rda8910 => match op {
-            "script" => {
-                let folders = script_folders.expect("script folder required");
-                let script_data = build_script_image_checked(folders, &info, luac_debug)?;
-                // --port auto 支持：自动探测下载口（SPRD U2S Diag, VID 0525:PID a4a7）
-                let boot_port = luatos_flash::rda8910::auto_enter_boot_mode(Some(port), &on_progress)?;
-                luatos_flash::rda8910::flash_script_rda8910(soc, &boot_port, &script_data, &on_progress, cancel)?;
-            }
-            _ => {
+            ChipFamily::Rda8910 => {
                 anyhow::bail!(
                     "RDA8910 only supports 'script' partition operation currently. \
                      Use 'flash run' for full firmware flash."
                 );
             }
-        },
-        ChipFamily::Unknown | ChipFamily::Air6201 => {
-            anyhow::bail!("Unsupported chip type: {}", info.chip.chip_type);
+            ChipFamily::Unknown | ChipFamily::Air6201 => {
+                anyhow::bail!("Unsupported chip type: {}", info.chip.chip_type);
+            }
         }
     }
 
@@ -451,34 +445,6 @@ pub fn cmd_flash_partition(
         OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, &command, "ok", serde_json::json!({}))?,
     }
     Ok(())
-}
-
-/// Collect script files from multiple folders (*.lua, *.luac, *.json, etc.)
-/// 自动跳过 .git/.svn/.hg 等版本控制目录。
-fn collect_script_files(folders: &[String]) -> anyhow::Result<Vec<String>> {
-    const VCS_DIRS: &[&str] = &[".git", ".svn", ".hg"];
-
-    let mut files = Vec::new();
-    for folder in folders {
-        let dir = std::path::Path::new(folder);
-        anyhow::ensure!(dir.exists(), "脚本目录不存在: {}", folder);
-        anyhow::ensure!(dir.is_dir(), "指定路径不是目录: {}", folder);
-        for entry in walkdir::WalkDir::new(dir).into_iter().filter_entry(|e| {
-            !e.file_type().is_dir() || {
-                let s = e.file_name().to_string_lossy();
-                !VCS_DIRS.iter().any(|d| s.eq_ignore_ascii_case(d))
-            }
-        }) {
-            let entry = entry?;
-            if entry.file_type().is_file() {
-                files.push(entry.path().to_string_lossy().to_string());
-            }
-        }
-    }
-    if files.is_empty() {
-        anyhow::bail!("脚本目录中没有找到任何文件: {:?}", folders);
-    }
-    Ok(files)
 }
 
 /// Air6201 外置 SPI Flash 烧录
@@ -748,33 +714,29 @@ pub fn cmd_flash_test(
     let chip = info.chip.chip_type.clone();
     let family = info.family();
     let (_, _, log_br) = cmd_log::resolve_log_mode(chip.as_str(), info.log_baud_rate());
-    check_full_flash_script_support(family, script_folders)?;
+    let overlay = build_script_overlay(script_folders, &info, family, luac_debug)?;
+    if overlay.is_some() {
+        event::emit_message(format, "flash.test", MessageLevel::Info, "Applying script overlay...")?;
+    }
 
     let boot_lines_from_flash: Vec<String> = match family {
-        ChipFamily::Bk72xx => {
-            let folders_refs: Option<Vec<&str>> = script_folders.map(|dirs| dirs.iter().map(|s| s.as_str()).collect());
-            luatos_flash::bk7258::flash_bk7258_with_debug(soc, folders_refs.as_deref(), port, baud, cancel.clone(), on_progress, true, Some(luac_debug))?
-        }
+        ChipFamily::Bk72xx => luatos_flash::bk7258::flash_bk7258_with_overlay(soc, overlay.as_deref(), port, baud, cancel.clone(), on_progress, true, None)?,
         ChipFamily::Xt804 => {
             let on_progress2 = make_progress_callback(format, "flash.test", step);
             luatos_flash::xt804::flash_xt804(soc, port, on_progress2, cancel.clone())?;
+            if let Some(data) = overlay.as_deref() {
+                let on_progress3 = make_progress_callback(format, "flash.test", step);
+                luatos_flash::xt804::flash_script_data(soc, port, data, &on_progress3, cancel.clone())?;
+            }
             Vec::new() // XT804 does not return boot lines from flash
         }
         ChipFamily::Ccm4211 => {
             let on_progress2 = make_progress_callback(format, "flash.test", step);
-            let overlay = build_script_overlay(script_folders, &info, luac_debug)?;
-            if overlay.is_some() {
-                event::emit_message(format, "flash.test", MessageLevel::Info, "Applying script overlay from --script folders...")?;
-            }
             luatos_flash::ccm4211::flash_ccm4211(soc, port, &on_progress2, cancel.clone(), overlay.as_deref())?;
             Vec::new()
         }
         ChipFamily::Ec718 => {
             let on_progress2 = make_progress_callback(format, "flash.test", step);
-            let overlay = build_script_overlay(script_folders, &info, luac_debug)?;
-            if overlay.is_some() {
-                event::emit_message(format, "flash.test", MessageLevel::Info, "Applying script overlay from --script folders...")?;
-            }
             let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), &on_progress2)?;
             luatos_flash::ec718::flash_ec718(soc, &boot_port, &on_progress2, cancel.clone(), overlay.as_deref())?;
             Vec::new()
@@ -1056,26 +1018,47 @@ pub fn cmd_flash_test(
     Ok(all_passed)
 }
 
-/// 刷写预编译的 script.bin（跳过 Lua 编译）
-/// 适用于用 Luatools 等外部工具编译的脚本镜像
-pub fn cmd_flash_script_bin(soc: &str, port: &str, bin_path: &str, on_progress: &luatos_flash::ProgressCallback) -> anyhow::Result<()> {
-    use std::sync::{atomic::AtomicBool, Arc};
-
-    let script_data = std::fs::read(bin_path).with_context(|| format!("无法读取脚本镜像: {bin_path}"))?;
-
-    let cancel = Arc::new(AtomicBool::new(false));
+/// 刷写已经构建好的脚本镜像（不接收目录，不创建临时文件）。
+///
+/// BK7258/XT804 使用各自的字节入口；CCM4211/EC718/RDA8910 复用现有
+/// `flash_script_*`。容量校验在打开串口前完成。
+pub(crate) fn cmd_flash_script_data(
+    soc: &str,
+    port: &str,
+    script_data: &[u8],
+    on_progress: &luatos_flash::ProgressCallback,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> anyhow::Result<()> {
     let info = luatos_soc::read_soc_info(soc)?;
-    luatos_flash::validate_script_image(&info, script_data.len(), 1)?;
+    let family = info.family();
+    if !family_flash_supported(family) {
+        anyhow::bail!(
+            "--bin script flash not supported for chip '{}'. Use 'flash script' with --script folders instead.",
+            info.chip.chip_type
+        );
+    }
+    luatos_flash::script::validate_script_image_for_family(family, &info, script_data.len())?;
 
-    match info.family() {
-        ChipFamily::Ec718 => {
-            let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), on_progress)?;
-            luatos_flash::ec718::flash_script_ec718(soc, &boot_port, &script_data, on_progress, cancel)?;
+    match family {
+        ChipFamily::Bk72xx => {
+            luatos_flash::bk7258::flash_script_data(soc, script_data, port, cancel, on_progress)?;
+        }
+        ChipFamily::Xt804 => {
+            luatos_flash::xt804::flash_script_data(soc, port, script_data, on_progress, cancel)?;
         }
         ChipFamily::Ccm4211 => {
-            luatos_flash::ccm4211::flash_script_ccm4211(soc, port, &script_data, on_progress, cancel)?;
+            luatos_flash::ccm4211::flash_script_ccm4211(soc, port, script_data, on_progress, cancel)?;
         }
-        _ => {
+        ChipFamily::Ec718 => {
+            let boot_port = luatos_flash::ec718::auto_enter_boot_mode(Some(port), on_progress)?;
+            luatos_flash::ec718::flash_script_ec718(soc, &boot_port, script_data, on_progress, cancel)?;
+        }
+        ChipFamily::Rda8910 => {
+            // --port auto 支持：自动探测下载口（SPRD U2S Diag, VID 0525:PID a4a7）
+            let boot_port = luatos_flash::rda8910::auto_enter_boot_mode(Some(port), on_progress)?;
+            luatos_flash::rda8910::flash_script_rda8910(soc, &boot_port, script_data, on_progress, cancel)?;
+        }
+        ChipFamily::Unknown | ChipFamily::Air6201 => {
             anyhow::bail!(
                 "--bin script flash not supported for chip '{}'. Use 'flash script' with --script folders instead.",
                 info.chip.chip_type
@@ -1084,6 +1067,16 @@ pub fn cmd_flash_script_bin(soc: &str, port: &str, bin_path: &str, on_progress: 
     }
 
     Ok(())
+}
+
+/// 刷写预编译的 script.bin（跳过 Lua 编译）
+/// 适用于用 Luatools 等外部工具编译的脚本镜像
+pub fn cmd_flash_script_bin(soc: &str, port: &str, bin_path: &str, on_progress: &luatos_flash::ProgressCallback) -> anyhow::Result<()> {
+    use std::sync::{atomic::AtomicBool, Arc};
+
+    let script_data = std::fs::read(bin_path).with_context(|| format!("无法读取脚本镜像: {bin_path}"))?;
+    let cancel = Arc::new(AtomicBool::new(false));
+    cmd_flash_script_data(soc, port, &script_data, on_progress, cancel)
 }
 
 pub fn print_script_result(format: &OutputFormat) -> anyhow::Result<()> {
@@ -1216,13 +1209,16 @@ mod tests {
     }
 
     #[test]
-    fn xt804_full_flash_rejects_script_overlay_before_serial_connection() {
+    fn xt804_full_flash_builds_script_and_checks_capacity_before_serial_connection() {
         let dir = tempfile::tempdir().unwrap();
         let soc = write_zero_capacity_soc(dir.path(), "air6208");
-        let folders = vec!["missing-script-folder".to_string()];
+        let scripts = dir.path().join("lua");
+        std::fs::create_dir(&scripts).unwrap();
+        std::fs::write(scripts.join("main.lua"), b"print('hi')").unwrap();
+        let folders = vec![scripts.to_str().unwrap().to_string()];
         let reset = ResetArgs::default();
         let error = cmd_flash_run(soc.to_str().unwrap(), "PR_TEST_NO_SERIAL_PORT", None, Some(&folders), 0, 10, &OutputFormat::Text, &reset, 0).unwrap_err();
-        assert!(error.to_string().contains("XT804 全量刷机暂不支持 --script"));
+        assert!(error.to_string().contains("超过分区容量（0 字节"), "{error}");
         let error = cmd_flash_test(
             soc.to_str().unwrap(),
             "PR_TEST_NO_SERIAL_PORT",
@@ -1236,7 +1232,7 @@ mod tests {
             &OutputFormat::Text,
         )
         .unwrap_err();
-        assert!(error.to_string().contains("XT804 全量刷机暂不支持 --script"));
+        assert!(error.to_string().contains("超过分区容量（0 字节"), "{error}");
     }
 
     #[test]

@@ -106,6 +106,29 @@ fn oversized_script_directory_is_rejected_by_bk_and_xt_before_serial() {
 }
 
 #[test]
+fn oversized_script_data_rejected_by_bk_and_xt_before_serial() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let data = vec![0u8; 500 * 1024];
+    let progress: ProgressCallback = Box::new(|_| {});
+
+    for chip in ["bk72xx", "air6208"] {
+        std::fs::write(source.join("info.json"), serde_json::to_vec(&info(chip, 400.into())).unwrap()).unwrap();
+        let soc = dir.path().join(format!("{chip}.soc"));
+        luatos_soc::pack_soc_zip(&source, soc.to_str().unwrap()).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let error = if chip == "bk72xx" {
+            luatos_flash::bk7258::flash_script_data(soc.to_str().unwrap(), &data, "INVALID_PORT", cancel, &progress).unwrap_err()
+        } else {
+            luatos_flash::xt804::flash_script_data(soc.to_str().unwrap(), "INVALID_PORT", &data, &progress, cancel).unwrap_err()
+        };
+        let error = error.to_string();
+        assert!(error.contains("超过分区容量（409600 字节"), "{chip}: {error}");
+    }
+}
+
+#[test]
 fn ccm_full_flash_checks_bundled_script_and_overlay_before_loading_ramrun() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("source");

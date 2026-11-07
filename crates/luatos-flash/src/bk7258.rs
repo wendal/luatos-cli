@@ -665,6 +665,39 @@ pub fn flash_bk7258_with_debug(
     capture_boot_log: bool,
     luac_debug: Option<u8>,
 ) -> Result<Vec<String>> {
+    flash_bk7258_impl(soc_path, script_folders, None, port, baud_rate, cancel, on_progress, capture_boot_log, luac_debug)
+}
+
+/// 全量刷机并传入已构建好的脚本镜像。
+///
+/// `script_overlay` 为 `None` 时等价于“只刷固件”；这与 `--script` 的目录入口
+/// 分开，便于 `trun` 等调用方把内存镜像直接交给 BSP，避免临时目录。
+#[allow(clippy::too_many_arguments)]
+pub fn flash_bk7258_with_overlay(
+    soc_path: &str,
+    script_overlay: Option<&[u8]>,
+    port: &str,
+    baud_rate: Option<u32>,
+    cancel: Arc<AtomicBool>,
+    on_progress: ProgressCallback,
+    capture_boot_log: bool,
+    luac_debug: Option<u8>,
+) -> Result<Vec<String>> {
+    flash_bk7258_impl(soc_path, None, script_overlay, port, baud_rate, cancel, on_progress, capture_boot_log, luac_debug)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn flash_bk7258_impl(
+    soc_path: &str,
+    script_folders: Option<&[&str]>,
+    script_overlay: Option<&[u8]>,
+    port: &str,
+    baud_rate: Option<u32>,
+    cancel: Arc<AtomicBool>,
+    on_progress: ProgressCallback,
+    capture_boot_log: bool,
+    luac_debug: Option<u8>,
+) -> Result<Vec<String>> {
     cancel.store(false, Ordering::Relaxed);
 
     on_progress(&FlashProgress::info("Preparing", 1.0, "Reading .soc…"));
@@ -694,14 +727,19 @@ pub fn flash_bk7258_with_debug(
         &format!("Firmware: {} bytes @ 0x{:x} (native mode)", rom_data.len(), bl_addr),
     ));
 
-    // Optionally build script.bin
-    let script_payload: Option<(Vec<u8>, u32)> = if let Some(folders) = script_folders {
+    // Optionally use a prebuilt script image or build script.bin from folders
+    let script_payload: Option<(Vec<u8>, u32)> = if let Some(overlay) = script_overlay {
+        crate::validate_script_image(&info, overlay.len(), SECTOR_SIZE)?;
+        let sa = parse_addr(info.download.script_addr.as_deref().unwrap_or("0x200000")).unwrap_or(0x200000) as u32;
+        on_progress(&FlashProgress::info("Building", 5.0, &format!("Script: {} bytes @ 0x{:x}", overlay.len(), sa)));
+        Some((overlay.to_vec(), sa))
+    } else if let Some(folders) = script_folders {
         let paths: Vec<&Path> = folders.iter().map(|f| Path::new(*f)).collect();
         let any_valid = paths.iter().any(|p| p.is_dir());
         if any_valid {
             on_progress(&FlashProgress::info("Building", 3.0, "Building script.bin from Lua files…"));
             let valid_paths: Vec<&Path> = paths.into_iter().filter(|p| p.is_dir()).collect();
-            match build_script_bin(&valid_paths, &info, luac_debug) {
+            match build_script_image(&valid_paths, &info, luac_debug, &[], false) {
                 Ok(data) => {
                     crate::validate_script_image(&info, data.len(), SECTOR_SIZE)?;
                     let sa = parse_addr(info.download.script_addr.as_deref().unwrap_or("0x200000")).unwrap_or(0x200000) as u32;
@@ -818,12 +856,14 @@ fn collect_script_files_recursive(folders: &[&Path]) -> Result<Vec<std::path::Pa
     Ok(files)
 }
 
-/// Build a LuaDB script.bin from Lua files in `folder`.
+/// Build a LuaDB script.bin from Lua files in `folders`.
 ///
 /// Subdirectories are included. LuaDB 按文件名查找（`require("lcd_drv")`），
-/// 因此入口名用 basename；同名文件后者覆盖前者。
-fn build_script_bin(folders: &[&Path], info: &SocInfo, luac_debug: Option<u8>) -> Result<Vec<u8>> {
-    let use_bkcrc = info.use_bkcrc();
+/// 因此入口名用 basename；同名文件后者覆盖前者。`extra_entries` 是最终字节，
+/// 在目录产物之后合入（ctx.json 等）；`force_bk_crc` 用于保留 trun 对 BK
+/// 强制 CRC 的历史行为。
+pub fn build_script_image(folders: &[&Path], info: &SocInfo, luac_debug: Option<u8>, extra_entries: &[luatos_luadb::LuadbEntry], force_bk_crc: bool) -> Result<Vec<u8>> {
+    let use_bkcrc = info.use_bkcrc() || force_bk_crc;
     let use_luac = info.script_use_luac();
     let bitw = info.script_bitw();
     let debug_mode = luac_debug.unwrap_or_else(|| info.script_debug_mode());
@@ -839,7 +879,7 @@ fn build_script_bin(folders: &[&Path], info: &SocInfo, luac_debug: Option<u8>) -
         }
     }
 
-    let mut entries: Vec<luatos_luadb::LuadbEntry> = Vec::new();
+    let mut entries: std::collections::BTreeMap<String, Vec<u8>> = std::collections::BTreeMap::new();
 
     for (name, path) in by_name {
         let data = std::fs::read(&path).with_context(|| format!("Cannot read {}", path.display()))?;
@@ -855,16 +895,18 @@ fn build_script_bin(folders: &[&Path], info: &SocInfo, luac_debug: Option<u8>) -
             (name, data)
         };
 
-        entries.push(luatos_luadb::LuadbEntry {
-            filename: final_name,
-            data: final_data,
-        });
+        entries.insert(final_name, final_data);
+    }
+
+    for entry in extra_entries {
+        entries.insert(entry.filename.clone(), entry.data.clone());
     }
 
     if entries.is_empty() {
         bail!("No files found in script folders");
     }
 
+    let entries: Vec<luatos_luadb::LuadbEntry> = entries.into_iter().map(|(filename, data)| luatos_luadb::LuadbEntry { filename, data }).collect();
     let mut data = luatos_luadb::pack_luadb(&entries)?;
     if use_bkcrc {
         data = luatos_luadb::add_bk_crc(&data);
@@ -947,26 +989,35 @@ pub fn flash_script_only_with_debug(
     cancel.store(false, Ordering::Relaxed);
     on_progress(&FlashProgress::info("Preparing", 1.0, "Parsing SOC info…"));
 
-    // Parse SOC info
-    let file = std::fs::File::open(soc_path).with_context(|| format!("Cannot open {soc_path}"))?;
-    let mut archive = zip::ZipArchive::new(file)?;
-    let info: SocInfo = {
-        let info_file = archive.by_name("info.json").context("info.json missing")?;
-        serde_json::from_reader(info_file)?
-    };
+    let info = luatos_soc::read_soc_info(soc_path)?;
+    on_progress(&FlashProgress::info(
+        "Preparing",
+        3.0,
+        &format!("Script addr: 0x{:06x}, baud: {}", info.script_addr(), info.flash_baud_rate()),
+    ));
 
+    on_progress(&FlashProgress::info("Building", 5.0, "Packing script LuaDB…"));
+    let paths: Vec<&Path> = script_folders.iter().map(|f| Path::new(*f)).collect();
+    let script_data = build_script_image(&paths, &info, luac_debug, &[], false)?;
+
+    flash_script_data_impl(&info, &script_data, port, cancel, on_progress)
+}
+
+/// 刷写已经构建好的脚本镜像（LuaDB，可能已带 BK CRC）。
+///
+/// 该入口不接收目录，供 `trun` 等调用方把内存镜像直接交给 BSP。
+pub fn flash_script_data(soc_path: &str, script_data: &[u8], port: &str, cancel: Arc<AtomicBool>, on_progress: &ProgressCallback) -> Result<()> {
+    cancel.store(false, Ordering::Relaxed);
+    let info = luatos_soc::read_soc_info(soc_path)?;
+    flash_script_data_impl(&info, script_data, port, cancel, on_progress)
+}
+
+fn flash_script_data_impl(info: &SocInfo, script_data: &[u8], port: &str, cancel: Arc<AtomicBool>, on_progress: &ProgressCallback) -> Result<()> {
     let flash_br = info.flash_baud_rate();
     let script_addr = info.script_addr();
 
     on_progress(&FlashProgress::info("Preparing", 3.0, &format!("Script addr: 0x{script_addr:06x}, baud: {flash_br}")));
-
-    // Build LuaDB script
-    on_progress(&FlashProgress::info("Building", 5.0, "Packing script LuaDB…"));
-    let script_data = {
-        let paths: Vec<&Path> = script_folders.iter().map(|f| Path::new(*f)).collect();
-        build_script_bin(&paths, &info, luac_debug)?
-    };
-    crate::validate_script_image(&info, script_data.len(), SECTOR_SIZE)?;
+    crate::validate_script_image(info, script_data.len(), SECTOR_SIZE)?;
 
     // Connect bootloader
     let mut serial = connect_bootloader(port, flash_br, &cancel, on_progress)?;
@@ -976,7 +1027,7 @@ pub fn flash_script_only_with_debug(
     }
 
     // Flash script
-    flash_data(&mut *serial, &script_data, script_addr, 30.0, 95.0, "Script", &cancel, on_progress)?;
+    flash_data(&mut *serial, script_data, script_addr, 30.0, 95.0, "Script", &cancel, on_progress)?;
 
     reboot_and_close(serial);
     on_progress(&FlashProgress::done_ok("Script flash complete! Device is rebooting."));
@@ -1041,7 +1092,7 @@ pub fn flash_filesystem(soc_path: &str, script_folders: &[&str], port: &str, can
     on_progress(&FlashProgress::info("Building", 3.0, "Packing filesystem LuaDB…"));
     let fs_data = {
         let paths: Vec<&Path> = script_folders.iter().map(|f| Path::new(*f)).collect();
-        build_script_bin(&paths, &info, None)?
+        build_script_image(&paths, &info, None, &[], false)?
     };
     if fs_data.len() > fs_size {
         bail!("Filesystem data ({} bytes) exceeds partition ({} bytes)", fs_data.len(), fs_size);

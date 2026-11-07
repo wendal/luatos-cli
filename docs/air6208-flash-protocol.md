@@ -455,6 +455,21 @@ Step 9: 复位设备
   └─ 等待 500ms
 ```
 
+### 全量刷机 + 脚本覆盖（两阶段）
+
+XT804 的 `rom.file` 是完整固件镜像，脚本分区不在其中；因此 `flash run --script` 采用：
+
+```
+1. 在内存构建 LuaDB 脚本镜像，按容量（1024 字节对齐）预校验
+2. 全量刷机：复位 → bootloader → 整片擦除 → XMODEM 写 ROM
+3. 再次进入 bootloader
+4. 仅脚本阶段：LuaDB + XT804 镜像头 → XMODEM 写 script 分区
+5. 复位设备
+```
+
+两阶段之间不生成 combined.soc，也不创建任何临时目录。若第二阶段失败，固件已写入、脚本未更新，
+可重新执行 `flash script --script <目录>` 恢复。
+
 ### 仅刷脚本
 
 ```
@@ -470,7 +485,7 @@ Step 9: 复位设备
 
 ```
 1. 解析 .soc 获取 fs_addr 和 fs_size
-2. 构建 LittleFS 镜像
+2. 多个 --script 目录按顺序直接合并进 LittleFS 镜像（后目录覆盖同名文件，无中间目录）
 3. 包装 XT804 镜像头 (img_type=1)
 4. 连接 bootloader
 5. XMODEM 传输
