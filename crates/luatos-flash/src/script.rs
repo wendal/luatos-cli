@@ -3,7 +3,7 @@
 //! 刷机路径只传递最终字节镜像；各芯片的目录/文件名语义由对应构建器负责：
 //! - BK7258：basename 合并，必要时加 BK CRC16
 //! - XT804：basename 扁平 LuaDB（不加 XT804 镜像头）
-//! - CCM4211 / EC718 / RDA8910：相对路径 LuaDB
+//! - CCM4211 / EC718 / RDA8910：basename 合并
 //!
 //! 该模块不创建任何临时文件；`ctx.json` 等附加条目以 [`LuadbEntry`] 内存条目传入。
 

@@ -125,9 +125,11 @@ pub fn collect_script_entries(dirs: &[&Path]) -> Result<Vec<LuadbEntry>> {
     // Use a map to handle deduplication: later dirs override earlier ones.
     let mut map = std::collections::HashMap::<String, Vec<u8>>::new();
 
-    for_each_script_file(dirs, |filename, path| {
+    for_each_script_file(dirs, |dir, path| {
+        let rel_path = path.strip_prefix(dir).context("failed to compute relative path")?;
+        let filename = rel_path.to_string_lossy().replace('\\', "/");
         let data = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-        map.insert(filename.to_string(), data);
+        map.insert(filename, data);
         Ok(())
     })?;
 
@@ -142,20 +144,21 @@ fn is_main(name: &str) -> bool {
 
 /// 遍历多个脚本目录，按“后目录覆盖前目录”的语义逐个访问文件。
 ///
-/// 只负责计算相对路径并跳过 VCS 目录；是否编译由调用方决定。
-fn for_each_script_file(dirs: &[&Path], mut visit: impl FnMut(&str, &Path) -> Result<()>) -> Result<()> {
+/// 每个目录按文件名顺序遍历，自动跳过 VCS 目录。
+fn for_each_script_file(dirs: &[&Path], mut visit: impl FnMut(&Path, &Path) -> Result<()>) -> Result<()> {
     for dir in dirs {
         anyhow::ensure!(dir.exists(), "脚本目录不存在: {}", dir.display());
-        for entry in WalkDir::new(dir).into_iter().filter_entry(|e| !e.file_type().is_dir() || !is_vcs_dir(e.file_name())) {
+        for entry in WalkDir::new(dir)
+            .sort_by_file_name()
+            .into_iter()
+            .filter_entry(|e| !e.file_type().is_dir() || !is_vcs_dir(e.file_name()))
+        {
             let entry = entry?;
             if !entry.file_type().is_file() {
                 continue;
             }
 
-            // 使用相对路径作为文件名，支持子目录结构
-            let rel_path = entry.path().strip_prefix(dir).context("failed to compute relative path")?;
-            let filename = rel_path.to_string_lossy().into_owned().replace('\\', "/");
-            visit(&filename, entry.path())?;
+            visit(dir, entry.path())?;
         }
     }
     Ok(())
@@ -179,26 +182,23 @@ fn entries_from_map(map: std::collections::HashMap<String, Vec<u8>>) -> Vec<Luad
 /// 收集脚本目录中的文件。非 `.lua` 文件原样读取；`.lua` 文件在 `use_luac`
 /// 为真时编译为 `.luac`，全程在内存完成，不创建任何临时目录。
 ///
-/// 后目录覆盖前目录的同名文件；`main.lua` / `main.luac` 排在最前。
+/// 条目只保留文件名。同名条目以后遍历到的文件为准；`main.lua` / `main.luac` 排在最前。
 pub fn collect_script_entries_compiled(dirs: &[&Path], use_luac: bool, bitw: u32, debug_mode: u8) -> Result<Vec<LuadbEntry>> {
     let mut map = std::collections::HashMap::<String, Vec<u8>>::new();
 
-    for_each_script_file(dirs, |filename, path| {
+    for_each_script_file(dirs, |_, path| {
+        let filename = path.file_name().context("entry has no filename")?.to_string_lossy();
         let data = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
 
-        if use_luac && Path::new(filename).extension().and_then(|e| e.to_str()) == Some("lua") {
-            let chunk_name = format!(
-                "@{}",
-                Path::new(filename)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| filename.to_string())
-            );
+        let (name, data) = if use_luac && path.extension().and_then(|e| e.to_str()) == Some("lua") {
+            let chunk_name = format!("@{filename}");
             let bytecode = compile_lua_bytes(&data, &chunk_name, debug_mode, bitw).with_context(|| format!("Failed to compile {}", path.display()))?;
-            let luac_name = Path::new(filename).with_extension("luac").to_string_lossy().into_owned().replace('\\', "/");
-            map.insert(luac_name, bytecode);
+            (format!("{filename}c"), bytecode)
         } else {
-            map.insert(filename.to_string(), data);
+            (filename.into_owned(), data)
+        };
+        if map.insert(name.clone(), data).is_some() {
+            log::warn!("script name collision: {name} (using {})", path.display());
         }
 
         Ok(())
@@ -214,7 +214,7 @@ pub fn build_script_image_with_entries(script_dirs: &[&Path], extra_entries: &[L
     let base = collect_script_entries_compiled(script_dirs, use_luac, bitw, debug_mode)?;
     let mut map: std::collections::HashMap<String, Vec<u8>> = base.into_iter().map(|entry| (entry.filename, entry.data)).collect();
     for entry in extra_entries {
-        map.insert(entry.filename.clone(), entry.data.clone());
+        map.insert(entry.basename().to_owned(), entry.data.clone());
     }
 
     let entries = entries_from_map(map);
@@ -528,7 +528,9 @@ mod tests {
         fs::write(first.path().join("only_first.txt"), b"first").unwrap();
 
         let second = TempDir::new().unwrap();
-        fs::write(second.path().join("main.lua"), b"return 2").unwrap();
+        let nested = second.path().join("parent_directory_longer_than_the_name_limit");
+        fs::create_dir(&nested).unwrap();
+        fs::write(nested.join("main.lua"), b"return 2").unwrap();
         fs::write(second.path().join("only_second.txt"), b"second").unwrap();
 
         let entries = super::collect_script_entries_compiled(&[first.path(), second.path()], true, 32, crate::LUAC_DEBUG_ALL).unwrap();
@@ -539,18 +541,23 @@ mod tests {
 
         let second_only = super::collect_script_entries_compiled(&[second.path()], true, 32, crate::LUAC_DEBUG_ALL).unwrap();
         assert_eq!(entries[0].data, second_only[0].data, "后目录的 main.lua 应覆盖前目录");
+
+        let image = build_script_image(&[second.path()], false, 32, false, crate::LUAC_DEBUG_ALL).unwrap();
+        assert_eq!(&image[32..40], b"main.lua");
     }
 
     #[test]
     fn build_script_image_with_entries_overlays_ctx_json() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("main.lua"), b"print('hi')").unwrap();
+        fs::write(dir.path().join("ctx.json"), b"old data").unwrap();
 
         let extra = LuadbEntry {
-            filename: "ctx.json".into(),
+            filename: r"inputs\long_parent_directory/ctx.json".into(),
             data: br#"{"test_id":"x"}"#.to_vec(),
         };
         let image = super::build_script_image_with_entries(&[dir.path()], &[extra], true, 32, false, crate::LUAC_DEBUG_ALL).unwrap();
+        assert_eq!(&image[18..20], &[2, 0]);
         assert!(image.windows(b"ctx.json".len()).any(|window| window == b"ctx.json"));
         assert!(image.windows(b"\"test_id\"".len()).any(|window| window == b"\"test_id\""));
         assert!(image.windows(b"main.luac".len()).any(|window| window == b"main.luac"));

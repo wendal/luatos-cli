@@ -23,7 +23,7 @@
 按芯片族选择构建器：
   BK7258    basename 合并 + 可选 BK CRC
   XT804     basename 扁平 LuaDB（不加 XT804 头）
-  CCM/EC/RDA 相对路径 LuaDB
+  CCM/EC/RDA basename 合并
         │
         ▼
 Vec<u8> script_image

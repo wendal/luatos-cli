@@ -899,7 +899,7 @@ pub fn build_script_image(folders: &[&Path], info: &SocInfo, luac_debug: Option<
     }
 
     for entry in extra_entries {
-        entries.insert(entry.filename.clone(), entry.data.clone());
+        entries.insert(entry.basename().to_owned(), entry.data.clone());
     }
 
     if entries.is_empty() {

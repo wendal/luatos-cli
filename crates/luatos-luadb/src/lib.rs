@@ -12,6 +12,13 @@ pub struct LuadbEntry {
     pub data: Vec<u8>,
 }
 
+impl LuadbEntry {
+    /// Return the final filename component for use as the LuaDB entry name.
+    pub fn basename(&self) -> &str {
+        self.filename.rsplit(['/', '\\']).next().unwrap_or(&self.filename)
+    }
+}
+
 const LUADB_MAGIC: &[u8] = &[0x01, 0x04, 0x5A, 0xA5, 0x5A, 0xA5];
 
 /// Pack file entries into a LuaDB binary (script.bin).
@@ -41,16 +48,17 @@ fn pack_luadb_with_name_limit(entries: &[LuadbEntry], name_limit: usize) -> Resu
     // Per-file entries
     for e in entries {
         out.extend_from_slice(LUADB_MAGIC);
+        let filename = e.basename();
         ensure!(
-            e.filename.len() <= name_limit,
+            filename.len() <= name_limit,
             "LuaDB 文件名过长 (最大{}字节，实际{}字节): {}",
             name_limit,
-            e.filename.len(),
-            e.filename
+            filename.len(),
+            filename
         );
         out.push(0x02);
-        out.push(e.filename.len() as u8);
-        out.extend_from_slice(e.filename.as_bytes());
+        out.push(filename.len() as u8);
+        out.extend_from_slice(filename.as_bytes());
         let sz = u32::try_from(e.data.len())?;
         out.extend_from_slice(&[0x03, 0x04, sz as u8, (sz >> 8) as u8, (sz >> 16) as u8, (sz >> 24) as u8]);
         out.extend_from_slice(&[0xFE, 0x02, 0xFF, 0xFF]); // CRC (unused)
@@ -108,13 +116,14 @@ mod tests {
     #[test]
     fn pack_round_trip() {
         let entries = vec![LuadbEntry {
-            filename: "main.lua".into(),
+            filename: r"scripts\parent_directory_longer_than_the_name_limit\main.lua".into(),
             data: b"print('hello')".to_vec(),
         }];
         let data = pack_luadb(&entries).unwrap();
         assert_eq!(&data[0..6], LUADB_MAGIC);
         // File count = 1 at offset 18
         assert_eq!(data[18], 1);
+        assert_eq!(&data[30..40], b"\x02\x08main.lua");
     }
 
     #[test]
