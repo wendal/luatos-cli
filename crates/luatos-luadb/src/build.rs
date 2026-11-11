@@ -1,52 +1,25 @@
 //! Lua compilation and filesystem synthesis for LuaDB images.
 
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 use walkdir::WalkDir;
 
-use crate::embedded_helpers::{ensure_embedded_helper, ensure_mklfs_helper};
+use crate::embedded_helpers::ensure_mklfs_helper;
 use crate::romfs::{self, RomfsFile};
 use crate::{add_bk_crc, pack_luadb, LuadbEntry};
 
 /// 版本控制目录名称，遍历文件时需跳过
 const VCS_DIRS: &[&str] = &[".git", ".svn", ".hg"];
 
-/// Compile Lua source bytes to bytecode using the embedded Lua 5.3 compiler.
+/// Compile Lua source bytes to bytecode using the statically linked in-process Lua 5.3 compiler.
 ///
 /// `chunk_name` is the name shown in error messages (typically `@filename.lua`).
 /// `debug_mode` 为调试信息保留级别：0=无、1=仅行号、2=仅变量名、99=全部（非法值回退 99）。
 pub fn compile_lua_bytes(source: &[u8], chunk_name: &str, debug_mode: u8, bitw: u32) -> Result<Vec<u8>> {
-    let helper = ensure_embedded_helper(bitw).map_err(|e| anyhow::anyhow!("failed to prepare Lua {bitw}-bit compiler: {e}"))?;
-
-    let mut child = Command::new(&helper)
-        .arg(chunk_name)
-        .arg(crate::normalize_luac_debug(debug_mode).to_string())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("failed to spawn Lua {}-bit compiler from {}", bitw, helper.display()))?;
-
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin.write_all(source).context("failed to write source to Lua compiler")?;
-    }
-
-    let output = child.wait_with_output().context("failed to wait for Lua compiler")?;
-
-    if output.status.success() {
-        Ok(output.stdout)
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        if stderr.is_empty() {
-            bail!("Lua {}-bit compiler failed", bitw);
-        } else {
-            bail!("{}", stderr);
-        }
-    }
+    crate::luac::compile(source, chunk_name, debug_mode, bitw)
 }
 
 /// Compile a single `.lua` file to `.luac` using the embedded compiler.
@@ -512,6 +485,37 @@ mod tests {
         let source = b"if then end end";
         let result = super::compile_lua_bytes(source, "@bad.lua", crate::LUAC_DEBUG_ALL, 32);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn compile_lua_bytes_without_helper_cache() {
+        const CHILD: &str = "LUATOS_CLI_LUAC_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            for bitw in [32, 64] {
+                let bytecode = super::compile_lua_bytes(b"print('hello')", "@test.lua", crate::LUAC_DEBUG_ALL, bitw).unwrap();
+                assert_eq!(&bytecode[..4], b"\x1bLua");
+            }
+            return;
+        }
+
+        let dir = TempDir::new().unwrap();
+        let blocked = dir.path().join("cache-is-a-regular-file");
+        fs::write(&blocked, b"not a directory").unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["build::tests::compile_lua_bytes_without_helper_cache", "--exact", "--nocapture", "--test-threads=1"])
+            .env(CHILD, "1");
+        for name in ["LUATOS_CLI_HELPER_CACHE", "LOCALAPPDATA", "XDG_CACHE_HOME", "HOME", "TMPDIR", "TMP", "TEMP", "USERPROFILE"] {
+            command.env(name, &blocked);
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "child failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"), "child did not run the isolated test");
     }
 
     #[test]

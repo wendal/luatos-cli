@@ -1,113 +1,157 @@
+#include "lprefix.h"
+
 #include "lua.h"
 #include "lauxlib.h"
 #include "lobject.h"
 #include "lundump.h"
 
-#include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef _WIN32
-#include <io.h>
-#include <fcntl.h>
-#endif
+typedef struct {
+    unsigned char *data;
+    size_t len;
+    size_t cap;
+} LuacBuffer;
 
-static int write_stdout(lua_State *L, const void *p, size_t sz, void *ud) {
+typedef struct {
+    const unsigned char *source;
+    size_t source_len;
+    const char *chunk_name;
+    int debug_mode;
+    LuacBuffer *output;
+} LuacRequest;
+
+static void buffer_init(LuacBuffer *buffer) {
+    buffer->data = NULL;
+    buffer->len = 0;
+    buffer->cap = 0;
+}
+
+static void buffer_release(LuacBuffer *buffer) {
+    free(buffer->data);
+    buffer_init(buffer);
+}
+
+static int buffer_append(LuacBuffer *buffer, const void *data, size_t size) {
+    size_t required;
+    unsigned char *new_data;
+    if (size == 0) {
+        return 0;
+    }
+    if (size > SIZE_MAX - buffer->len) {
+        return 1;
+    }
+    required = buffer->len + size;
+    if (required > buffer->cap) {
+        size_t new_cap = buffer->cap == 0 ? 8192 : buffer->cap;
+        while (new_cap < required) {
+            if (new_cap > SIZE_MAX / 2) {
+                new_cap = required;
+                break;
+            }
+            new_cap *= 2;
+        }
+        new_data = (unsigned char *)realloc(buffer->data, new_cap);
+        if (new_data == NULL) {
+            return 1;
+        }
+        buffer->data = new_data;
+        buffer->cap = new_cap;
+    }
+    memcpy(buffer->data + buffer->len, data, size);
+    buffer->len += size;
+    return 0;
+}
+
+static int write_bytecode(lua_State *L, const void *data, size_t size, void *ud) {
     (void)L;
-    FILE *out = (FILE *)ud;
-    return fwrite(p, 1, sz, out) == sz ? 0 : 1;
+    return buffer_append((LuacBuffer *)ud, data, size);
 }
 
-static unsigned char *read_stdin(size_t *out_len) {
-    size_t cap = 8192;
-    size_t len = 0;
-    unsigned char *buf = (unsigned char *)malloc(cap);
-    if (buf == NULL) {
-        return NULL;
-    }
-
-    for (;;) {
-        if (len == cap) {
-            size_t new_cap = cap * 2;
-            unsigned char *new_buf = (unsigned char *)realloc(buf, new_cap);
-            if (new_buf == NULL) {
-                free(buf);
-                return NULL;
-            }
-            buf = new_buf;
-            cap = new_cap;
-        }
-
-        size_t n = fread(buf + len, 1, cap - len, stdin);
-        len += n;
-        if (n == 0) {
-            if (ferror(stdin)) {
-                free(buf);
-                return NULL;
-            }
-            break;
-        }
-    }
-
-    *out_len = len;
-    return buf;
+static void set_error(LuacBuffer *error, const char *message) {
+    buffer_append(error, message, strlen(message));
 }
 
-int main(int argc, char **argv) {
-#ifdef _WIN32
-    _setmode(_fileno(stdin), _O_BINARY);
-    _setmode(_fileno(stdout), _O_BINARY);
-#endif
+static int compile_protected(lua_State *L) {
+    LuacRequest *request = (LuacRequest *)lua_touserdata(L, 1);
+    int status = luaL_loadbufferx(L, (const char *)request->source, request->source_len, request->chunk_name, NULL);
+    const Proto *f;
+    if (status != LUA_OK) {
+        return lua_error(L);
+    }
+    f = ((const LClosure *)lua_topointer(L, -1))->p;
+    if (luaU_dump_ex(L, f, write_bytecode, request->output, request->debug_mode) != 0) {
+        return luaL_error(L, "luaU_dump_ex failed");
+    }
+    return 0;
+}
 
-    if (argc != 3) {
-        fprintf(stderr, "usage: %s <chunk_name> <debug_mode>\n", argv[0]);
-        fprintf(stderr, "  debug_mode: 0=none, 1=line numbers only, 2=variable names only, 99=all (invalid values fall back to 99)\n");
+/* 返回值：0=成功，1=编译失败，2=参数错误。非空输出缓冲区在任何返回后都可安全释放。 */
+static int compile_impl(const unsigned char *source, size_t source_len, const char *chunk_name, int debug_mode, LuacBuffer *output, LuacBuffer *error) {
+    lua_State *L;
+    LuacRequest request;
+    int status;
+    if (output != NULL) {
+        buffer_init(output);
+    }
+    if (error != NULL) {
+        buffer_init(error);
+    }
+    if (output == NULL || error == NULL) {
+        if (error != NULL) {
+            set_error(error, "invalid compiler argument");
+        }
+        return 2;
+    }
+    if ((source == NULL && source_len != 0) || chunk_name == NULL) {
+        set_error(error, "invalid compiler argument");
         return 2;
     }
 
-    const char *chunk_name = argv[1];
-    int mode = atoi(argv[2]);
-    /* 调试信息级别白名单：0/1/2/99，非法值回退 99 */
-    if (mode != 0 && mode != 1 && mode != 2 && mode != 99) {
-        mode = 99;
-    }
-
-    size_t source_len = 0;
-    unsigned char *source = read_stdin(&source_len);
-    if (source == NULL) {
-        fprintf(stderr, "failed to read source from stdin\n");
-        return 1;
-    }
-
-    lua_State *L = luaL_newstate();
+    L = luaL_newstate();
     if (L == NULL) {
-        free(source);
-        fprintf(stderr, "failed to create Lua state\n");
+        set_error(error, "failed to create Lua state");
         return 1;
     }
+    request.source = source;
+    request.source_len = source_len;
+    request.chunk_name = chunk_name;
+    request.debug_mode = debug_mode;
+    request.output = output;
 
-    int status = luaL_loadbufferx(L, (const char *)source, source_len, chunk_name, NULL);
-    free(source);
+    lua_pushcfunction(L, compile_protected);
+    lua_pushlightuserdata(L, &request);
+    status = lua_pcall(L, 1, 0, 0);
     if (status != LUA_OK) {
         size_t len = 0;
-        const char *msg = lua_tolstring(L, -1, &len);
-        if (msg != NULL) {
-            fwrite(msg, 1, len, stderr);
-            fputc('\n', stderr);
+        const char *message = lua_tolstring(L, -1, &len);
+        if (message == NULL) {
+            set_error(error, "unknown compilation error");
         } else {
-            fprintf(stderr, "unknown compilation error\n");
+            buffer_append(error, message, len);
         }
-        lua_close(L);
-        return 1;
+        buffer_release(output);
     }
-
-    const Proto *f = ((const LClosure *)lua_topointer(L, -1))->p;
-    if (luaU_dump_ex(L, f, write_stdout, stdout, mode) != 0) {
-        fprintf(stderr, "luaU_dump_ex failed\n");
-        lua_close(L);
-        return 1;
-    }
-
     lua_close(L);
-    return 0;
+    return status == LUA_OK ? 0 : 1;
+}
+
+#ifdef LUA_32BITS
+#define LUAC_COMPILE luac32_compile
+#define LUAC_FREE luac32_free
+#else
+#define LUAC_COMPILE luac64_compile
+#define LUAC_FREE luac64_free
+#endif
+
+int LUAC_COMPILE(const unsigned char *source, size_t source_len, const char *chunk_name, int debug_mode, LuacBuffer *output, LuacBuffer *error) {
+    return compile_impl(source, source_len, chunk_name, debug_mode, output, error);
+}
+
+void LUAC_FREE(LuacBuffer *buffer) {
+    if (buffer != NULL) {
+        buffer_release(buffer);
+    }
 }

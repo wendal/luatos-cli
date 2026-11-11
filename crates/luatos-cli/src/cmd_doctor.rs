@@ -200,7 +200,7 @@ fn check_soc_file(dir: &str) -> CheckResult {
 }
 
 fn check_lua_compiler() -> CheckResult {
-    // 尝试用内嵌 Lua 编译器编译一段简单代码
+    // 尝试用进程内静态链接的 Lua 编译器编译一段简单代码
     let test_source = b"print('hello')";
     match luatos_luadb::build::compile_lua_bytes(test_source, "test", luatos_luadb::LUAC_DEBUG_ALL, 32) {
         Ok(bytecode) if !bytecode.is_empty() => CheckResult {
@@ -351,9 +351,6 @@ mod tests {
 
     #[test]
     fn check_lua_compiler_passes() {
-        // 隔离 helper 缓存目录，避免依赖真实用户目录权限（CI/沙箱环境可能不可写）
-        let tmp = tempfile::tempdir().expect("创建临时目录失败");
-        std::env::set_var("LUATOS_CLI_HELPER_CACHE", tmp.path());
         let result = check_lua_compiler();
         assert!(result.passed, "内嵌 Lua 编译器应当可用: {}", result.detail);
     }

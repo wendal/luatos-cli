@@ -78,6 +78,7 @@ pub fn add_bk_crc(data: &[u8]) -> Vec<u8> {
 
 pub mod build;
 pub mod embedded_helpers;
+mod luac;
 pub mod romfs;
 
 /// luac 调试信息保留级别：无调试信息（source 字段也不写）

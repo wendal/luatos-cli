@@ -1,9 +1,6 @@
-//! Embedded Lua 5.3 compiler and mklfs helpers.
+//! 内嵌 mklfs 辅助程序。
 //!
-//! At build time, `build.rs` compiles helper executables from the bundled
-//! C source and embeds them via `include_bytes!()`.  At runtime the
-//! appropriate helper is extracted to a per-user cache directory and invoked as
-//! a subprocess.
+//! 构建期编译 helper 并通过 `include_bytes!()` 内嵌；运行时释放到用户缓存目录后执行。
 
 use sha2::{Digest, Sha256};
 use std::env;
@@ -17,24 +14,15 @@ use std::sync::{Mutex, Once, OnceLock};
 use std::os::unix::fs::PermissionsExt;
 
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
-const HELPER_32_BYTES: &[u8] = include_bytes!(env!("LUA53_HELPER_EMBED_32"));
-const HELPER_64_BYTES: &[u8] = include_bytes!(env!("LUA53_HELPER_EMBED_64"));
 const MKLFS_BYTES: &[u8] = include_bytes!(env!("MKLFS_HELPER_EMBED"));
 const CACHE_SUBDIR: &str = "luatos-cli/lua-helpers";
 static CLEANUP_ONCE: Once = Once::new();
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-// Per-kind mutexes prevent ETXTBSY (text file busy) on Linux when multiple
-// threads try to extract and execute the same helper simultaneously.
-static LUAC32_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-static LUAC64_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static MKLFS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// Identifies which embedded helper to use.
 #[derive(Clone, Copy)]
 enum HelperKind {
-    Luac32,
-    Luac64,
     Mklfs,
 }
 
@@ -57,30 +45,15 @@ struct HelperMetadata {
 impl EmbeddedHelper {
     fn name(&self) -> &'static str {
         match self.kind {
-            HelperKind::Luac32 => "luac32",
-            HelperKind::Luac64 => "luac64",
             HelperKind::Mklfs => "mklfs",
         }
     }
 
     fn file_prefix(&self) -> &'static str {
         match self.kind {
-            HelperKind::Luac32 => "luac32_helper",
-            HelperKind::Luac64 => "luac64_helper",
             HelperKind::Mklfs => "mklfs_helper",
         }
     }
-}
-
-/// Ensure the embedded Lua helper for the given bit-width is available on disk.
-/// Returns the path to the cached executable.
-pub fn ensure_embedded_helper(bitw: u32) -> Result<PathBuf, String> {
-    let kind = match bitw {
-        32 => HelperKind::Luac32,
-        64 => HelperKind::Luac64,
-        _ => return Err(format!("unsupported Lua bitness: {}", bitw)),
-    };
-    ensure_helper(kind)
 }
 
 /// Ensure the embedded mklfs helper is available on disk.
@@ -90,13 +63,7 @@ pub fn ensure_mklfs_helper() -> Result<PathBuf, String> {
 }
 
 fn ensure_helper(kind: HelperKind) -> Result<PathBuf, String> {
-    // Serialize extraction per helper kind to avoid ETXTBSY on Linux when
-    // parallel threads try to write/execute the same binary simultaneously.
-    let lock = match kind {
-        HelperKind::Luac32 => LUAC32_LOCK.get_or_init(|| Mutex::new(())),
-        HelperKind::Luac64 => LUAC64_LOCK.get_or_init(|| Mutex::new(())),
-        HelperKind::Mklfs => MKLFS_LOCK.get_or_init(|| Mutex::new(())),
-    };
+    let lock = MKLFS_LOCK.get_or_init(|| Mutex::new(()));
     let _guard = lock.lock().map_err(|e| format!("helper lock poisoned: {e}"))?;
 
     let cache_dir = helper_cache_dir()?;
@@ -128,8 +95,6 @@ pub fn init_helper_cache() -> Result<(), String> {
 
 fn helper_for_kind(kind: HelperKind) -> EmbeddedHelper {
     match kind {
-        HelperKind::Luac32 => EmbeddedHelper { kind, payload: HELPER_32_BYTES },
-        HelperKind::Luac64 => EmbeddedHelper { kind, payload: HELPER_64_BYTES },
         HelperKind::Mklfs => EmbeddedHelper { kind, payload: MKLFS_BYTES },
     }
 }
@@ -220,21 +185,16 @@ fn helper_sha256(helper: EmbeddedHelper) -> String {
 }
 
 fn current_helper_paths(cache_dir: &Path) -> Vec<PathBuf> {
-    [HelperKind::Luac32, HelperKind::Luac64, HelperKind::Mklfs]
-        .iter()
-        .map(|kind| helper_for_kind(*kind))
-        .flat_map(|helper| {
-            let target = helper_target_path(cache_dir, helper);
-            [target.clone(), metadata_path_for(&target)]
-        })
-        .collect()
+    let helper = helper_for_kind(HelperKind::Mklfs);
+    let target = helper_target_path(cache_dir, helper);
+    vec![target.clone(), metadata_path_for(&target)]
 }
 
 fn run_cleanup_once(cache_dir: &Path) {
     CLEANUP_ONCE.call_once(|| {
         let keep = current_helper_paths(cache_dir);
         if let Err(err) = cleanup_stale_helpers(cache_dir, &keep) {
-            log::debug!("failed to clean stale Lua helpers in {}: {}", cache_dir.display(), err);
+            log::debug!("failed to clean stale mklfs helpers in {}: {}", cache_dir.display(), err);
         }
     });
 }
@@ -252,14 +212,14 @@ fn cleanup_stale_helpers(cache_dir: &Path, keep: &[PathBuf]) -> io::Result<()> {
         let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if !name.starts_with("luac32_helper-") && !name.starts_with("luac64_helper-") && !name.starts_with("mklfs_helper-") {
+        if !name.starts_with("mklfs_helper-") {
             continue;
         }
         if keep.iter().any(|keep_path| keep_path == &path) {
             continue;
         }
         if let Err(err) = fs::remove_file(&path) {
-            log::debug!("failed to remove stale Lua helper {}: {}", path.display(), err);
+            log::debug!("failed to remove stale mklfs helper {}: {}", path.display(), err);
         }
     }
 
