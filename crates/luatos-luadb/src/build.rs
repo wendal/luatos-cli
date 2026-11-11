@@ -298,13 +298,25 @@ pub fn payload_limit(capacity: usize, framed: bool) -> usize {
 /// * `fs_size` — total filesystem size in bytes.
 /// * `block_size` — erase block size (default 4096).
 ///
+/// The image uses `name_max=63` and is remounted with that limit before returning.
 /// Returns the raw LFS image bytes (exactly `fs_size` bytes).
 pub fn build_littlefs_image_from_dirs(source_dirs: &[&Path], fs_size: usize, block_size: usize) -> Result<Vec<u8>> {
+    build_littlefs_image_config(source_dirs, fs_size, block_size, Some(63), Some(63))
+}
+
+/// Build and remount with the target firmware's name limit before flashing.
+pub fn build_littlefs_image_with_name_max(source_dir: &Path, fs_size: usize, block_size: usize, name_max: u32) -> Result<Vec<u8>> {
+    build_littlefs_image_config(&[source_dir], fs_size, block_size, Some(name_max), Some(name_max))
+}
+
+fn build_littlefs_image_config(source_dirs: &[&Path], fs_size: usize, block_size: usize, name_max: Option<u32>, verify_name_max: Option<u32>) -> Result<Vec<u8>> {
     anyhow::ensure!(!source_dirs.is_empty(), "At least one source directory is required");
     for dir in source_dirs {
         anyhow::ensure!(dir.is_dir(), "Source directory does not exist or is not a directory: {}", dir.display());
     }
-    crate::mklfs::build(source_dirs, fs_size, block_size)
+    let name_max = name_max.unwrap_or(63);
+    let verify_name_max = verify_name_max.unwrap_or(name_max);
+    crate::mklfs::build(source_dirs, fs_size, block_size, name_max, verify_name_max)
 }
 
 /// Build a LittleFS image from a single directory. Kept as a convenience wrapper
@@ -580,9 +592,9 @@ mod tests {
         assert_eq!(image.len(), fs_size);
     }
 
-    const LITTLEFS_SINGLE_SHA256: &str = "fc570034d574bebf1489ec2b25de0de5a32242608cd415541b436478b6dabd55";
-    const LITTLEFS_ALTERNATE_SHA256: &str = "590ccabda38f772b9b26aca635cc24ab2d02d2d7584d313a9dd8a4d6323f737b";
-    const LITTLEFS_MERGED_SHA256: &str = "516f6c86b2fb50087eda5caa252a9969d72f21bb7b6163ad3910626f58f8dcb4";
+    const LITTLEFS_SINGLE_SHA256: &str = "58267f8cfece32c1ee3b7b980b2c0cce2edb6f5ed8eb1f81b37255a126796982";
+    const LITTLEFS_ALTERNATE_SHA256: &str = "824239ae527253388a8f56933bead78ca227dbf59444306f51eef9bb27336a73";
+    const LITTLEFS_MERGED_SHA256: &str = "666221eab97e6a9fa411a13a4cd5294b1934531b349ef2ee66063437e80be3e0";
 
     fn littlefs_fixture(case: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/testcase_fixtures").join(case).join("scripts")
@@ -672,6 +684,18 @@ mod tests {
             let error = super::build_littlefs_image(&source, 64 * 1024, block_size).unwrap_err();
             assert!(error.to_string().contains("invalid size parameters"), "block_size={block_size}: {error}");
         }
+    }
+
+    #[test]
+    fn littlefs_supports_unicode_paths_and_empty_files() {
+        let source = tempfile::Builder::new().prefix("文件 系统 ").tempdir().unwrap();
+        fs::create_dir_all(source.path().join("资源/empty")).unwrap();
+        fs::write(source.path().join("资源/数据.bin"), [0, 0xa5, 0xff]).unwrap();
+        fs::write(source.path().join("empty.txt"), []).unwrap();
+        let image = super::build_littlefs_image(source.path(), 256 * 1024, 4096).unwrap();
+        assert_eq!(image.len(), 256 * 1024);
+        assert!(image.windows("数据.bin".len()).any(|bytes| bytes == "数据.bin".as_bytes()));
+        assert!(image.windows(b"empty.txt".len()).any(|bytes| bytes == b"empty.txt"));
     }
 }
 
@@ -871,5 +895,20 @@ mod resource_tests {
         assert!(!raw.data.len().is_multiple_of(34), "裸镜像不应是 34 字节帧的整数倍");
         assert_eq!(raw.data.len(), unframe(&build_resource_image(&[d.path()], 8192, romfs_type()).unwrap().data).len());
         assert_eq!(payload_limit(4096, false), 4096);
+    }
+    #[test]
+    fn ccm4211_firmware_mount_rejects_generic_name_max_but_accepts_63() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("Heat_exchange_station")).unwrap();
+        fs::write(dir.path().join("Heat_exchange_station/main.xml"), b"<ui/>").unwrap();
+        let legacy = build_littlefs_image_config(&[dir.path()], 256 * 1024, 4096, Some(255), Some(63)).unwrap_err();
+        assert!(legacy.to_string().contains("firmware-profile mount failed: -22"), "{legacy}");
+        let image = build_littlefs_image(dir.path(), 256 * 1024, 4096).unwrap();
+        assert_eq!(image.len(), 256 * 1024);
+        let explicit = build_littlefs_image_with_name_max(dir.path(), 256 * 1024, 4096, 63).unwrap();
+        assert_eq!(image, explicit);
+        let too_long = "x".repeat(64);
+        fs::write(dir.path().join(too_long), b"data").unwrap();
+        assert!(build_littlefs_image(dir.path(), 256 * 1024, 4096).is_err());
     }
 }

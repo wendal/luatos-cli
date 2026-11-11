@@ -37,11 +37,14 @@ unsafe extern "C" {
         source_dir_count: usize,
         fs_size: usize,
         block_size: usize,
+        name_max: u32,
+        verify_name_max: u32,
         output: *mut u8,
         output_len: usize,
         error: *mut MklfsBuffer,
     ) -> c_int;
     fn mklfs_free(buffer: *mut MklfsBuffer);
+    fn mklfs_name_max() -> u32;
 }
 
 struct OwnedBuffer {
@@ -61,13 +64,17 @@ impl Drop for OwnedBuffer {
     }
 }
 
-pub(crate) fn build(source_dirs: &[&Path], fs_size: usize, block_size: usize) -> Result<Vec<u8>> {
+pub(crate) fn build(source_dirs: &[&Path], fs_size: usize, block_size: usize, name_max: u32, verify_name_max: u32) -> Result<Vec<u8>> {
     ensure!(fs_size <= u32::MAX as usize, "mklfs filesystem size exceeds the LittleFS 32-bit limit");
     ensure!(block_size <= u32::MAX as usize, "mklfs block size exceeds the LittleFS 32-bit limit");
     ensure!(
         block_size >= 256 && block_size.is_multiple_of(256),
         "invalid size parameters: block size must be a multiple of 256"
     );
+    // SAFETY: 该 C 函数只返回编译期常量 LFS_NAME_MAX。
+    let max_name = unsafe { mklfs_name_max() };
+    ensure!(name_max > 0 && name_max <= max_name, "Invalid LittleFS name_max (1..={max_name} required)");
+    ensure!(verify_name_max <= max_name, "Invalid LittleFS verification name_max (1..={max_name} required)");
 
     let source_dirs = source_dirs
         .iter()
@@ -91,6 +98,8 @@ pub(crate) fn build(source_dirs: &[&Path], fs_size: usize, block_size: usize) ->
             source_dir_ptrs.len(),
             fs_size,
             block_size,
+            name_max,
+            verify_name_max,
             image.as_mut_ptr(),
             image.len(),
             &mut error.inner,

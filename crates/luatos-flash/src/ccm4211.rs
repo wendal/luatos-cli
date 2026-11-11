@@ -648,7 +648,7 @@ fn soc_send_cmd(port: &mut Box<dyn SerialPort>, parser: &mut SocFrameParser, cmd
                 let responses = parser.feed(&tmp[..n]);
                 for resp in responses {
                     log::debug!("SOC response: cmd={}, addr=0x{:08X}, sn={}, data_len={}", resp.cmd, resp.address, resp.sn, resp.data.len());
-                    if resp.cmd == cmd {
+                    if resp.cmd == cmd && resp.address == address {
                         return Ok(resp);
                     }
                 }
@@ -678,29 +678,57 @@ fn soc_download_file(
     pct_start: f32,
     pct_end: f32,
 ) -> Result<()> {
+    soc_download_file_checked(port, parser, sn, address, data, block_len, on_progress, stage_name, pct_start, pct_end, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn soc_download_file_checked(
+    port: &mut Box<dyn SerialPort>,
+    parser: &mut SocFrameParser,
+    sn: &mut u16,
+    address: u32,
+    data: &[u8],
+    block_len: u32,
+    on_progress: &ProgressCallback,
+    stage_name: &str,
+    pct_start: f32,
+    pct_end: f32,
+    cancel: Option<&AtomicBool>,
+) -> Result<()> {
     // 分块 LZMA 压缩下载（对齐 LuaTools `soc.py` 的 pyZipData 路径）。
     // 环境变量 `LUATOS_CCM_LZMA=0` 可强制关闭，用于排查压缩相关问题。
     let lzma_enabled = lzma_enabled_by_env();
 
-    if lzma_enabled {
-        let used = soc_download_blocks(port, parser, sn, address, data, block_len, on_progress, stage_name, pct_start, pct_end, true)?;
-        if used {
-            // 设备端解压失败时不报错（ramrun 会 memset 0xFF 后照常 ACK），
-            // 主机只能靠 CMD 0x0D 的 MD5 发现。这种情况多半是设备端解码器
-            // 与本实现不兼容（或固件过老），整文件改明文重传一次再判定。
-            log::warn!("{stage_name}: MD5 校验未通过，改用明文重传整文件（设备端 LZMA 解码可能不兼容）");
+    verified_download(lzma_enabled, stage_name, |step| match step {
+        DownloadStep::Transfer(compressed) => soc_download_blocks(port, parser, sn, address, data, block_len, on_progress, stage_name, pct_start, pct_end, compressed, cancel),
+        DownloadStep::Verify => soc_verify_md5(port, parser, sn, address, data).map(|_| false),
+        DownloadStep::RetryNotice => {
             on_progress(&FlashProgress::info(stage_name, pct_end, "MD5 check failed, retrying without LZMA").with_region(&stage_name.to_lowercase()));
-            soc_download_blocks(port, parser, sn, address, data, block_len, on_progress, stage_name, pct_start, pct_end, false)?;
+            Ok(false)
         }
-        // 压缩路径与明文回落路径都必须真正校验：设备端解压失败时只会 memset 0xFF
-        // 后照常应答，主机侧看不到任何错误信号，MD5 是唯一的判定手段。
-        soc_verify_md5(port, parser, sn, address, data)?;
-    } else {
-        soc_download_blocks(port, parser, sn, address, data, block_len, on_progress, stage_name, pct_start, pct_end, false)?;
-        soc_verify_md5(port, parser, sn, address, data)?;
-    }
+    })
+}
 
-    Ok(())
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DownloadStep {
+    Transfer(bool),
+    Verify,
+    RetryNotice,
+}
+
+fn verified_download(compressed: bool, label: &str, mut action: impl FnMut(DownloadStep) -> Result<bool>) -> Result<()> {
+    let used = action(DownloadStep::Transfer(compressed))?;
+    match action(DownloadStep::Verify) {
+        Ok(_) => Ok(()),
+        Err(error) if used => {
+            log::warn!("{label}: compressed-transfer verification failed ({error}); retrying without LZMA");
+            action(DownloadStep::RetryNotice)?;
+            action(DownloadStep::Transfer(false))?;
+            action(DownloadStep::Verify)?;
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// 读取环境变量开关：只有显式设为 `0` 才关闭压缩，其余（含未设置）都开启。
@@ -750,6 +778,7 @@ fn soc_download_blocks(
     pct_start: f32,
     pct_end: f32,
     lzma_enabled: bool,
+    cancel: Option<&AtomicBool>,
 ) -> Result<bool> {
     let total_len = data.len();
     let mut done = 0usize;
@@ -757,6 +786,9 @@ fn soc_download_blocks(
     let mut any_compressed = false;
 
     while done < total_len {
+        if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            bail!("Cancelled during {stage_name}; reflash may be required");
+        }
         let send_len = std::cmp::min(block_len as usize, total_len - done);
         let chunk = &data[done..done + send_len];
         let (wire, is_lzma) = pick_wire_payload(chunk, block_len, lzma_enabled);
@@ -776,6 +808,9 @@ fn soc_download_blocks(
         let wire_len = wire.len();
         let mut s_len = 0;
         while s_len < wire_len {
+            if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                bail!("Cancelled during {stage_name}; reflash may be required");
+            }
             let ss_len = std::cmp::min(sect_len, wire_len - s_len);
             let sub_chunk = &wire[s_len..s_len + ss_len];
 
@@ -847,13 +882,40 @@ fn soc_reset_device(port: &mut Box<dyn SerialPort>) -> Result<()> {
 /// via ISP+SOC protocol.
 /// `script_overlay` replaces the `script.bin` packaged in the SOC when `flash run --script` is used.
 pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCallback, cancel: Arc<AtomicBool>, script_overlay: Option<&[u8]>) -> Result<()> {
+    flash_ccm4211_impl(soc_path, port_name, on_progress, cancel, script_overlay, true, None)
+}
+
+pub fn flash_ccm4211_storage(
+    soc_path: &str,
+    port_name: &str,
+    on_progress: &ProgressCallback,
+    cancel: Arc<AtomicBool>,
+    script_overlay: Option<&[u8]>,
+    full: bool,
+    storage: &crate::ccm4211_storage::StoragePlan,
+) -> Result<()> {
+    flash_ccm4211_impl(soc_path, port_name, on_progress, cancel, script_overlay, full, Some(storage))
+}
+
+fn flash_ccm4211_impl(
+    soc_path: &str,
+    port_name: &str,
+    on_progress: &ProgressCallback,
+    cancel: Arc<AtomicBool>,
+    script_overlay: Option<&[u8]>,
+    full: bool,
+    storage: Option<&crate::ccm4211_storage::StoragePlan>,
+) -> Result<()> {
     // Read .soc in memory
     on_progress(&FlashProgress::info("Extract", 0.0, "Reading .soc file"));
     let mut archive = luatos_soc::SocArchive::open(soc_path)?;
     let info = archive.info().clone();
+    if let Some(plan) = storage {
+        plan.validate_again(&info)?;
+    }
     let script_data = if let Some(overlay) = script_overlay {
         Some(overlay.to_vec())
-    } else if archive.exists(&info.script.file) {
+    } else if full && archive.exists(&info.script.file) {
         Some(archive.read(&info.script.file).context("Failed to read script")?)
     } else {
         None
@@ -862,7 +924,9 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
         crate::validate_script_image(&info, data.len(), 1)?;
     }
 
-    let mut resource_plan = if archive.exists("include.txt") {
+    let mut resource_plan = if !full {
+        CcmFlashResourcePlan::default()
+    } else if archive.exists("include.txt") {
         match archive.read("include.txt").map(|bytes| String::from_utf8_lossy(&bytes).into_owned()) {
             Ok(contents) => build_ccm_resource_plan(&mut archive, &info, parse_ccm_resource_addresses(&contents)),
             Err(error) => {
@@ -875,6 +939,22 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
         // Older CCM4211 SOC files do not carry the build-time resource map.
         // They may still carry fs.bin, which is addressed from info.json.
         build_ccm_resource_plan(&mut archive, &info, CcmResourceAddresses::default())
+    };
+
+    // Read all selected images before any device writes. Explicit FS policy
+    // suppresses packaged fs.bin; the CLI-prepared image is the only source.
+    if storage.is_some() {
+        resource_plan.downloads.retain(|r| r.region != "fs");
+    }
+    let bl_data = if full && archive.exists("bootloader.bin") {
+        Some(archive.read("bootloader.bin")?)
+    } else {
+        None
+    };
+    let core_data = if full {
+        Some(archive.read(&info.rom.file).context("Missing core firmware")?)
+    } else {
+        None
     };
 
     // Load ramrun from SOC or use default
@@ -930,10 +1010,21 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
     let script_addr = info.script_addr();
 
     // Download bootloader
-    if archive.exists("bootloader.bin") {
-        let bl_data = archive.read("bootloader.bin").context("Failed to read bootloader.bin")?;
+    if let Some(bl_data) = &bl_data {
         on_progress(&FlashProgress::info("Bootloader", 20.0, "Downloading bootloader").with_region("bootloader"));
-        soc_download_file(&mut port, &mut parser, &mut sn, bl_addr, &bl_data, block_len, on_progress, "Bootloader", 20.0, 35.0)?;
+        soc_download_file_checked(
+            &mut port,
+            &mut parser,
+            &mut sn,
+            bl_addr,
+            bl_data,
+            block_len,
+            on_progress,
+            "Bootloader",
+            20.0,
+            35.0,
+            Some(&cancel),
+        )?;
         on_progress(&FlashProgress::info("Bootloader", 35.0, "Bootloader OK").with_region("bootloader"));
     }
 
@@ -944,7 +1035,7 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
     // LuaTools writes the optional external font before the application core.
     if let Some(resource) = resource_plan.resource("font") {
         on_progress(&FlashProgress::info(resource.label, 35.0, "Downloading font resource").with_region(resource.region));
-        soc_download_file(
+        soc_download_file_checked(
             &mut port,
             &mut parser,
             &mut sn,
@@ -955,15 +1046,27 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
             resource.label,
             35.0,
             45.0,
+            Some(&cancel),
         )?;
         on_progress(&FlashProgress::info(resource.label, 45.0, "Font resource OK").with_region(resource.region));
     }
 
     // Download core firmware
-    if archive.exists(&info.rom.file) {
-        let core_data = archive.read(&info.rom.file).with_context(|| format!("Failed to read {}", info.rom.file))?;
+    if let Some(core_data) = &core_data {
         on_progress(&FlashProgress::info("Core", 45.0, "Downloading core firmware").with_region("core"));
-        soc_download_file(&mut port, &mut parser, &mut sn, core_addr, &core_data, block_len, on_progress, "Core", 45.0, 70.0)?;
+        soc_download_file_checked(
+            &mut port,
+            &mut parser,
+            &mut sn,
+            core_addr,
+            core_data,
+            block_len,
+            on_progress,
+            "Core",
+            45.0,
+            70.0,
+            Some(&cancel),
+        )?;
         on_progress(&FlashProgress::info("Core", 70.0, "Core firmware OK").with_region("core"));
     }
 
@@ -974,7 +1077,7 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
     // LuaTools writes TTS after core, then an optional filesystem image.
     if let Some(resource) = resource_plan.resource("tts") {
         on_progress(&FlashProgress::info(resource.label, 70.0, "Downloading TTS resource").with_region(resource.region));
-        soc_download_file(
+        soc_download_file_checked(
             &mut port,
             &mut parser,
             &mut sn,
@@ -985,13 +1088,57 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
             resource.label,
             70.0,
             78.0,
+            Some(&cancel),
         )?;
         on_progress(&FlashProgress::info(resource.label, 78.0, "TTS resource OK").with_region(resource.region));
     }
 
-    if let Some(resource) = resource_plan.resource("fs") {
+    if let Some(plan) = storage {
+        // The SDK image download protocol erases before programming each block
+        // and waits for completion during CHECK_CODE. Do not depend on standalone
+        // CMD8 acknowledgements as proof that an entire partition was cleared.
+        if let Some(kv) = &plan.kv {
+            let data = storage_payload(kv, None)?;
+            on_progress(&FlashProgress::info("FSKV", 78.0, "Clearing FSKV using a verified FF image").with_region("kv"));
+            soc_download_file_checked(
+                &mut port,
+                &mut parser,
+                &mut sn,
+                kv.address,
+                &data,
+                block_len,
+                on_progress,
+                "FSKV",
+                78.0,
+                80.0,
+                Some(&cancel),
+            )?;
+        }
+        if let Some((partition, image)) = &plan.filesystem {
+            let data = storage_payload(partition, image.as_deref())?;
+            let message = if image.is_some() {
+                "Downloading complete filesystem image"
+            } else {
+                "Clearing filesystem using a verified FF image"
+            };
+            on_progress(&FlashProgress::info("Filesystem", 80.0, message).with_region("fs"));
+            soc_download_file_checked(
+                &mut port,
+                &mut parser,
+                &mut sn,
+                partition.address,
+                &data,
+                block_len,
+                on_progress,
+                "Filesystem",
+                80.0,
+                88.0,
+                Some(&cancel),
+            )?;
+        }
+    } else if let Some(resource) = resource_plan.resource("fs") {
         on_progress(&FlashProgress::info(resource.label, 78.0, "Downloading filesystem resource").with_region(resource.region));
-        soc_download_file(
+        soc_download_file_checked(
             &mut port,
             &mut parser,
             &mut sn,
@@ -1002,6 +1149,7 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
             resource.label,
             78.0,
             88.0,
+            Some(&cancel),
         )?;
         on_progress(&FlashProgress::info(resource.label, 88.0, "Filesystem resource OK").with_region(resource.region));
     }
@@ -1009,10 +1157,25 @@ pub fn flash_ccm4211(soc_path: &str, port_name: &str, on_progress: &ProgressCall
     // Download script: --script overlay wins over the SOC-packaged script.bin.
     if let Some(script_data) = script_data {
         on_progress(&FlashProgress::info("Script", 88.0, "Downloading script").with_region("script"));
-        soc_download_file(&mut port, &mut parser, &mut sn, script_addr, &script_data, block_len, on_progress, "Script", 88.0, 95.0)?;
+        soc_download_file_checked(
+            &mut port,
+            &mut parser,
+            &mut sn,
+            script_addr,
+            &script_data,
+            block_len,
+            on_progress,
+            "Script",
+            88.0,
+            95.0,
+            Some(&cancel),
+        )?;
         on_progress(&FlashProgress::info("Script", 95.0, "Script OK").with_region("script"));
     }
 
+    if cancel.load(Ordering::Relaxed) {
+        bail!("Cancelled; written or erased partitions will not be restored");
+    }
     // Reset device
     on_progress(&FlashProgress::info("Reset", 98.0, "Resetting device"));
     soc_reset_device(&mut port)?;
@@ -1121,15 +1284,15 @@ pub fn erase_partition_ccm4211(soc_path: &str, port_name: &str, partition_addr: 
 /// Clear the filesystem partition for CCM4211/Air1601.
 pub fn clear_filesystem(soc_path: &str, port_name: &str, on_progress: &ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
     let info = luatos_soc::read_soc_info(soc_path)?;
-    let addr = info.fs_addr().context("Air1601 SOC has no fs_addr defined")?;
-    erase_partition_ccm4211(soc_path, port_name, addr, "filesystem", on_progress, cancel)
+    let storage = crate::ccm4211_storage::StoragePlan::prepare(&info, "clear", false)?;
+    flash_ccm4211_storage(soc_path, port_name, on_progress, cancel, None, false, &storage)
 }
 
 /// Clear the FSKV (key-value) partition for CCM4211/Air1601.
 pub fn clear_fskv(soc_path: &str, port_name: &str, on_progress: &ProgressCallback, cancel: Arc<AtomicBool>) -> Result<()> {
     let info = luatos_soc::read_soc_info(soc_path)?;
-    let addr = info.nvm_addr().context("Air1601 SOC has no nvm_addr defined")?;
-    erase_partition_ccm4211(soc_path, port_name, addr, "fskv", on_progress, cancel)
+    let storage = crate::ccm4211_storage::StoragePlan::prepare(&info, "preserve", true)?;
+    flash_ccm4211_storage(soc_path, port_name, on_progress, cancel, None, false, &storage)
 }
 
 // ─── Raw flash (任意地址) ────────────────────────────────────────────────────
@@ -1872,5 +2035,180 @@ mod tests {
         println!(">>> 实测擦除覆盖到至少 base+0x{wiped_upto:05x}（block_len=0x{block_len:x}）");
 
         let _ = soc_reset_device(&mut p);
+    }
+}
+
+fn storage_payload<'a>(partition: &crate::ccm4211_storage::Partition, image: Option<&'a [u8]>) -> Result<std::borrow::Cow<'a, [u8]>> {
+    match image {
+        Some(data) => {
+            anyhow::ensure!(data.len() == partition.size, "Data image must cover exactly the declared partition");
+            Ok(std::borrow::Cow::Borrowed(data))
+        }
+        None => Ok(std::borrow::Cow::Owned(vec![0xff; partition.size])),
+    }
+}
+
+#[cfg(test)]
+
+fn clear_partition_with(
+    partition: &crate::ccm4211_storage::Partition,
+    erase_block: usize,
+    cancel: &AtomicBool,
+    mut send: impl FnMut(u32, u32, &[u8]) -> Result<Vec<u8>>,
+) -> Result<()> {
+    for offset in (0..partition.size).step_by(erase_block) {
+        if cancel.load(Ordering::Relaxed) {
+            bail!("Cancelled while clearing partition");
+        }
+        send(SOC_CMD_FLASH_ERASE_BLOCK, partition.address + offset as u32, &[])?;
+    }
+    if cancel.load(Ordering::Relaxed) {
+        bail!("Cancelled before erase verification");
+    }
+    let response = send(SOC_CMD_CHECK_CODE, partition.address, &(partition.size as u32).to_le_bytes())?;
+    let actual = response.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let expected = crate::md5_hex(&vec![0xff; partition.size]);
+    if actual != expected {
+        bail!(
+            "Erase verification failed at 0x{:08X} ({} bytes): expected MD5 {}, got {}",
+            partition.address,
+            partition.size,
+            expected,
+            actual
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod storage_clear_tests {
+    use super::*;
+    #[test]
+    fn erases_all_blocks_verifies_range_and_stops_on_error_or_cancel() {
+        let partition = crate::ccm4211_storage::Partition {
+            address: 0x14600000,
+            size: 3 * 65536,
+        };
+        let cancel = AtomicBool::new(false);
+        let mut erased = Vec::new();
+        let expected = crate::md5_hex(&vec![0xff; partition.size]);
+        clear_partition_with(&partition, crate::ccm4211_storage::STORAGE_ALIGNMENT, &cancel, |cmd, address, body| {
+            if cmd == SOC_CMD_FLASH_ERASE_BLOCK {
+                erased.push(address);
+                Ok(vec![0; 4])
+            } else {
+                assert_eq!(address, partition.address);
+                assert_eq!(body, (partition.size as u32).to_le_bytes());
+                Ok((0..16).map(|i| u8::from_str_radix(&expected[i * 2..i * 2 + 2], 16).unwrap()).collect())
+            }
+        })
+        .unwrap();
+        assert_eq!(erased, [0x14600000, 0x14610000, 0x14620000]);
+        let mut calls = 0;
+        assert!(clear_partition_with(&partition, crate::ccm4211_storage::STORAGE_ALIGNMENT, &cancel, |_, _, _| {
+            calls += 1;
+            bail!("IO error")
+        })
+        .is_err());
+        assert_eq!(calls, 1);
+        assert!(clear_partition_with(&partition, crate::ccm4211_storage::STORAGE_ALIGNMENT, &cancel, |_, _, _| Ok(vec![0; 16])).is_err());
+        cancel.store(true, Ordering::Relaxed);
+        assert!(clear_partition_with(&partition, crate::ccm4211_storage::STORAGE_ALIGNMENT, &cancel, |_, _, _| panic!(
+            "no write after cancellation"
+        ))
+        .is_err());
+    }
+    // Unlike the older ACK-only test, this device model really erases 64KiB
+    // and derives its checksum from flash contents, so a 256KiB stride fails.
+    fn simulated_flash_clear(partition: &crate::ccm4211_storage::Partition, host_stride: usize) -> (Result<()>, Vec<u8>) {
+        let block = 64 * 1024;
+        let mut flash = vec![0x5a; partition.size + 2 * block];
+        let result = clear_partition_with(partition, host_stride, &AtomicBool::new(false), |cmd, address, body| {
+            let offset = block + (address - partition.address) as usize;
+            if cmd == SOC_CMD_FLASH_ERASE_BLOCK {
+                flash[offset..offset + block].fill(0xff);
+                Ok(vec![0; 4])
+            } else {
+                let size = u32::from_le_bytes(body.try_into().unwrap()) as usize;
+                let hex = crate::md5_hex(&flash[offset..offset + size]);
+                Ok((0..16).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap()).collect())
+            }
+        });
+        (result, flash)
+    }
+
+    #[test]
+    fn download_buffer_stride_leaves_holes_but_64k_clears_entire_real_fs_without_touching_neighbors() {
+        let block = 64 * 1024;
+        let fs = crate::ccm4211_storage::Partition {
+            address: 0x14b80000,
+            size: 4608 * 1024,
+        };
+        let (wrong, old_flash) = simulated_flash_clear(&fs, 256 * 1024);
+        assert!(wrong.unwrap_err().to_string().contains("Erase verification failed"));
+        assert!(old_flash[block..block + fs.size].contains(&0x5a));
+        let (correct, flash) = simulated_flash_clear(&fs, crate::ccm4211_storage::STORAGE_ALIGNMENT);
+        correct.unwrap();
+        assert!(flash[block..block + fs.size].iter().all(|b| *b == 0xff));
+        assert!(flash[..block].iter().chain(flash[block + fs.size..].iter()).all(|b| *b == 0x5a));
+        let kv = crate::ccm4211_storage::Partition { address: 0x101f0000, size: block };
+        let (result, flash) = simulated_flash_clear(&kv, crate::ccm4211_storage::STORAGE_ALIGNMENT);
+        result.unwrap();
+        assert!(flash[block..2 * block].iter().all(|b| *b == 0xff));
+        assert!(flash[..block].iter().chain(flash[2 * block..].iter()).all(|b| *b == 0x5a));
+    }
+    #[test]
+    fn full_partition_payload_preserves_images_and_clears_exactly_fs_or_fskv() {
+        let kv = crate::ccm4211_storage::Partition { address: 0x101f0000, size: 65536 };
+        let clear = storage_payload(&kv, None).unwrap();
+        assert_eq!(clear.len(), 65536);
+        assert!(clear.iter().all(|b| *b == 0xff));
+        let image = vec![0xa5; 65536];
+        assert_eq!(storage_payload(&kv, Some(&image)).unwrap().as_ref(), image.as_slice());
+        assert!(storage_payload(&kv, Some(&image[..4096])).is_err());
+    }
+
+    #[test]
+    fn compression_retries_only_after_an_actual_verification_failure() {
+        let mut steps = Vec::new();
+        verified_download(true, "QA", |step| {
+            steps.push(step);
+            Ok(matches!(step, DownloadStep::Transfer(true)))
+        })
+        .unwrap();
+        assert_eq!(steps, [DownloadStep::Transfer(true), DownloadStep::Verify]);
+        let mut steps = Vec::new();
+        let mut checks = 0;
+        verified_download(true, "QA", |step| {
+            steps.push(step);
+            if step == DownloadStep::Verify {
+                checks += 1;
+                if checks == 1 {
+                    bail!("mismatch");
+                }
+            }
+            Ok(matches!(step, DownloadStep::Transfer(true)))
+        })
+        .unwrap();
+        assert_eq!(
+            steps,
+            [
+                DownloadStep::Transfer(true),
+                DownloadStep::Verify,
+                DownloadStep::RetryNotice,
+                DownloadStep::Transfer(false),
+                DownloadStep::Verify
+            ]
+        );
+        let mut steps = Vec::new();
+        assert!(verified_download(false, "QA", |step| {
+            steps.push(step);
+            if step == DownloadStep::Verify {
+                bail!("mismatch");
+            }
+            Ok(false)
+        })
+        .is_err());
+        assert_eq!(steps, [DownloadStep::Transfer(false), DownloadStep::Verify]);
     }
 }

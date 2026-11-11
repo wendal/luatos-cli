@@ -25,7 +25,7 @@ fn build_script_overlay(script_folders: Option<&[String]>, info: &luatos_soc::So
     Ok(Some(script_data))
 }
 
-fn tail_log_after_flash(soc: &str, port: &str, timeout_secs: u64, format: &OutputFormat) -> anyhow::Result<()> {
+pub(crate) fn tail_log_after_flash(soc: &str, port: &str, timeout_secs: u64, format: &OutputFormat) -> anyhow::Result<()> {
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -418,7 +418,18 @@ pub fn cmd_flash_partition(
                 "clear-kv" => {
                     luatos_flash::ccm4211::clear_fskv(soc, port, &on_progress, cancel)?;
                 }
-                _ => unreachable!(),
+                "flash-fs" => {
+                    let dirs = script_folders.context("Filesystem directory required")?;
+                    anyhow::ensure!(dirs.len() == 1, "160X flash-fs accepts one directory");
+                    let args = crate::storage_args::StorageArgs {
+                        fs_mode: Some("replace".into()),
+                        fs_dir: Some(dirs[0].clone().into()),
+                        ..Default::default()
+                    };
+                    let plan = args.prepare(&info)?;
+                    luatos_flash::ccm4211::flash_ccm4211_storage(soc, port, &on_progress, cancel, None, false, &plan)?;
+                }
+                _ => anyhow::bail!("Unsupported 160X operation: {op}"),
             },
             ChipFamily::Ec718 => {
                 anyhow::bail!(
@@ -1305,4 +1316,50 @@ mod tests {
         assert!(!outcome.fast_failed);
         assert_eq!(outcome.matched_fail_keywords, Vec::<String>::new());
     }
+}
+
+/// Filesystem policy and script are prepared before opening a download session.
+#[allow(clippy::too_many_arguments)]
+pub fn cmd_flash_storage(
+    soc: &str,
+    port: &str,
+    folders: Option<&[String]>,
+    bin: Option<&str>,
+    full: bool,
+    luac_debug: u8,
+    step: u8,
+    format: &OutputFormat,
+    args: &crate::storage_args::StorageArgs,
+) -> anyhow::Result<()> {
+    let before = std::fs::metadata(soc)?;
+    let info = luatos_soc::read_soc_info(soc)?;
+    let family = info.family();
+    let command = if full { "flash.run" } else { "flash.script" };
+    event::emit_message(format, command, MessageLevel::Info, "Preparing filesystem and validating partitions...")?;
+    anyhow::ensure!(bin.is_none() || folders.is_none(), "--bin cannot be combined with --script");
+    let script = if let Some(path) = bin {
+        Some(std::fs::read(path)?)
+    } else {
+        build_script_overlay(folders, &info, family, luac_debug)?
+    };
+    if let Some(data) = &script {
+        luatos_flash::script::validate_script_image_for_family(family, &info, data.len())?;
+    }
+    anyhow::ensure!(full || script.is_some(), "Script flashing requires --script or --bin");
+    let storage = args.prepare(&info)?;
+    let after = std::fs::metadata(soc)?;
+    anyhow::ensure!(before.len() == after.len() && before.modified()? == after.modified()?, "SOC changed during preparation");
+    if !args.dry_run {
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        event::install_cancel_handler(format, command, &cancel);
+        let callback = make_progress_callback(format, command, step);
+        luatos_flash::ccm4211::flash_ccm4211_storage(soc, port, &callback, cancel, script.as_deref(), full, &storage)?;
+    }
+    event::emit_result(
+        format,
+        command,
+        "ok",
+        serde_json::json!({"chip":info.chip.chip_type,"dry_run":args.dry_run,"fs_mode":args.fs_mode.as_deref().unwrap_or("preserve"),"clear_kv":args.clear_kv,"fs_bytes":storage.filesystem.as_ref().map(|(p,_)|p.size)}),
+    )?;
+    Ok(())
 }

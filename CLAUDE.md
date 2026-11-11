@@ -78,7 +78,7 @@ Cargo workspace（`Cargo.toml`）包含 12 个 crate：
 ### 刷机链路禁止临时文件
 - `luatos-luadb` / `luatos-flash` / `luatos-testcase` 的生产代码及 `cmd_flash.rs` / `cmd_trun.rs` **不得**使用 `tempfile` / `env::temp_dir` 创建每次运行的中间目录或文件；脚本镜像必须全内存构建并以 `Vec<u8>` / `&[u8]` 传递。
 - 新增 BSP 刷机入口必须接受脚本字节 overlay（或等价的 `flash_script_data`），不得要求目录/文件路径；容量校验必须在打开串口前完成。
-- luac 的 32/64 位 C 核心与 mklfs/LittleFS 构建器均在构建期直接静态链接进程序，编译时不得再释放 helper、写持久缓存或启动子进程。
+- luac 的 32/64 位 C 核心与 mklfs/LittleFS 构建器均在构建期直接静态链接进程序，编译时不得再释放 helper、写持久缓存或启动子进程；mklfs 默认 `name_max=63` 并按目标配置重挂载验证。
 - 测试夹具仍可用 `tempfile::TempDir`；不要把它带进生产路径。
 
 ### 增量功能维护

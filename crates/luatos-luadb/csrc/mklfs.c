@@ -10,6 +10,7 @@
 #include <sys/types.h>
 
 #ifdef _WIN32
+#include <wchar.h>
 #include <windows.h>
 #else
 #include <dirent.h>
@@ -26,6 +27,19 @@ typedef struct {
     unsigned char *data;
     size_t size;
 } MklfsFlash;
+
+#ifdef _WIN32
+static wchar_t *wide_path(const char *path) {
+    int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
+    if (!count) return NULL;
+    wchar_t *result = (wchar_t *)malloc(count * sizeof(wchar_t));
+    if (result && !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, result, count)) {
+        free(result);
+        return NULL;
+    }
+    return result;
+}
+#endif
 
 static void buffer_init(MklfsBuffer *buffer) {
     buffer->data = NULL;
@@ -114,7 +128,13 @@ static int lfs_sync_cb(const struct lfs_config *c) {
 }
 
 static int create_file(lfs_t *lfs, const char *lfs_path, const char *host_path, MklfsBuffer *error) {
+#ifdef _WIN32
+    wchar_t *wide = wide_path(host_path);
+    FILE *fp = wide ? _wfopen(wide, L"rb") : NULL;
+    free(wide);
+#else
     FILE *fp = fopen(host_path, "rb");
+#endif
     if (!fp) {
         set_error(error, "cannot open %s: %s", host_path, strerror(errno));
         return -1;
@@ -132,40 +152,102 @@ static int create_file(lfs_t *lfs, const char *lfs_path, const char *host_path, 
     size_t n;
     while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
         lfs_ssize_t written = lfs_file_write(lfs, &file, buf, (lfs_size_t)n);
-        if (written < 0) {
-            set_error(error, "lfs_file_write(%s) failed: %d", lfs_path, (int)written);
+        if (written != (lfs_ssize_t)n) {
+            set_error(error, "lfs_file_write(%s) failed: %d of %u bytes", lfs_path, (int)written, (unsigned)n);
             lfs_file_close(lfs, &file);
             fclose(fp);
-            return (int)written;
+            return written < 0 ? (int)written : -1;
         }
     }
+    if (ferror(fp)) {
+        set_error(error, "failed to read %s", host_path);
+        lfs_file_close(lfs, &file);
+        fclose(fp);
+        return -1;
+    }
 
-    lfs_file_close(lfs, &file);
+    err = lfs_file_close(lfs, &file);
+    if (err) {
+        set_error(error, "lfs_file_close(%s) failed: %d", lfs_path, err);
+        fclose(fp);
+        return err;
+    }
+    if (fseek(fp, 0, SEEK_SET) != 0) {
+        set_error(error, "failed to rewind %s", host_path);
+        fclose(fp);
+        return -1;
+    }
+
+    err = lfs_file_open(lfs, &file, lfs_path, LFS_O_RDONLY);
+    if (err) {
+        set_error(error, "verification open(%s) failed: %d", lfs_path, err);
+        fclose(fp);
+        return err;
+    }
+    unsigned char check[4096];
+    while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
+        lfs_ssize_t read = lfs_file_read(lfs, &file, check, (lfs_size_t)n);
+        if (read != (lfs_ssize_t)n || memcmp(buf, check, n) != 0) {
+            set_error(error, "verification failed for %s", lfs_path);
+            lfs_file_close(lfs, &file);
+            fclose(fp);
+            return -1;
+        }
+    }
+    if (ferror(fp) || lfs_file_read(lfs, &file, check, 1) != 0) {
+        set_error(error, "verification length mismatch for %s", lfs_path);
+        lfs_file_close(lfs, &file);
+        fclose(fp);
+        return -1;
+    }
+    err = lfs_file_close(lfs, &file);
     fclose(fp);
+    if (err) {
+        set_error(error, "verification close(%s) failed: %d", lfs_path, err);
+        return err;
+    }
     return 0;
 }
 
 static int compact(lfs_t *lfs, const char *lfs_prefix, const char *host_dir, MklfsBuffer *error) {
 #ifdef _WIN32
-    WIN32_FIND_DATAA fdata;
+    WIN32_FIND_DATAW fdata;
     char pattern[1024];
+    if (strlen(host_dir) + 3 > sizeof(pattern)) {
+        set_error(error, "host path too long: %s", host_dir);
+        return -1;
+    }
     snprintf(pattern, sizeof(pattern), "%s\\*", host_dir);
-    HANDLE hFind = FindFirstFileA(pattern, &fdata);
+    wchar_t *wide = wide_path(pattern);
+    HANDLE hFind = wide ? FindFirstFileW(wide, &fdata) : INVALID_HANDLE_VALUE;
+    free(wide);
     if (hFind == INVALID_HANDLE_VALUE) {
         set_error(error, "cannot open directory %s", host_dir);
         return -1;
     }
     do {
-        if (strcmp(fdata.cFileName, ".") == 0 || strcmp(fdata.cFileName, "..") == 0)
+        if (wcscmp(fdata.cFileName, L".") == 0 || wcscmp(fdata.cFileName, L"..") == 0)
             continue;
+
+        char name[1024];
+        if (!WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, fdata.cFileName, -1, name, sizeof(name), NULL, NULL)) {
+            set_error(error, "cannot convert filename to UTF-8 in %s", host_dir);
+            FindClose(hFind);
+            return -1;
+        }
+        if (strlen(host_dir) + strlen(name) + 2 > 1024 || strlen(lfs_prefix) + strlen(name) + 2 > 1024) {
+            set_error(error, "path too long under %s", host_dir);
+            FindClose(hFind);
+            return -1;
+        }
 
         char host_path[1024];
         char lfs_path[1024];
-        snprintf(host_path, sizeof(host_path), "%s\\%s", host_dir, fdata.cFileName);
+        snprintf(host_path, sizeof(host_path), "%s\\%s", host_dir, name);
         if (strlen(lfs_prefix) == 0)
-            snprintf(lfs_path, sizeof(lfs_path), "/%s", fdata.cFileName);
+            snprintf(lfs_path, sizeof(lfs_path), "/%s", name);
         else
-            snprintf(lfs_path, sizeof(lfs_path), "%s/%s", lfs_prefix, fdata.cFileName);
+            snprintf(lfs_path, sizeof(lfs_path), "%s/%s", lfs_prefix, name);
 
         if (fdata.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
             int err = lfs_mkdir(lfs, lfs_path);
@@ -180,8 +262,13 @@ static int compact(lfs_t *lfs, const char *lfs_prefix, const char *host_dir, Mkl
             int err = create_file(lfs, lfs_path, host_path, error);
             if (err) { FindClose(hFind); return err; }
         }
-    } while (FindNextFileA(hFind, &fdata));
+    } while (FindNextFileW(hFind, &fdata));
+    DWORD last_error = GetLastError();
     FindClose(hFind);
+    if (last_error != ERROR_NO_MORE_FILES) {
+        set_error(error, "failed to enumerate directory %s: %lu", host_dir, (unsigned long)last_error);
+        return -1;
+    }
 #else
     DIR *dir = opendir(host_dir);
     if (!dir) {
@@ -193,6 +280,11 @@ static int compact(lfs_t *lfs, const char *lfs_prefix, const char *host_dir, Mkl
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
             continue;
 
+        if (strlen(host_dir) + strlen(entry->d_name) + 2 > 1024 || strlen(lfs_prefix) + strlen(entry->d_name) + 2 > 1024) {
+            set_error(error, "path too long under %s", host_dir);
+            closedir(dir);
+            return -1;
+        }
         char host_path[1024];
         char lfs_path[1024];
         snprintf(host_path, sizeof(host_path), "%s/%s", host_dir, entry->d_name);
@@ -223,8 +315,13 @@ static int compact(lfs_t *lfs, const char *lfs_prefix, const char *host_dir, Mkl
     return 0;
 }
 
+uint32_t mklfs_name_max(void) {
+    return LFS_NAME_MAX;
+}
+
 int mklfs_build(const char *const *source_dirs, size_t source_dir_count,
                 size_t fs_size, size_t block_size,
+                uint32_t name_max, uint32_t verify_name_max,
                 unsigned char *output, size_t output_len,
                 MklfsBuffer *error) {
     size_t i;
@@ -242,6 +339,10 @@ int mklfs_build(const char *const *source_dirs, size_t source_dir_count,
         fs_size > UINT32_MAX || block_size > UINT32_MAX ||
         block_size < 256 || block_size % 256 != 0 || fs_size / block_size == 0) {
         set_error(error, "invalid size parameters");
+        return 2;
+    }
+    if (name_max == 0 || name_max > LFS_NAME_MAX || verify_name_max > LFS_NAME_MAX) {
+        set_error(error, "invalid name_max (1..%u required)", (unsigned)LFS_NAME_MAX);
         return 2;
     }
     for (i = 0; i < source_dir_count; i++) {
@@ -268,6 +369,7 @@ int mklfs_build(const char *const *source_dirs, size_t source_dir_count,
     cfg.cache_size = 256;
     cfg.lookahead_size = 16;
     cfg.block_cycles = 500;
+    cfg.name_max = name_max;
 
     err = lfs_format(&lfs, &cfg);
     if (err) {
@@ -290,6 +392,18 @@ int mklfs_build(const char *const *source_dirs, size_t source_dir_count,
     }
 
     lfs_unmount(&lfs);
+
+    if (verify_name_max) {
+        lfs_t check_lfs;
+        memset(&check_lfs, 0, sizeof(check_lfs));
+        cfg.name_max = verify_name_max;
+        err = lfs_mount(&check_lfs, &cfg);
+        if (err) {
+            set_error(error, "firmware-profile mount failed: %d (name_max=%u)", err, (unsigned)verify_name_max);
+            return 1;
+        }
+        lfs_unmount(&check_lfs);
+    }
     return 0;
 }
 

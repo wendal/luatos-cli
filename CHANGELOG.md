@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 新增
+
+#### 160X 文件系统与 FSKV 组合烧录
+
+- `flash script` / `flash run` 增加 `--fs-mode preserve|replace|clear`、`--fs-dir <DIR>` 和 `--clear-kv`，首批限定 Air1601 / Air1602 / Air1603：目录以原始字节与相对路径制作 LittleFS 镜像，支持整区替换 FS、仅清空 FS、独立清空 FSKV。
+- 显式 `preserve` 跳过 SOC 内置 `fs.bin`；`replace` 使用指定目录的新镜像，`clear` 清除后不写回内置镜像。未传新参数的 CLI 调用保持旧行为，FS 替换/清空不隐式清除 FSKV。
+- 文件系统、FSKV 和脚本操作在同一次下载会话中完成，最后统一复位；保留 SOC 资源内存读取、LZMA 下载、`--luac-debug`、设备 MD5 校验及全量下载后的 `--tail-log-secs`。
+- 增加 `--dry-run`：只执行本地镜像构建与参数/容量/分区预检，不连接串口，也不执行尾随日志采集。Ccm4211 的独立 `flash flash-fs --script <DIR>` 同时补齐，接受一个源目录。
+- 擦写前校验 SOC 分区地址/长度与下载配置的一致性、分区重叠、源文件变化、符号链接/reparse point 及容量；镜像格式暂限 `lfs` / `littlefs`。源目录及 SOC 不生成临时镜像文件。
+- FS / FSKV 使用配套 ramrun 的镜像下载通道完成擦写，替换直接写完整镜像，清空写分区等长的全 FF 镜像，并做完整 MD5 校验；支持 SOC 中声明的 64KiB FSKV。下载缓存只用于数据分片，不作为物理擦除依据。
+- 自动化覆盖策略组合、布局/设备块大小不符、逐块清除与校验、取消、中文路径与容量超限；release 二进制通过两种烧录入口的 12 种离线策略组合，使用说明见 [160X 文件系统烧录](docs/160x-filesystem-flash.md)。
+
+### 修复
+
+#### 160X LittleFS name_max 不兼容导致启动后资源丢失
+
+- 固件 `luat_fs_ccm42xx.c` 挂载数据 FS 时使用 `name_max=63`，此前通用 mklfs 默认生成 `name_max=255` 的超级块；即使下载 MD5 正确，固件仍会返回 `mount fail=-22`，随后自动格式化，最终出现 `main.xml not found`。
+- 新增带目标 name_max 的 LittleFS 构建入口，所有 mklfs 默认构建统一使用 63 并在输出镜像前按目标上限重新挂载验证，也可显式指定其他上限；超过 63 个 UTF-8 字节的单级名称在所有默认构建中拒绝。EC7xx 固件默认上限为 255，但可挂载声明 63 的镜像。
+- 回归测试准确复现默认 255 镜像在目标 63 配置下的 -22，修复镜像可挂载，超长名称明确失败。
+- Air1603_A10 / V1031 104 / COM11 当前 FS 例程真机通过：`FS_LOAD /Heat_exchange_station/main.xml`、`heat_fs UI_READY` 以及后续 `HEARTBEAT main`。验证不再止于下载 MD5 或 SD 例程启动。
+
+#### 160X 文件系统清空/替换改用完整镜像下载通道
+
+- 按 `build_luatos_types.py → csdk.lua → flash_map.h` 核对配置与打包来源：SOC 复制的是 `csdk/tools/ramrun/ramrun.bin` 预编译文件，不能仅按 `project/ramrun` 源码推断实际命令行为。
+- 实机发现，独立 CMD8 擦除 ACK 不能证明整段 FS 已清空；64KiB 分段 MD5 仅有 27/72、35/72 通过，4KiB 校验也可读到残留。删除组合烧录中自制的 CMD8 预擦除路径。
+- FS 替换直接使用声明容量的完整 LittleFS 镜像，清空使用同容量全 FF 镜像，统一走 SDK/LuaTools 已有的数据镜像下载协议及完整 MD5 校验。仍验证分区地址、容量、对齐与重叠，不扩大范围、不跳过校验。
+- 修正此前只要使用过 LZMA 就无条件明文重传、并误报“MD5 校验未通过”的逻辑：先真实校验压缩传输，只有校验失败才回退一次明文；压缩/明文最终都必须校验通过。
+- Air1603_A10 / V1031 104 / COM11 实机：当前 Air8607 项目的 4.5MiB FS 镜像写入与 4.5MiB 全 FF 清空均已通过完整 MD5，脚本下载和复位成功；FSKV 本轮保持不清除。随后再次恢复 4.5MiB 资源镜像和脚本，完整 MD5 通过；日志确认 `LuatOS@Air1603` / V1031、`SD_MOUNTED`、`UI_READY`。
+
+#### LittleFS 镜像构建的 Windows Unicode 路径与内容校验
+
+- 静态链接的 mklfs 在 Windows 目录枚举和文件打开时使用 `FindFirstFileW` / `FindNextFileW` / `_wfopen`，通过 UTF-8 与 UTF-16 转换保留中文源目录、空格及文件名，不引入 `wmain` 或辅助可执行文件。
+- Windows 与 Linux/macOS 的目录实现按 `_WIN32` 条件编译隔离，LittleFS 内部路径统一保持 UTF-8，不改变目录合并语义；路径超长时明确报错，不静默截断。
+- 打包检测短写、读取失败与关闭失败，并逐字节回读镜像内文件进行比对，全程不释放 helper 或创建临时文件。
+
 ### 移除
 
 #### 移除已停用的 GUI crate
@@ -33,8 +68,9 @@ All notable changes to this project will be documented in this file.
 
 #### mklfs 进程内静态链接
 
-- `build_littlefs_image` / `build_littlefs_image_from_dirs` 改为直接调用静态链接的 mklfs/LittleFS C 实现，不再释放 helper、写持久缓存或启动子进程；公开 Rust API、CLI、目录合并顺序与镜像格式不变
-- 每次构建使用独立 LittleFS context，Rust 直接持有输出镜像；单目录及多目录固定向量与旧 helper 完全一致，并覆盖缓存/TEMP 不可用和并发构建回归
+- `build_littlefs_image` / `build_littlefs_image_from_dirs` 改为直接调用静态链接的 mklfs/LittleFS C 实现，不再释放 helper、写持久缓存或启动子进程；公开 Rust API、CLI 和目录合并顺序不变，默认 `name_max` 按全平台兼容决策统一为 63，因此通用镜像哈希相应变化
+- 每次构建使用独立 LittleFS context，Rust 直接持有输出镜像；单目录及多目录固定向量与 Gitee `--name-max 63` 参考工具完全一致，并覆盖缓存/TEMP 不可用、Unicode、内容回读和并发构建回归
+- XT804 `flash flash-fs` 的镜像超级块也随统一默认值变为 63；依据 LittleFS 单向挂载检查可兼容原 255 目标，但本次未做 XT804 对应实机回归
 
 #### 刷机链路零临时文件
 
@@ -155,6 +191,13 @@ All notable changes to this project will be documented in this file.
 - 旧实现的芯片族白名单把 CCM4211 列为支持，但该协议实测 `GET_FLASH_DATA` 无应答、能力表 `supports_read()` 为 false，用户要等到打开串口、加载 ramrun 之后才看到失败；XT804 虽在旧白名单之外，但本次改用 `RawChip::from_family` 后会被映射成 Xt804，必须靠能力校验拦住，否则会回归为放行
 - 现在统一由能力表判定：仅 BK7258 可读回，CCM4211 / XT804 均在连接硬件前给出明确错误；错误文案同步修正为「仅支持 Air8101(BK7258)」，并把子命令名统一为 `flash dump`
 - 新增 `resolve_dump_chip` 纯函数与 CLI 层回归测试，覆盖全部 7 个 `ChipFamily` 变体的放行/拒绝
+
+#### Air160x / CCM4211：OTA 未压缩块兼容旧 Bootloader
+
+- 修正 OTA 分块打包：未压缩块始终携带长度为 5 的全零 properties，避免旧 Bootloader 沿用上一压缩块的标志，导致升级后 `soc ota final check md5 fail` 循环重启。
+- 对齐原版 `soc_tools.exe`：压缩结果不超过分块容量时保留 LZMA，即使比原始数据更大；超过容量时使用带显式零 properties 的原始块。压缩器错误直接报告失败。
+- 已验证“压缩块 → 未压缩块 → 短压缩尾块”，MD5/CRC 两种格式均与原版打包器逐字节一致。
+- Air1602_A10 + Air780EPM AirLink 4G，使用未修复的旧 Bootloader 实测 1 次脚本 OTA、2 次全量 OTA，均完成升级与目标脚本资源 SHA256 校验。
 
 #### Air780EPM：修复 USB 烧录失败
 

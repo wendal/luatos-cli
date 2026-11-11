@@ -26,6 +26,7 @@ mod cmd_trun;
 mod event;
 mod keyword;
 mod reset_args;
+mod storage_args;
 
 const DEFAULT_FLASH_TEST_KEYWORD: &str = "LuatOS@";
 
@@ -220,6 +221,8 @@ enum FlashCommands {
         /// luac 调试信息保留级别: 0=无, 1=仅行号, 2=仅变量名, 99=全部
         #[arg(long, default_value = "99", value_parser = parse_luac_debug)]
         luac_debug: u8,
+        #[command(flatten)]
+        storage: storage_args::StorageArgs,
         /// RTS reset and boot-wait options
         #[command(flatten)]
         reset: reset_args::ResetArgs,
@@ -244,6 +247,8 @@ enum FlashCommands {
         /// Pre-compiled script image (LuaDB; XT804 header added automatically, BK CRC must already be framed)
         #[arg(long)]
         bin: Option<String>,
+        #[command(flatten)]
+        storage: storage_args::StorageArgs,
         /// RTS reset and boot-wait options
         #[command(flatten)]
         reset: reset_args::ResetArgs,
@@ -260,7 +265,7 @@ enum FlashCommands {
         #[command(flatten)]
         reset: reset_args::ResetArgs,
     },
-    /// Build LuaDB and flash to filesystem partition
+    /// Build and flash a filesystem image (160X: LittleFS)
     FlashFs {
         /// Path to .soc file
         #[arg(long)]
@@ -759,9 +764,20 @@ fn main() {
                 luac_debug,
                 reset,
                 tail_log_secs,
+                storage,
             } => {
                 let script_opt = if script.is_empty() { None } else { Some(script.as_slice()) };
-                cmd_flash::cmd_flash_run(&soc, &port, baud, script_opt, luac_debug, progress_step, &cli.format, &reset, tail_log_secs)
+                if storage.requested() {
+                    cmd_flash::cmd_flash_storage(&soc, &port, script_opt, None, true, luac_debug, progress_step, &cli.format, &storage).and_then(|_| {
+                        if tail_log_secs > 0 && !storage.dry_run {
+                            cmd_flash::tail_log_after_flash(&soc, &port, tail_log_secs, &cli.format)
+                        } else {
+                            Ok(())
+                        }
+                    })
+                } else {
+                    cmd_flash::cmd_flash_run(&soc, &port, baud, script_opt, luac_debug, progress_step, &cli.format, &reset, tail_log_secs)
+                }
             }
             FlashCommands::Script {
                 soc,
@@ -769,9 +785,13 @@ fn main() {
                 script,
                 luac_debug,
                 bin,
+                storage,
                 reset,
             } => {
-                if let Some(bin_path) = bin {
+                if storage.requested() {
+                    let script_opt = if script.is_empty() { None } else { Some(script.as_slice()) };
+                    cmd_flash::cmd_flash_storage(&soc, &port, script_opt, bin.as_deref(), false, luac_debug, progress_step, &cli.format, &storage)
+                } else if let Some(bin_path) = bin {
                     let on_progress = cmd_flash::make_progress_callback(&cli.format, "flash.script".to_string(), progress_step);
                     cmd_flash::cmd_flash_script_bin(&soc, &port, &bin_path, &on_progress).and_then(|_| cmd_flash::print_script_result(&cli.format))
                 } else {
