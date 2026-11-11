@@ -36,7 +36,7 @@ Cargo workspace（`Cargo.toml`）包含 12 个 crate：
 - **crates/luatos-cli** — 二进制入口。`main.rs` 用 clap 派生宏定义子命令树（`serial` / `soc` / `flash` / `log` / `project` / `build` / `resource` / `device` / `doctor` / `fota` / `guide` / `trun` / `hzv` / `version`）。各 `cmd_*.rs` 模块实现业务逻辑，全局 `--format text|json|jsonl` 决定输出形式；关键模块：`keyword.rs`（`flash test` 与 `trun` 共用的关键字判定）、`cmd_trun.rs`（testcase 单点调试）、`cmd_doctor.rs`（环境诊断）、`cmd_guide.rs`（型号二级帮助）、`cmd_hzv.rs`（HZV 独立子命令入口）。
 - **crates/luatos-flash** — 刷机协议：BK7258（Air8101）、XT804（Air6208/Air101/Air103）、CCM4211（Air1601/Air1602/Air1603/Air1604）、EC718（Air8000/Air780）、Air6201 外置 SPI。每个芯片一个模块，公共类型为 `FlashProgress` 与 `ProgressCallback = Box<dyn Fn(&FlashProgress) + Send>`。`script.rs` 是各芯片族脚本镜像的统一构建入口（`build_script_image` / `validate_script_image_for_family` / `script_write_alignment`）。`raw.rs` 的 `RawChip` 是任意地址读写协议的能力表；`RawChip::from_family` 是 `ChipFamily → raw 协议` 的唯一映射入口。SOC 包内资源（rom.bin、fdl、ramrun 等）一律经 `luatos_soc::SocArchive` 纯内存读取，不再解压到临时目录或调用外部刷机 exe；脚本编译/ctx 合入/XT804 文件系统合并同样全内存完成。
 - **crates/luatos-soc** — SOC 固件包（ZIP+7z）解析、解包、打包、注入（`combine.rs`）、OTA 包生成。`ota.rs` 含 LZMA SDK 的 FFI 绑定（`lzma_sdk_compress`），`pack.rs` 为纯 Rust ZIP/7z 打包。
-- **crates/luatos-luadb** — LuaDB 文件系统镜像打包，含进程内静态链接的 32/64 位 Lua 5.3 编译器、mklfs helper 与 BK CRC16 framing。
+- **crates/luatos-luadb** — LuaDB 文件系统镜像打包，含进程内静态链接的 32/64 位 Lua 5.3 编译器、mklfs/LittleFS 构建器与 BK CRC16 framing。
 - **crates/luatos-codec** — 零依赖的协议基础算法（Beken CRC16 / 32+2 帧化 / 解帧）。`luatos-luadb` 与 `luatos-soc` 共用，避免同一算法两份实现。
 - **crates/luatos-serial** — 串口枚举、文本/二进制日志流。
 - **crates/luatos-project** — 项目脚手架、导入（LuaTools `.ini`/`.luatos`）、Lua 依赖分析（`lua_deps.rs`）、配置 `luatos-project.toml`、向导（`wizard.rs`）、分析（`analyze.rs`）、打包（`archive.rs`）、模板（`template.rs`）。
@@ -78,7 +78,7 @@ Cargo workspace（`Cargo.toml`）包含 12 个 crate：
 ### 刷机链路禁止临时文件
 - `luatos-luadb` / `luatos-flash` / `luatos-testcase` 的生产代码及 `cmd_flash.rs` / `cmd_trun.rs` **不得**使用 `tempfile` / `env::temp_dir` 创建每次运行的中间目录或文件；脚本镜像必须全内存构建并以 `Vec<u8>` / `&[u8]` 传递。
 - 新增 BSP 刷机入口必须接受脚本字节 overlay（或等价的 `flash_script_data`），不得要求目录/文件路径；容量校验必须在打开串口前完成。
-- luac 的 32/64 位 C 核心在构建期直接静态链接进程序，编译时不得再释放 helper 或启动子进程；`luatos-luadb::embedded_helpers` 只为 `mklfs` 保留按内容寻址的**持久缓存**，不随单次刷机创建/删除，不属于临时文件。
+- luac 的 32/64 位 C 核心与 mklfs/LittleFS 构建器均在构建期直接静态链接进程序，编译时不得再释放 helper、写持久缓存或启动子进程。
 - 测试夹具仍可用 `tempfile::TempDir`；不要把它带进生产路径。
 
 ### 增量功能维护

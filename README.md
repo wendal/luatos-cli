@@ -17,7 +17,7 @@ LuatOS 命令行工具集（纯 Rust）——刷机、日志、项目管理、�
 - **脚本调试信息可控**：用 `--script <dir>` 打包脚本时支持 `--luac-debug 0|1|2|99`（默认 `99`=全部调试信息，非法值直接报错），覆盖 BK7258 / XT804 / CCM4211 / EC718 / RDA8910 的脚本编译路径；脚本偏大时可降到 `0`/`1` 缩小镜像。`flash run/test --script` 现已覆盖全部五族
 - **脚本下载容量检查**：脚本下载前按 SOC 的 `rom.fs.script.size`（KB，按 1024 字节换算）检查最终镜像大小，覆盖目录编译、`flash script --bin` 和全量刷机中的独立脚本镜像；BK7258 / XT804 同时检查对齐后的写入长度。镜像超限或 SOC 未声明脚本容量时直接报错，不继续下载。
 - **trun 单点调试**：`trun <name> --soc base.soc --port COM6` 一站式完成 testcase 合成 → 刷机 → 抓日志 → 关键字校验，取代 luatos-autotest-v2 在开发期的临时合成
-- **刷机链路零临时文件**：脚本编译、ctx.json 合入、XT804 文件系统合并全部在内存完成；`flash run/script/test`、`flash flash-fs` 与 `trun` 默认不再创建每次运行的临时目录/文件（Lua/mklfs helper 的内容寻址持久缓存除外），详见 [刷机链路零临时文件设计](docs/in-memory-flash-pipeline.md)
+- **刷机链路零临时文件**：脚本编译、ctx.json 合入、XT804 文件系统合并全部在内存完成；`flash run/script/test`、`flash flash-fs` 与 `trun` 默认不再创建每次运行的临时目录/文件；luac 与 mklfs 均为进程内静态链接，不释放 helper 或启动子进程，详见 [刷机链路零临时文件设计](docs/in-memory-flash-pipeline.md)
 - **日志系统**：文本 / 二进制日志查看、录制、解析，支持智能诊断；`--port auto` 按 USB 接口号自动识别 EC718 / RDA8910 的 log 口；`log view-binary` 按实际打开的口选 0x7E（EC718 USB CDC）或 0xA5（CH340 / SOC UART），不因同机插着 4G USB 而误切协议
 - **项目与构建**：项目向导、配置管理、Lua 依赖分析、luac/LuaDB 构建
 - **AI 友好输出**：全局 `--format text|json|jsonl`

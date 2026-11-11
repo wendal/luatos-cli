@@ -2,12 +2,10 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use walkdir::WalkDir;
 
-use crate::embedded_helpers::ensure_mklfs_helper;
 use crate::romfs::{self, RomfsFile};
 use crate::{add_bk_crc, pack_luadb, LuadbEntry};
 
@@ -293,7 +291,7 @@ pub fn payload_limit(capacity: usize, framed: bool) -> usize {
     }
 }
 
-/// Build a LittleFS image from one or more directories using the embedded mklfs helper.
+/// Build a LittleFS image from one or more directories using the statically linked mklfs builder.
 ///
 /// * `source_dirs` — directories of files to pack into the LFS image, in merge order.
 ///   Later directories override files with the same relative path.
@@ -306,30 +304,7 @@ pub fn build_littlefs_image_from_dirs(source_dirs: &[&Path], fs_size: usize, blo
     for dir in source_dirs {
         anyhow::ensure!(dir.is_dir(), "Source directory does not exist or is not a directory: {}", dir.display());
     }
-
-    let helper = ensure_mklfs_helper().map_err(|e| anyhow::anyhow!("failed to prepare mklfs helper: {e}"))?;
-
-    let mut command = Command::new(&helper);
-    command.arg("--merge").arg(fs_size.to_string()).arg(block_size.to_string()).arg("256").arg("256");
-    for dir in source_dirs {
-        command.arg(dir.to_str().context("non-UTF8 path")?);
-    }
-
-    let output = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .with_context(|| format!("failed to run mklfs helper from {}", helper.display()))?;
-
-    if output.status.success() {
-        if output.stdout.len() != fs_size {
-            bail!("mklfs produced {} bytes, expected {}", output.stdout.len(), fs_size);
-        }
-        Ok(output.stdout)
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        bail!("mklfs failed: {}", if stderr.is_empty() { "unknown error".to_string() } else { stderr });
-    }
+    crate::mklfs::build(source_dirs, fs_size, block_size)
 }
 
 /// Build a LittleFS image from a single directory. Kept as a convenience wrapper
@@ -342,6 +317,7 @@ pub fn build_littlefs_image(source_dir: &Path, fs_size: usize, block_size: usize
 mod tests {
     use super::*;
     use std::fs;
+    use std::process::Command;
     use tempfile::TempDir;
 
     fn make_test_dir() -> TempDir {
@@ -602,6 +578,100 @@ mod tests {
         let fs_size = 32 * 1024;
         let image = super::build_littlefs_image(dir.path(), fs_size, 4096).unwrap();
         assert_eq!(image.len(), fs_size);
+    }
+
+    const LITTLEFS_SINGLE_SHA256: &str = "fc570034d574bebf1489ec2b25de0de5a32242608cd415541b436478b6dabd55";
+    const LITTLEFS_ALTERNATE_SHA256: &str = "590ccabda38f772b9b26aca635cc24ab2d02d2d7584d313a9dd8a4d6323f737b";
+    const LITTLEFS_MERGED_SHA256: &str = "516f6c86b2fb50087eda5caa252a9969d72f21bb7b6163ad3910626f58f8dcb4";
+
+    fn littlefs_fixture(case: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/testcase_fixtures").join(case).join("scripts")
+    }
+
+    fn littlefs_sha256(image: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(image))
+    }
+
+    #[test]
+    fn littlefs_image_matches_helper_golden() {
+        let first = littlefs_fixture("happy_air8101");
+        let second = littlefs_fixture("happy_ec718");
+        let single = super::build_littlefs_image(&first, 64 * 1024, 4096).unwrap();
+        let alternate = super::build_littlefs_image(&second, 64 * 1024, 4096).unwrap();
+        let merged = super::build_littlefs_image_from_dirs(&[&first, &second], 64 * 1024, 4096).unwrap();
+        assert_eq!(littlefs_sha256(&single), LITTLEFS_SINGLE_SHA256);
+        assert_eq!(littlefs_sha256(&alternate), LITTLEFS_ALTERNATE_SHA256);
+        assert_eq!(littlefs_sha256(&merged), LITTLEFS_MERGED_SHA256);
+    }
+
+    #[test]
+    fn build_littlefs_image_without_helper_cache() {
+        const CHILD: &str = "LUATOS_CLI_MKLFS_TEST_CHILD";
+        const WATCH: &str = "LUATOS_CLI_MKLFS_TEST_WATCH";
+        if std::env::var_os(CHILD).is_some() {
+            let source = littlefs_fixture("happy_air8101");
+            let image = super::build_littlefs_image(&source, 64 * 1024, 4096).unwrap();
+            assert_eq!(image.len(), 64 * 1024);
+            assert_ne!(&image[..16], &[0xFF; 16]);
+            let watch = PathBuf::from(std::env::var_os(WATCH).unwrap());
+            assert!(fs::read_dir(watch).unwrap().next().is_none(), "mklfs created files in the temp watch directory");
+            return;
+        }
+
+        let dir = TempDir::new().unwrap();
+        let blocked = dir.path().join("cache-is-a-regular-file");
+        fs::write(&blocked, b"not a directory").unwrap();
+        let watch = TempDir::new().unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["build::tests::build_littlefs_image_without_helper_cache", "--exact", "--nocapture", "--test-threads=1"])
+            .env(CHILD, "1")
+            .env(WATCH, watch.path());
+        for name in ["LUATOS_CLI_HELPER_CACHE", "LOCALAPPDATA", "XDG_CACHE_HOME", "HOME", "USERPROFILE"] {
+            command.env(name, &blocked);
+        }
+        for name in ["TMPDIR", "TMP", "TEMP"] {
+            command.env(name, watch.path());
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "child failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"), "child did not run the isolated test");
+    }
+
+    #[test]
+    fn littlefs_concurrent_calls_are_isolated() {
+        let threads: Vec<_> = (0..8)
+            .map(|index| {
+                let (case, expected) = if index % 2 == 0 {
+                    ("happy_air8101", LITTLEFS_SINGLE_SHA256)
+                } else {
+                    ("happy_ec718", LITTLEFS_ALTERNATE_SHA256)
+                };
+                std::thread::spawn(move || {
+                    let source = littlefs_fixture(case);
+                    let image = super::build_littlefs_image(&source, 64 * 1024, 4096).unwrap();
+                    assert_eq!(littlefs_sha256(&image), expected);
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn littlefs_rejects_invalid_block_sizes() {
+        let source = littlefs_fixture("happy_air8101");
+        for block_size in [0, 100, 4095] {
+            let error = super::build_littlefs_image(&source, 64 * 1024, block_size).unwrap_err();
+            assert!(error.to_string().contains("invalid size parameters"), "block_size={block_size}: {error}");
+        }
     }
 }
 

@@ -2,7 +2,6 @@ use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 fn core_files(lua_src: &Path) -> Vec<PathBuf> {
     [
@@ -121,43 +120,6 @@ fn apply_os_defines(build: &mut cc::Build, target_os: &str) {
     }
 }
 
-fn apply_os_args(cmd: &mut Command, target_os: &str) {
-    match target_os {
-        "macos" => {
-            cmd.arg("-DLUA_USE_MACOSX");
-        }
-        "linux" => {
-            cmd.arg("-DLUA_USE_LINUX");
-            cmd.arg("-lm");
-            cmd.arg("-ldl");
-        }
-        _ => {}
-    }
-}
-
-fn link_helper(build: &cc::Build, out_dir: &Path, output: &Path, target_os: &str, label: &str) {
-    let objects = build.try_compile_intermediates().unwrap_or_else(|e| panic!("Failed to compile {label}: {e}"));
-    let compiler = build.get_compiler();
-    let mut cmd = compiler.to_command();
-    cmd.current_dir(out_dir);
-    cmd.env("TMP", out_dir);
-    cmd.env("TEMP", out_dir);
-    for object in &objects {
-        cmd.arg(object);
-    }
-    if compiler.is_like_msvc() {
-        cmd.arg(format!("/Fe:{}", output.display()));
-    } else {
-        cmd.arg("-o").arg(output);
-        apply_os_args(&mut cmd, target_os);
-    }
-
-    let status = cmd.status().unwrap_or_else(|e| panic!("Failed to spawn {label} linker: {e}"));
-    if !status.success() {
-        panic!("Failed to link {label}");
-    }
-}
-
 fn build_lua_compiler(lua_src: &Path, out_dir: &Path, bitw: u32, target_os: &str) {
     let symbols = write_symbol_prefix_header(lua_src, out_dir, bitw);
     let mut build = cc::Build::new();
@@ -186,8 +148,9 @@ fn build_lua_compiler(lua_src: &Path, out_dir: &Path, bitw: u32, target_os: &str
     build.compile(&format!("luatos_luac{bitw}"));
 }
 
-fn build_mklfs_helper(lfs_src: &Path, out_dir: &Path, target_os: &str) {
+fn build_mklfs(lfs_src: &Path, out_dir: &Path) {
     let mut build = cc::Build::new();
+    build.out_dir(out_dir.join("mklfs"));
     build.debug(false);
     build.include(lfs_src).warnings(false);
     build.env("TMP", out_dir);
@@ -197,15 +160,11 @@ fn build_mklfs_helper(lfs_src: &Path, out_dir: &Path, target_os: &str) {
     build.define("LFS_NO_WARN", None);
     build.define("LFS_NO_ERROR", None);
 
-    let helper_src = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set")).join("csrc/mklfs_helper.c");
-    build.file(helper_src);
+    let builder_src = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set")).join("csrc/mklfs.c");
+    build.file(builder_src);
     build.file(lfs_src.join("lfs.c"));
     build.file(lfs_src.join("lfs_util.c"));
-
-    let output = out_dir.join(format!("mklfs_helper{}", env::consts::EXE_SUFFIX));
-    link_helper(&build, out_dir, &output, target_os, "mklfs helper");
-
-    println!("cargo:rustc-env=MKLFS_HELPER_EMBED={}", output.display());
+    build.compile("luatos_mklfs");
 }
 
 fn main() {
@@ -217,7 +176,7 @@ fn main() {
 
     build_lua_compiler(&lua_src, &out_dir, 32, &target_os);
     build_lua_compiler(&lua_src, &out_dir, 64, &target_os);
-    build_mklfs_helper(&lfs_src, &out_dir, &target_os);
+    build_mklfs(&lfs_src, &out_dir);
     if target_os == "linux" {
         println!("cargo:rustc-link-lib=dylib=m");
         println!("cargo:rustc-link-lib=dylib=dl");
@@ -225,6 +184,6 @@ fn main() {
 
     println!("cargo:rerun-if-changed=lua-5.3.6/src");
     println!("cargo:rerun-if-changed=csrc/luac_helper.c");
-    println!("cargo:rerun-if-changed=csrc/mklfs_helper.c");
+    println!("cargo:rerun-if-changed=csrc/mklfs.c");
     println!("cargo:rerun-if-changed=lfs");
 }

@@ -10,9 +10,7 @@
 
 - FOTA 打包（`fota build`）仍依赖外部工具与其临时目录，它是升级包生成，不是设备刷机；
 - `soc combine` / `soc pack` / `soc unpack` 的离线归档临时目录；
-- HZV 转换的临时目录；
-- `luatos-luadb::embedded_helpers` 的 `mklfs` 持久缓存。它按 SHA256 内容寻址，
-  不随单次刷机创建/删除，不算临时文件。luac 已改为进程内静态链接，不再释放 helper。
+- HZV 转换的临时目录。
 
 ## 数据流
 
@@ -43,8 +41,8 @@ Vec<u8> script_image
   临时目录。
 - `build::compile_lua_bytes`：直接调用静态链接的 32/64 位 Lua C 核心，不释放 helper、不启动子进程。
 - `build::build_script_image_with_entries`：目录产物之后合入内存条目（ctx.json），同名覆盖。
-- `build::build_littlefs_image_from_dirs`：把多个目录直接交给 `mklfs_helper --merge`，
-  后目录覆盖同名文件；单目录 `build_littlefs_image` 保留为包装。
+- `build::build_littlefs_image_from_dirs`：直接调用静态链接的 mklfs/LittleFS C 构建器，
+  后目录覆盖同名文件；不释放 helper、不写缓存、不启动子进程；单目录 `build_littlefs_image` 保留为包装。
 
 ### `luatos-flash`
 
@@ -101,12 +99,11 @@ cargo build --release -p luatos-cli
 
 零临时文件验证：
 
-1. 把 `TEMP` / `TMP` / `TMPDIR` 指向一个空 watch 目录，并把
-   `LUATOS_CLI_HELPER_CACHE` 指向普通文件，使 luac helper 缓存在旧实现下不可用；
+1. 把 `TEMP` / `TMP` / `TMPDIR` 指向一个空 watch 目录；如需对照旧版本，再把旧版本专用的
+   `LUATOS_CLI_HELPER_CACHE` 指向普通文件，阻断其显式 helper 缓存路径；
 2. 执行 `luatos-cli build filesystem ... --luac`（离线）或带硬件执行
-   `flash script` / `flash run --script` / `trun`；
-3. luac 路径应成功且 watch 目录为空，不得创建 luac helper。涉及 mklfs 时改用有效的独立缓存目录，
-   其持久缓存不属于临时文件。
+   `flash script` / `flash run --script` / `flash flash-fs` / `trun`；
+3. luac 与 mklfs 路径均应成功且 watch 目录为空，不得创建 helper 或持久缓存。
 
 硬件验收至少覆盖 Air8101、Air1601、Air8000、Air724UG、Air6208；`trun` 后确认设备能读到
 `/ctx.json` 的 `test_id`，并对照改造前后同一脚本目录的 script.bin 哈希。

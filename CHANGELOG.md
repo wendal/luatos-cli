@@ -29,7 +29,12 @@ All notable changes to this project will be documented in this file.
 #### luac 编译器进程内静态链接
 
 - `compile_lua_bytes` 改为直接调用静态链接的 32/64 位 Lua 5.3.6 C 核心，不再释放 luac helper 或启动编译子进程；公开 Rust API、CLI 参数和字节码格式不变
-- 构建期自动生成符号前缀以隔离双 Lua 核心；32/64 位四档 debug mode 固定向量与旧 helper 完全一致，mklfs 仍保留原有持久缓存与子进程执行方式
+- 构建期自动生成符号前缀以隔离双 Lua 核心；32/64 位四档 debug mode 固定向量与旧 helper 完全一致
+
+#### mklfs 进程内静态链接
+
+- `build_littlefs_image` / `build_littlefs_image_from_dirs` 改为直接调用静态链接的 mklfs/LittleFS C 实现，不再释放 helper、写持久缓存或启动子进程；公开 Rust API、CLI、目录合并顺序与镜像格式不变
+- 每次构建使用独立 LittleFS context，Rust 直接持有输出镜像；单目录及多目录固定向量与旧 helper 完全一致，并覆盖缓存/TEMP 不可用和并发构建回归
 
 #### 刷机链路零临时文件
 
@@ -38,10 +43,10 @@ All notable changes to this project will be documented in this file.
 - 新增字节入口 `bk7258::flash_bk7258_with_overlay` / `bk7258::flash_script_data`、`xt804::build_script_image_from_dirs` / `xt804::flash_script_data`；`luatos_flash::script` 成为 CLI 与 `trun` 的唯一脚本构建入口
 - `trun` 删除 `ctx.json` 临时目录、默认 `script.bin` 临时文件与 `combined.soc`/unpack-pack 临时路径；ctx.json 以内存条目烧入，刷机阶段直接传 `&[u8]`。`--keep-soc` 现在只在用户指定目录保留 `script.bin`（`artifacts.combined_soc` 恒为 null）
 - `trun` 的脚本目录优先级统一为 common → testcase scripts → `--libs` → ctx.json（BK 也走同一顺序）；XT804/RDA8910 的仅脚本路径从“不支持”变为可用
-- XT804 `flash run --script` / `flash test --script` 由“报错拒绝”改为“固件 + 脚本分区两阶段刷写”；`flash flash-fs` 直接把多个目录交给 `mklfs_helper --merge`，删除合并临时目录
+- XT804 `flash run --script` / `flash test --script` 由“报错拒绝”改为“固件 + 脚本分区两阶段刷写”；`flash flash-fs` 直接把多个目录交给进程内 mklfs 合并，删除合并临时目录
 - `flash script --bin` 统一走 `cmd_flash_script_data`，支持 BK7258/XT804/CCM4211/EC718/RDA8910；XT804 输入为原始 LuaDB（自动加 XT804 头），BK 输入须已 BK CRC 帧化
 - `trun` 的 RDA8910 日志抓取增加运行口等待与 `Rda8910LogDecoder` 路径，与 `flash run --tail-log-secs` 对齐（RDA/XT804 的 trun 真机验证待补）
-- `luatos-luadb` 辅助可执行文件构建改为“逐文件编译 + 短链接命令”，并把编译器临时文件固定到 OUT_DIR，规避部分 Windows/MSVC 环境的 D8050/D8018
+- `luatos-luadb` 的 Lua/mklfs C 源码均直接构建为静态库，并把编译器临时文件固定到 OUT_DIR，规避部分 Windows/MSVC 环境的 D8050/D8018；mklfs 不再生成辅助可执行文件
 - `luatos-luadb` / `luatos-flash` / `luatos-testcase` 的 `tempfile` 降为 dev-dependency；生产刷机路径不再引用
 - 新增设计说明 `docs/in-memory-flash-pipeline.md`；`CLAUDE.md` 增加“刷机链路禁止临时文件”约定
 
