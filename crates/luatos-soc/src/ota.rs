@@ -220,22 +220,20 @@ pub fn lzma_compress_file(input_path: &Path, output_path: &Path, magic: u32, sta
         let block = &raw_data[pos..block_end];
         pos = block_end;
 
-        let (compressed, props) = match lzma_compress_block(block, dict_size, lc, lp, pb) {
-            Ok((data, props)) if data.len() < block.len() => (data, props),
-            _ => {
-                // Compression failed or wasn't beneficial — store uncompressed
-                (block.to_vec(), [0u8; 5])
-            }
+        // soc_tools permits expansion up to the block buffer capacity. If the
+        // compressed stream exceeds it, emit raw data with FIVE zero props;
+        // legacy CCM bootloaders inspect props[0] even for uncompressed blocks.
+        let (compressed, props) = lzma_compress_block(block, dict_size, lc, lp, pb).with_context(|| format!("compress OTA block at offset {}", pos - block.len()))?;
+        let (compressed, props) = if compressed.len() <= max_block_len as usize {
+            (compressed, props)
+        } else {
+            (block.to_vec(), [0u8; LZMA_PROPS_SIZE])
         };
 
         // Write block: [1B props_len | 5B props | 4B LE compr_size | data]
         let compr_size = compressed.len() as u32;
-        let props_len = if props[0] == 0 { 0u8 } else { LZMA_PROPS_SIZE as u8 };
-
-        out_blocks.push(props_len);
-        if props_len == LZMA_PROPS_SIZE as u8 {
-            out_blocks.extend_from_slice(&props);
-        }
+        out_blocks.push(LZMA_PROPS_SIZE as u8);
+        out_blocks.extend_from_slice(&props);
         out_blocks.extend_from_slice(&compr_size.to_le_bytes());
         out_blocks.extend_from_slice(&compressed);
     }

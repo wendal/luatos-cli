@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 ### 修复
 
+#### Air160x / CCM4211：OTA 未压缩块兼容旧 Bootloader
+
+- 修正 OTA 分块打包：未压缩块始终携带长度为 5 的全零 properties，避免旧 Bootloader 沿用上一压缩块的标志，导致升级后 `soc ota final check md5 fail` 循环重启。
+- 对齐原版 `soc_tools.exe`：压缩结果不超过分块容量时保留 LZMA，即使比原始数据更大；超过容量时使用带显式零 properties 的原始块。压缩器错误直接报告失败。
+- 已验证“压缩块 → 未压缩块 → 短压缩尾块”，MD5/CRC 两种格式均与原版打包器逐字节一致。
+- Air1602_A10 + Air780EPM AirLink 4G，使用未修复的旧 Bootloader 实测 1 次脚本 OTA、2 次全量 OTA，均完成升级与目标脚本资源 SHA256 校验。
+
 #### Air780EPM：修复 USB 烧录失败
 
 - 更新内置 EC718M USB AgentBoot，与 LuaTools 当前使用版本一致，修复 Air780EPM ROM rev3 在下载旧 AgentBoot 后 USB 掉线、报 `Serial write failed` / Windows 错误 121 的问题；USB 下载波特率固定为 921600，不再套用 SOC 中的 UART `force_br`
