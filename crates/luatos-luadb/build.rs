@@ -88,6 +88,9 @@ fn link_helper(build: &cc::Build, out_dir: &Path, output: &Path, target_os: &str
     } else {
         cmd.arg("-o").arg(output);
         apply_os_args(&mut cmd, target_os);
+        if target_os == "windows" && label == "mklfs helper" {
+            cmd.arg("-municode");
+        }
     }
 
     let status = cmd.status().unwrap_or_else(|e| panic!("Failed to spawn {label} linker: {e}"));

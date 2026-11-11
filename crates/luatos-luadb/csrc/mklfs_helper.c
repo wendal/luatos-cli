@@ -24,6 +24,7 @@
 #include <io.h>
 #include <fcntl.h>
 #include <windows.h>
+#include <wchar.h>
 #else
 #include <dirent.h>
 #include <unistd.h>
@@ -32,6 +33,19 @@
 /* In-memory flash buffer */
 static unsigned char *flash_buf = NULL;
 static lfs_size_t flash_size = 0;
+
+#ifdef _WIN32
+/* Windows file APIs use UTF-16; filesystem entry names stay UTF-8 in LittleFS.
+ * POSIX builds use their existing byte-path fopen/opendir implementation. */
+static wchar_t *wide_path(const char *path)
+{
+    int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
+    if (!count) return NULL;
+    wchar_t *result = (wchar_t *)malloc(count * sizeof(wchar_t));
+    if (result && !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, result, count)) { free(result); return NULL; }
+    return result;
+}
+#endif
 
 static int lfs_read_cb(const struct lfs_config *c, lfs_block_t block,
                        lfs_off_t off, void *buffer, lfs_size_t size)
@@ -71,7 +85,13 @@ static int lfs_sync_cb(const struct lfs_config *c)
 /* Create a file in the LFS from a host file */
 static int create_file(lfs_t *lfs, const char *lfs_path, const char *host_path)
 {
+#ifdef _WIN32
+    wchar_t *wide = wide_path(host_path);
+    FILE *fp = wide ? _wfopen(wide, L"rb") : NULL;
+    free(wide);
+#else
     FILE *fp = fopen(host_path, "rb");
+#endif
     if (!fp) {
         fprintf(stderr, "cannot open %s: %s\n", host_path, strerror(errno));
         return -1;
@@ -89,7 +109,7 @@ static int create_file(lfs_t *lfs, const char *lfs_path, const char *host_path)
     size_t n;
     while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
         lfs_ssize_t written = lfs_file_write(lfs, &file, buf, (lfs_size_t)n);
-        if (written < 0) {
+        if (written != (lfs_ssize_t)n) {
             fprintf(stderr, "lfs_file_write(%s) failed: %d\n", lfs_path, (int)written);
             lfs_file_close(lfs, &file);
             fclose(fp);
@@ -97,34 +117,53 @@ static int create_file(lfs_t *lfs, const char *lfs_path, const char *host_path)
         }
     }
 
-    lfs_file_close(lfs, &file);
+    int failed = ferror(fp);
+    err = lfs_file_close(lfs, &file);
+    if (failed || err) { fclose(fp); return -1; }
+    rewind(fp);
+    err = lfs_file_open(lfs, &file, lfs_path, LFS_O_RDONLY);
+    if (err) { fclose(fp); return err; }
+    unsigned char check[4096];
+    while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
+        if (lfs_file_read(lfs, &file, check, (lfs_size_t)n) != (lfs_ssize_t)n || memcmp(buf, check, n)) {
+            lfs_file_close(lfs, &file); fclose(fp); return -1;
+        }
+    }
+    failed = ferror(fp) || lfs_file_read(lfs, &file, check, 1) != 0;
+    err = lfs_file_close(lfs, &file);
     fclose(fp);
-    return 0;
+    return failed || err ? -1 : 0;
 }
 
 /* Recursively pack a directory into LFS */
 static int compact(lfs_t *lfs, const char *lfs_prefix, const char *host_dir)
 {
 #ifdef _WIN32
-    WIN32_FIND_DATAA fdata;
+    WIN32_FIND_DATAW fdata;
     char pattern[1024];
     snprintf(pattern, sizeof(pattern), "%s\\*", host_dir);
-    HANDLE hFind = FindFirstFileA(pattern, &fdata);
+    wchar_t *wide = wide_path(pattern);
+    HANDLE hFind = wide ? FindFirstFileW(wide, &fdata) : INVALID_HANDLE_VALUE;
+    free(wide);
     if (hFind == INVALID_HANDLE_VALUE) {
         fprintf(stderr, "cannot open directory %s\n", host_dir);
         return -1;
     }
     do {
-        if (strcmp(fdata.cFileName, ".") == 0 || strcmp(fdata.cFileName, "..") == 0)
+        if (wcscmp(fdata.cFileName, L".") == 0 || wcscmp(fdata.cFileName, L"..") == 0)
             continue;
+
+        char name[1024];
+        if (!WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, fdata.cFileName, -1, name, sizeof(name), NULL, NULL)) { FindClose(hFind); return -1; }
+        if (strlen(host_dir) + strlen(name) + 2 > 1024 || strlen(lfs_prefix) + strlen(name) + 2 > 1024) { FindClose(hFind); return -1; }
 
         char host_path[1024];
         char lfs_path[1024];
-        snprintf(host_path, sizeof(host_path), "%s\\%s", host_dir, fdata.cFileName);
+        snprintf(host_path, sizeof(host_path), "%s\\%s", host_dir, name);
         if (strlen(lfs_prefix) == 0)
-            snprintf(lfs_path, sizeof(lfs_path), "/%s", fdata.cFileName);
+            snprintf(lfs_path, sizeof(lfs_path), "/%s", name);
         else
-            snprintf(lfs_path, sizeof(lfs_path), "%s/%s", lfs_prefix, fdata.cFileName);
+            snprintf(lfs_path, sizeof(lfs_path), "%s/%s", lfs_prefix, name);
 
         if (fdata.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
             int err = lfs_mkdir(lfs, lfs_path);
@@ -139,8 +178,10 @@ static int compact(lfs_t *lfs, const char *lfs_prefix, const char *host_dir)
             int err = create_file(lfs, lfs_path, host_path);
             if (err) { FindClose(hFind); return err; }
         }
-    } while (FindNextFileA(hFind, &fdata));
+    } while (FindNextFileW(hFind, &fdata));
+    DWORD last_error = GetLastError();
     FindClose(hFind);
+    if (last_error != ERROR_NO_MORE_FILES) return -1;
 #else
     DIR *dir = opendir(host_dir);
     if (!dir) {
@@ -187,13 +228,30 @@ static void print_usage(const char *prog)
     fprintf(stderr, "usage: %s <source_dir> <fs_size_bytes> [block_size] [read_size] [prog_size]\n", prog);
     fprintf(stderr, "       %s --merge <fs_size_bytes> <block_size> <read_size> <prog_size> <dir> [dir...]\n", prog);
     fprintf(stderr, "  --merge packs directories in order; later directories override same-path files.\n");
+    fprintf(stderr, "  Optional prefix: --name-max <N> --verify-name-max <N>\n");
 }
 
-int main(int argc, char **argv)
+static int mklfs_main(int argc, char **argv)
 {
 #ifdef _WIN32
     _setmode(_fileno(stdout), _O_BINARY);
 #endif
+
+    lfs_size_t name_max = 0;
+    lfs_size_t verify_name_max = 0;
+    while (argc >= 2 && (strcmp(argv[1], "--name-max") == 0 || strcmp(argv[1], "--verify-name-max") == 0)) {
+        if (argc < 3) return 2;
+        char *end = NULL;
+        unsigned long value = strtoul(argv[2], &end, 10);
+        if (!end || *end || value == 0 || value > LFS_NAME_MAX) {
+            fprintf(stderr, "invalid name_max (1..%u required)\n", (unsigned)LFS_NAME_MAX);
+            return 2;
+        }
+        if (strcmp(argv[1], "--name-max") == 0) name_max = (lfs_size_t)value;
+        else verify_name_max = (lfs_size_t)value;
+        argc -= 2;
+        argv += 2;
+    }
 
     const char *single_dir = NULL;
     const char **source_dirs = NULL;
@@ -252,6 +310,7 @@ int main(int argc, char **argv)
     cfg.cache_size  = read_size;  /* use read_size for cache */
     cfg.lookahead_size = 16;
     cfg.block_cycles   = 500;
+    cfg.name_max       = name_max;
 
     lfs_t lfs;
     int err = lfs_format(&lfs, &cfg);
@@ -279,6 +338,21 @@ int main(int argc, char **argv)
 
     lfs_unmount(&lfs);
 
+    /* Firmware may reject a valid image whose superblock advertises a larger
+     * name_max than its mount configuration. Never format on validation failure. */
+    if (verify_name_max) {
+        lfs_t check_lfs;
+        memset(&check_lfs, 0, sizeof(check_lfs));
+        cfg.name_max = verify_name_max;
+        err = lfs_mount(&check_lfs, &cfg);
+        if (err) {
+            fprintf(stderr, "firmware-profile mount failed: %d (name_max=%u)\n", err, (unsigned)verify_name_max);
+            free(flash_buf);
+            return 1;
+        }
+        lfs_unmount(&check_lfs);
+    }
+
     /* Write the flash image to stdout */
     size_t written = fwrite(flash_buf, 1, flash_size, stdout);
     if (written != flash_size) {
@@ -292,3 +366,25 @@ int main(int argc, char **argv)
     free(flash_buf);
     return 0;
 }
+
+#ifdef _WIN32
+/* Read Unicode command-line paths without conversion through the Windows
+ * legacy code page, then share the UTF-8 packing logic with other platforms. */
+int wmain(int argc, wchar_t **wide_argv)
+{
+    char **argv = (char **)calloc(argc + 1, sizeof(char *));
+    if (!argv) return 1;
+    for (int i = 0; i < argc; i++) {
+        int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide_argv[i], -1, NULL, 0, NULL, NULL);
+        if (!size || !(argv[i] = (char *)malloc(size)) || !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide_argv[i], -1, argv[i], size, NULL, NULL)) {
+            for (int j = 0; j <= i; j++) free(argv[j]);
+            free(argv); return 1;
+        }
+    }
+    int status = mklfs_main(argc, argv);
+    for (int i = 0; i < argc; i++) free(argv[i]);
+    free(argv); return status;
+}
+#else
+int main(int argc, char **argv) { return mklfs_main(argc, argv); }
+#endif

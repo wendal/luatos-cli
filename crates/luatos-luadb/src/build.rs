@@ -329,6 +329,15 @@ pub fn payload_limit(capacity: usize, framed: bool) -> usize {
 ///
 /// Returns the raw LFS image bytes (exactly `fs_size` bytes).
 pub fn build_littlefs_image_from_dirs(source_dirs: &[&Path], fs_size: usize, block_size: usize) -> Result<Vec<u8>> {
+    build_littlefs_image_config(source_dirs, fs_size, block_size, None, None)
+}
+
+/// Build and remount with the target firmware's name limit before flashing.
+pub fn build_littlefs_image_with_name_max(source_dir: &Path, fs_size: usize, block_size: usize, name_max: u32) -> Result<Vec<u8>> {
+    build_littlefs_image_config(&[source_dir], fs_size, block_size, Some(name_max), Some(name_max))
+}
+
+fn build_littlefs_image_config(source_dirs: &[&Path], fs_size: usize, block_size: usize, name_max: Option<u32>, verify_name_max: Option<u32>) -> Result<Vec<u8>> {
     anyhow::ensure!(!source_dirs.is_empty(), "At least one source directory is required");
     for dir in source_dirs {
         anyhow::ensure!(dir.is_dir(), "Source directory does not exist or is not a directory: {}", dir.display());
@@ -337,6 +346,18 @@ pub fn build_littlefs_image_from_dirs(source_dirs: &[&Path], fs_size: usize, blo
     let helper = ensure_mklfs_helper().map_err(|e| anyhow::anyhow!("failed to prepare mklfs helper: {e}"))?;
 
     let mut command = Command::new(&helper);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    if let Some(limit) = name_max {
+        anyhow::ensure!((1..=255).contains(&limit), "Invalid LittleFS name_max");
+        command.arg("--name-max").arg(limit.to_string());
+    }
+    if let Some(limit) = verify_name_max {
+        command.arg("--verify-name-max").arg(limit.to_string());
+    }
     command.arg("--merge").arg(fs_size.to_string()).arg(block_size.to_string()).arg("256").arg("256");
     for dir in source_dirs {
         command.arg(dir.to_str().context("non-UTF8 path")?);
@@ -797,5 +818,18 @@ mod resource_tests {
         assert!(!raw.data.len().is_multiple_of(34), "裸镜像不应是 34 字节帧的整数倍");
         assert_eq!(raw.data.len(), unframe(&build_resource_image(&[d.path()], 8192, romfs_type()).unwrap().data).len());
         assert_eq!(payload_limit(4096, false), 4096);
+    }
+    #[test]
+    fn ccm4211_firmware_mount_rejects_generic_name_max_but_accepts_63() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("Heat_exchange_station")).unwrap();
+        fs::write(dir.path().join("Heat_exchange_station/main.xml"), b"<ui/>").unwrap();
+        let legacy = build_littlefs_image_config(&[dir.path()], 256 * 1024, 4096, None, Some(63)).unwrap_err();
+        assert!(legacy.to_string().contains("firmware-profile mount failed: -22"), "{legacy}");
+        let image = build_littlefs_image_with_name_max(dir.path(), 256 * 1024, 4096, 63).unwrap();
+        assert_eq!(image.len(), 256 * 1024);
+        let too_long = "x".repeat(64);
+        fs::write(dir.path().join(too_long), b"data").unwrap();
+        assert!(build_littlefs_image_with_name_max(dir.path(), 256 * 1024, 4096, 63).is_err());
     }
 }

@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 新增
+
+#### 160X 文件系统与 FSKV 组合烧录
+
+- `flash script` / `flash run` 增加 `--fs-mode preserve|replace|clear`、`--fs-dir <DIR>` 和 `--clear-kv`，首批限定 Air1601 / Air1602 / Air1603：目录以原始字节与相对路径制作 LittleFS 镜像，支持整区替换 FS、仅清空 FS、独立清空 FSKV。
+- 显式 `preserve` 跳过 SOC 内置 `fs.bin`；`replace` 使用指定目录的新镜像，`clear` 清除后不写回内置镜像。未传新参数的 CLI 调用保持旧行为，FS 替换/清空不隐式清除 FSKV。
+- 文件系统、FSKV 和脚本操作在同一次下载会话中完成，最后统一复位；保留 SOC 资源内存读取、LZMA 下载、`--luac-debug`、设备 MD5 校验及全量下载后的 `--tail-log-secs`。
+- 增加 `--dry-run`：只执行本地镜像构建与参数/容量/分区预检，不连接串口，也不执行尾随日志采集。Ccm4211 的独立 `flash flash-fs --script <DIR>` 同时补齐，接受一个源目录。
+- 擦写前校验 SOC 分区地址/长度与下载配置的一致性、分区重叠、源文件变化、符号链接/reparse point 及容量；镜像格式暂限 `lfs` / `littlefs`。源目录及 SOC 不生成临时镜像文件。
+- FS / FSKV 使用配套 ramrun 的镜像下载通道完成擦写，替换直接写完整镜像，清空写分区等长的全 FF 镜像，并做完整 MD5 校验；支持 SOC 中声明的 64KiB FSKV。下载缓存只用于数据分片，不作为物理擦除依据。
+- 自动化覆盖策略组合、布局/设备块大小不符、逐块清除与校验、取消、中文路径与容量超限；release 二进制通过两种烧录入口的 12 种离线策略组合。该功能尚未完成真机擦写验收，使用说明见 [160X 文件系统烧录](docs/160x-filesystem-flash.md)。
+
+### 修复
+
+#### 160X LittleFS name_max 不兼容导致启动后资源丢失
+
+- 固件 `luat_fs_ccm42xx.c` 挂载数据 FS 时使用 `name_max=63`，此前通用 mklfs 默认生成 `name_max=255` 的超级块；即使下载 MD5 正确，固件仍会返回 `mount fail=-22`，随后自动格式化，最终出现 `main.xml not found`。
+- 新增带目标 name_max 的 LittleFS 构建入口，仅 160X 数据 FS 使用 63，并在输出镜像前按目标上限重新挂载验证；其他芯片和通用构建保留原默认值。160X 源目录中超过 63 个 UTF-8 字节的单级名称在擦写前拒绝。
+- 回归测试准确复现默认 255 镜像在目标 63 配置下的 -22，修复镜像可挂载，超长名称明确失败。
+- Air1603_A10 / V1031 104 / COM11 当前 FS 例程真机通过：`FS_LOAD /Heat_exchange_station/main.xml`、`heat_fs UI_READY` 以及后续 `HEARTBEAT main`。验证不再止于下载 MD5 或 SD 例程启动。
+
+#### 160X 文件系统清空/替换改用完整镜像下载通道
+
+- 按 `build_luatos_types.py → csdk.lua → flash_map.h` 核对配置与打包来源：SOC 复制的是 `csdk/tools/ramrun/ramrun.bin` 预编译文件，不能仅按 `project/ramrun` 源码推断实际命令行为。
+- 实机发现，独立 CMD8 擦除 ACK 不能证明整段 FS 已清空；64KiB 分段 MD5 仅有 27/72、35/72 通过，4KiB 校验也可读到残留。删除组合烧录中自制的 CMD8 预擦除路径。
+- FS 替换直接使用声明容量的完整 LittleFS 镜像，清空使用同容量全 FF 镜像，统一走 SDK/LuaTools 已有的数据镜像下载协议及完整 MD5 校验。仍验证分区地址、容量、对齐与重叠，不扩大范围、不跳过校验。
+- 修正此前只要使用过 LZMA 就无条件明文重传、并误报“MD5 校验未通过”的逻辑：先真实校验压缩传输，只有校验失败才回退一次明文；压缩/明文最终都必须校验通过。
+- Air1603_A10 / V1031 104 / COM11 实机：当前 Air8607 项目的 4.5MiB FS 镜像写入与 4.5MiB 全 FF 清空均已通过完整 MD5，脚本下载和复位成功；FSKV 本轮保持不清除。随后再次恢复 4.5MiB 资源镜像和脚本，完整 MD5 通过；日志确认 `LuatOS@Air1603` / V1031、`SD_MOUNTED`、`UI_READY`。
+
+#### LittleFS 镜像构建的 Windows Unicode 路径与内容校验
+
+- Windows 目录枚举和文件打开改用 `FindFirstFileW` / `FindNextFileW` / `_wfopen`，通过 UTF-8 与 UTF-16 转换保留中文源目录、空格及文件名；Windows 入口改用 `wmain`，GNU Windows 链接补充 `-municode`。
+- 上述入口和 API 用 `_WIN32` 条件编译隔离；Linux/macOS 继续使用原有 `main` 与 POSIX 文件接口，LittleFS 内部路径统一保持 UTF-8，不改变镜像格式或目录合并语义。
+- 打包检测短写、读取失败与关闭失败，并逐字节回读镜像内文件进行比对；Windows helper 启动隐藏控制台窗口。
+
 ### 移除
 
 #### 移除已停用的 GUI crate

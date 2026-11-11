@@ -13,6 +13,7 @@
 pub mod air6201;
 pub mod bk7258;
 pub mod ccm4211;
+pub mod ccm4211_storage;
 pub mod device;
 pub mod ec718;
 pub mod raw;
