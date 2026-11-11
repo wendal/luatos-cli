@@ -61,6 +61,11 @@ All notable changes to this project will be documented in this file.
 
 ### 变更
 
+#### luac 编译器进程内静态链接
+
+- `compile_lua_bytes` 改为直接调用静态链接的 32/64 位 Lua 5.3.6 C 核心，不再释放 luac helper 或启动编译子进程；公开 Rust API、CLI 参数和字节码格式不变
+- 构建期自动生成符号前缀以隔离双 Lua 核心；32/64 位四档 debug mode 固定向量与旧 helper 完全一致，mklfs 仍保留原有持久缓存与子进程执行方式
+
 #### 刷机链路零临时文件
 
 - `luatos-luadb::build_script_image` 在 `use_luac=true` 时改为逐文件内存编译，不再创建 `.luac` 临时目录；新增 `collect_script_entries_compiled` 与 `build_script_image_with_entries`（ctx.json 等内存条目最后合入，同名覆盖）
@@ -180,6 +185,13 @@ All notable changes to this project will be documented in this file.
 - 旧实现的芯片族白名单把 CCM4211 列为支持，但该协议实测 `GET_FLASH_DATA` 无应答、能力表 `supports_read()` 为 false，用户要等到打开串口、加载 ramrun 之后才看到失败；XT804 虽在旧白名单之外，但本次改用 `RawChip::from_family` 后会被映射成 Xt804，必须靠能力校验拦住，否则会回归为放行
 - 现在统一由能力表判定：仅 BK7258 可读回，CCM4211 / XT804 均在连接硬件前给出明确错误；错误文案同步修正为「仅支持 Air8101(BK7258)」，并把子命令名统一为 `flash dump`
 - 新增 `resolve_dump_chip` 纯函数与 CLI 层回归测试，覆盖全部 7 个 `ChipFamily` 变体的放行/拒绝
+
+#### Air160x / CCM4211：OTA 未压缩块兼容旧 Bootloader
+
+- 修正 OTA 分块打包：未压缩块始终携带长度为 5 的全零 properties，避免旧 Bootloader 沿用上一压缩块的标志，导致升级后 `soc ota final check md5 fail` 循环重启。
+- 对齐原版 `soc_tools.exe`：压缩结果不超过分块容量时保留 LZMA，即使比原始数据更大；超过容量时使用带显式零 properties 的原始块。压缩器错误直接报告失败。
+- 已验证“压缩块 → 未压缩块 → 短压缩尾块”，MD5/CRC 两种格式均与原版打包器逐字节一致。
+- Air1602_A10 + Air780EPM AirLink 4G，使用未修复的旧 Bootloader 实测 1 次脚本 OTA、2 次全量 OTA，均完成升级与目标脚本资源 SHA256 校验。
 
 #### Air780EPM：修复 USB 烧录失败
 
