@@ -385,10 +385,11 @@ enum FlashCommands {
         #[arg(long)]
         no_reboot: bool,
     },
-    /// 读回任意 Flash 地址区间到文件
+    /// 读回 Flash 数据到文件
     ///
-    /// 只读操作，不需要 --force。需要协议支持 flash 读命令：目前仅 Air8101(BK7258) 支持；
-    /// CCM4211（实测 GET_FLASH_DATA 无应答）与 XT804（bootloader 无读回命令）不支持。
+    /// 只读操作，不需要 --force。非 D126 用 --addr/--len（需要协议支持 flash 读命令：
+    /// 目前仅 Air8101(BK7258) 支持；CCM4211 与 XT804 不支持）。
+    /// D126 用 --partition <scripts|data|fskv|...>，按 MTD 分区读回。
     Dump {
         /// Path to .soc file（用于确定芯片族与下载波特率）
         #[arg(long)]
@@ -396,12 +397,15 @@ enum FlashCommands {
         /// Serial port (e.g. COM6)
         #[arg(long)]
         port: String,
-        /// 起始地址，支持 0x 前缀
+        /// 起始地址，支持 0x 前缀（非 D126）
+        #[arg(long, required_unless_present = "partition")]
+        addr: Option<String>,
+        /// 读取字节数，支持 0x 前缀（最大 64MiB，非 D126）
+        #[arg(long, required_unless_present = "partition")]
+        len: Option<String>,
+        /// D126 分区名（如 scripts / data / fskv）
         #[arg(long)]
-        addr: String,
-        /// 读取字节数，支持 0x 前缀（最大 64MiB）
-        #[arg(long)]
-        len: String,
+        partition: Option<String>,
         /// 输出文件路径
         #[arg(long, short = 'o')]
         output: String,
@@ -857,7 +861,14 @@ fn main() {
                 progress_step,
                 &cli.format,
             ),
-            FlashCommands::Dump { soc, port, addr, len, output } => cmd_flash::cmd_flash_raw_dump(&soc, &port, &addr, &len, &output, progress_step, &cli.format),
+            FlashCommands::Dump {
+                soc,
+                port,
+                addr,
+                len,
+                partition,
+                output,
+            } => cmd_flash::cmd_flash_dump(&soc, &port, addr.as_deref(), len.as_deref(), partition.as_deref(), &output, progress_step, &cli.format),
             FlashCommands::Test {
                 soc,
                 port,

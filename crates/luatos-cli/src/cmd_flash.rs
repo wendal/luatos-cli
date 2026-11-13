@@ -644,6 +644,57 @@ fn resolve_dump_chip(family: ChipFamily, chip_type: &str) -> anyhow::Result<luat
 }
 
 /// 读回任意 Flash 地址区间（`flash dump`）。
+/// `flash dump` 统一入口：D126 按分区读，其余芯片按地址读。
+#[allow(clippy::too_many_arguments)]
+pub fn cmd_flash_dump(soc: &str, port: &str, addr: Option<&str>, len: Option<&str>, partition: Option<&str>, output: &str, step: u8, format: &OutputFormat) -> anyhow::Result<()> {
+    let info = luatos_soc::read_soc_info(soc)?;
+    if info.family() == ChipFamily::D12p {
+        let partition = partition.context("D126 需要 --partition <name>")?;
+        anyhow::ensure!(addr.is_none() && len.is_none(), "D126 不支持 --addr/--len，请使用 --partition");
+        return dump_d12p_partition(soc, port, partition, output, step, format);
+    }
+    anyhow::ensure!(partition.is_none(), "--partition 仅用于 D126");
+    let addr = addr.context("缺少 --addr")?;
+    let len = len.context("缺少 --len")?;
+    cmd_flash_raw_dump(soc, port, addr, len, output, step, format)
+}
+
+/// D126 分区读回（MTD 分区表 + READ_FWC_DATA）。
+fn dump_d12p_partition(soc: &str, port: &str, partition: &str, output: &str, step: u8, format: &OutputFormat) -> anyhow::Result<()> {
+    let command = "flash.dump".to_string();
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    event::install_cancel_handler(format, &command, &cancel);
+    let on_progress = make_progress_callback(format, command.clone(), step);
+
+    let bootstrap = read_d12p_bootstrap(soc)?;
+    let selector = (!port.trim().is_empty()).then_some(port);
+    let data = luatos_flash::d12p::dump_partition(partition, Some(&bootstrap), selector, &on_progress, cancel)?;
+
+    std::fs::write(output, &data).with_context(|| format!("无法写入输出文件: {output}"))?;
+    let digest = luatos_flash::md5_hex(&data);
+
+    match format {
+        OutputFormat::Text => {
+            println!("已导出分区 {partition}（{} 字节）", data.len());
+            println!("输出: {output}");
+            println!("md5  : {digest}");
+        }
+        OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(
+            format,
+            &command,
+            "ok",
+            serde_json::json!({
+                "chip": "d12p",
+                "partition": partition,
+                "length": data.len(),
+                "output": output,
+                "md5": digest,
+            }),
+        )?,
+    }
+    Ok(())
+}
+
 pub fn cmd_flash_raw_dump(soc: &str, port: &str, addr: &str, len: &str, output: &str, step: u8, format: &OutputFormat) -> anyhow::Result<()> {
     use luatos_flash::raw;
 
@@ -1493,6 +1544,7 @@ pub fn cmd_flash_storage(
     let before = std::fs::metadata(soc)?;
     let info = luatos_soc::read_soc_info(soc)?;
     let family = info.family();
+    anyhow::ensure!(family != ChipFamily::D12p, "D126 暂不支持文件系统/FSKV 操作（--fs-mode / --fs-dir / --clear-kv）");
     let command = if full { "flash.run" } else { "flash.script" };
     event::emit_message(format, command, MessageLevel::Info, "Preparing filesystem and validating partitions...")?;
     anyhow::ensure!(bin.is_none() || folders.is_none(), "--bin cannot be combined with --script");
