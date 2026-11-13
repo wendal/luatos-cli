@@ -169,15 +169,138 @@ pub fn cmd_flash_run(
 
     let info = luatos_soc::read_soc_info(soc)?;
     let family = info.family();
+    if family == ChipFamily::D12p {
+        let overlay = match script_folders.filter(|folders| !folders.is_empty()) {
+            Some(folders) => Some(build_d12p_script_overlay(soc, &info, folders, luac_debug)?),
+            None => None,
+        };
+        return cmd_flash_run_with_script(soc, port, baud, overlay.as_deref(), step, format, reset, tail_log_secs);
+    }
     if !family_flash_supported(family) {
         anyhow::bail!(
             "Unsupported chip type: {}. Supported: bk72xx, air6208, air101, air1601, air1602, air1603, air1604, ec7xx, uis8910",
             info.chip.chip_type
         );
     }
+    anyhow::ensure!(!port.is_empty(), "请通过 --port 指定串口（如 COM6）");
 
     let overlay = build_script_overlay(script_folders, &info, family, luac_debug)?;
     cmd_flash_run_with_script(soc, port, baud, overlay.as_deref(), step, format, reset, tail_log_secs)
+}
+
+/// D126 脚本分区烧录：从 .soc 取出 `script.bin`，可选合并新的应用脚本。
+fn flash_d12p_scripts_from_soc(
+    soc: &str,
+    info: &luatos_soc::SocInfo,
+    selector: &str,
+    script_folders: Option<&[String]>,
+    luac_debug: u8,
+    on_progress: &luatos_flash::ProgressCallback,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> anyhow::Result<()> {
+    let data = match script_folders.filter(|folders| !folders.is_empty()) {
+        Some(folders) => build_d12p_script_overlay(soc, info, folders, luac_debug)?,
+        None => {
+            let mut archive = luatos_soc::SocArchive::open(soc)?;
+            let script_file = archive.info().script.file.clone();
+            archive.read(&script_file).with_context(|| format!(".soc 中找不到脚本镜像 {script_file}"))?
+        }
+    };
+    cmd_flash_script_data(soc, selector, &data, on_progress, cancel)
+}
+
+/// 以 .soc 内的 `script.bin` 为基准，合并用户脚本目录（保留 corelib）。
+fn build_d12p_script_overlay(soc: &str, info: &luatos_soc::SocInfo, script_folders: &[String], luac_debug: u8) -> anyhow::Result<Vec<u8>> {
+    let mut archive = luatos_soc::SocArchive::open(soc)?;
+    let script_file = archive.info().script.file.clone();
+    let base = archive.read(&script_file).with_context(|| format!(".soc 中找不到脚本镜像 {script_file}"))?;
+    let partition_kb = info
+        .rom
+        .fs
+        .as_ref()
+        .and_then(|fs| fs.script.as_ref())
+        .and_then(|script| script.size)
+        .context("SOC 缺少脚本分区容量 rom.fs.script.size")?;
+    let partition_size = usize::try_from(partition_kb).ok().and_then(|kb| kb.checked_mul(1024)).context("脚本分区容量溢出")?;
+    let dirs: Vec<std::path::PathBuf> = script_folders.iter().map(std::path::PathBuf::from).collect();
+    let refs: Vec<&std::path::Path> = dirs.iter().map(|path| path.as_path()).collect();
+    luatos_flash::script::merge_d12p_scripts(&base, &refs, partition_size, luac_debug)
+}
+
+/// D126 分区容量（字节）。
+fn d12p_partition_size(info: &luatos_soc::SocInfo, partition: &str) -> anyhow::Result<usize> {
+    let fs = info.rom.fs.as_ref().context("SOC 缺少 rom.fs")?;
+    let part = match partition {
+        "data" => fs.filesystem.as_ref(),
+        "fskv" => fs.kv.as_ref(),
+        _ => None,
+    }
+    .with_context(|| format!("SOC 缺少 {partition} 分区信息"))?;
+    let kb = part.size.with_context(|| format!("SOC 缺少 {partition} 分区容量"))?;
+    usize::try_from(kb).ok().and_then(|kb| kb.checked_mul(1024)).context("分区容量溢出")
+}
+
+/// 从 .soc 读取 AIC 镜像，用作 Boot ROM 阶段的 updater 引导。
+fn read_d12p_bootstrap(soc: &str) -> anyhow::Result<Vec<u8>> {
+    let mut archive = luatos_soc::SocArchive::open(soc)?;
+    let rom_file = archive.info().rom.file.clone();
+    archive.read(&rom_file).with_context(|| format!(".soc 中找不到固件镜像 {rom_file}"))
+}
+
+/// D126 写命名分区：`.soc` 只用于 Boot ROM 阶段自举。
+fn flash_d12p_partition_bytes(
+    soc: &str,
+    partition: &str,
+    data: &[u8],
+    selector: &str,
+    on_progress: &luatos_flash::ProgressCallback,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> anyhow::Result<()> {
+    let bootstrap = read_d12p_bootstrap(soc)?;
+    let selector = (!selector.trim().is_empty()).then_some(selector);
+    luatos_flash::d12p::flash_partition_data(partition, data, Some(&bootstrap), selector, on_progress, cancel)
+}
+
+/// D126 清除运行期分区：整体写入 0xFF，下次挂载时自动格式化。
+fn flash_d12p_clear_partition(
+    soc: &str,
+    info: &luatos_soc::SocInfo,
+    partition: &str,
+    selector: &str,
+    on_progress: &luatos_flash::ProgressCallback,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> anyhow::Result<()> {
+    let size = d12p_partition_size(info, partition)?;
+    let erased = vec![0xFFu8; size];
+    flash_d12p_partition_bytes(soc, partition, &erased, selector, on_progress, cancel)
+}
+
+/// D126 构建并烧录 LittleFS（`data` 分区，块大小 4 KiB）。
+fn flash_d12p_filesystem(
+    soc: &str,
+    info: &luatos_soc::SocInfo,
+    source: &str,
+    selector: &str,
+    on_progress: &luatos_flash::ProgressCallback,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> anyhow::Result<()> {
+    let size = d12p_partition_size(info, "data")?;
+    let image = luatos_luadb::build::build_littlefs_image(std::path::Path::new(source), size, 4096)?;
+    anyhow::ensure!(image.len() == size, "LittleFS 镜像 {} 字节与 data 分区 {} 字节不一致", image.len(), size);
+    flash_d12p_partition_bytes(soc, "data", &image, selector, on_progress, cancel)
+}
+
+/// D126 全量烧录：从 .soc 取出 AIC 镜像，走 USB 升级协议。
+fn flash_d12p_soc(
+    soc: &str,
+    selector: &str,
+    script_overlay: Option<&[u8]>,
+    on_progress: &luatos_flash::ProgressCallback,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> anyhow::Result<()> {
+    let image = read_d12p_bootstrap(soc)?;
+    let selector = (!selector.trim().is_empty()).then_some(selector);
+    luatos_flash::d12p::flash_image(&image, selector, script_overlay, on_progress, cancel)
 }
 
 /// 全量刷机核心：脚本镜像已由调用方在内存中构建好。
@@ -205,6 +328,19 @@ pub fn cmd_flash_run_with_script(
 
     let info = luatos_soc::read_soc_info(soc)?;
     let family = info.family();
+    if family == ChipFamily::D12p {
+        anyhow::ensure!(baud.is_none(), "D126 USB 烧录不支持 --baud");
+        anyhow::ensure!(!reset.rts_reset, "D126 USB 烧录不支持 --rts-reset");
+        anyhow::ensure!(tail_log_secs == 0, "D126 的日志走独立 UART，暂不支持 --tail-log-secs");
+        flash_d12p_soc(soc, port, script_overlay, &on_progress, cancel)?;
+        return match format {
+            OutputFormat::Text => {
+                println!("D126 烧录完成。");
+                Ok(())
+            }
+            OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": "d12p" })),
+        };
+    }
     if !family_flash_supported(family) {
         anyhow::bail!(
             "Unsupported chip type: {}. Supported: bk72xx, air6208, air101, air1601, air1602, air1603, air1604, ec7xx, uis8910",
@@ -296,7 +432,7 @@ pub fn cmd_flash_run_with_script(
             }
         }
         // family_flash_supported 已在上方校验，其余族不可能到达这里
-        ChipFamily::Unknown | ChipFamily::Air6201 => unreachable!("family_flash_supported 已校验芯片族"),
+        ChipFamily::Unknown | ChipFamily::Air6201 | ChipFamily::D12p => unreachable!("family_flash_supported 已校验芯片族"),
     }
 
     if tail_log_secs > 0 {
@@ -362,6 +498,11 @@ pub fn cmd_flash_partition(
 
     if op == "flash-res" && family != ChipFamily::Bk72xx {
         anyhow::bail!("Resource download currently supports BK72xx only (chip: {})", info.chip.chip_type);
+    }
+    if op == "script" && family == ChipFamily::D12p {
+        // 未指定 --script 时直接烧 .soc 内的 script.bin；
+        // 指定目录时以它为基准合并 corelib 和应用脚本。
+        return flash_d12p_scripts_from_soc(soc, &info, port, script_folders, luac_debug, &on_progress, cancel);
     }
     if op == "script" {
         let folders = script_folders.context("script folder required")?;
@@ -443,6 +584,17 @@ pub fn cmd_flash_partition(
                      Use 'flash run' for full firmware flash."
                 );
             }
+            ChipFamily::D12p => match op {
+                _ if reset.rts_reset => anyhow::bail!("D126 USB 烧录不支持 --rts-reset"),
+                "clear-fs" => flash_d12p_clear_partition(soc, &info, "data", port, &on_progress, cancel)?,
+                "clear-kv" => flash_d12p_clear_partition(soc, &info, "fskv", port, &on_progress, cancel)?,
+                "flash-fs" => {
+                    let folders = script_folders.context("文件系统目录必填")?;
+                    anyhow::ensure!(folders.len() == 1, "D126 flash-fs 只接受一个目录");
+                    flash_d12p_filesystem(soc, &info, &folders[0], port, &on_progress, cancel)?;
+                }
+                _ => anyhow::bail!("D126 不支持 '{op}'"),
+            },
             ChipFamily::Unknown | ChipFamily::Air6201 => {
                 anyhow::bail!("Unsupported chip type: {}", info.chip.chip_type);
             }
@@ -752,6 +904,9 @@ pub fn cmd_flash_test(
             luatos_flash::ec718::flash_ec718(soc, &boot_port, &on_progress2, cancel.clone(), overlay.as_deref())?;
             Vec::new()
         }
+        ChipFamily::D12p => {
+            anyhow::bail!("D126 的 'flash test' 尚未实现：USB 升级口与 UART0 日志口是分开的；请先用 'flash run' 烧录，再单独用 'log view' 抓 UART0");
+        }
         ChipFamily::Unknown | ChipFamily::Air6201 | ChipFamily::Rda8910 => {
             anyhow::bail!("Unsupported chip type for flash test: {}", info.chip.chip_type);
         }
@@ -1042,6 +1197,10 @@ pub(crate) fn cmd_flash_script_data(
 ) -> anyhow::Result<()> {
     let info = luatos_soc::read_soc_info(soc)?;
     let family = info.family();
+    if family == ChipFamily::D12p {
+        luatos_flash::script::validate_script_image_for_family(family, &info, script_data.len())?;
+        return flash_d12p_partition_bytes(soc, "scripts", script_data, port, on_progress, cancel);
+    }
     if !family_flash_supported(family) {
         anyhow::bail!(
             "--bin script flash not supported for chip '{}'. Use 'flash script' with --script folders instead.",
@@ -1069,9 +1228,9 @@ pub(crate) fn cmd_flash_script_data(
             let boot_port = luatos_flash::rda8910::auto_enter_boot_mode(Some(port), on_progress)?;
             luatos_flash::rda8910::flash_script_rda8910(soc, &boot_port, script_data, on_progress, cancel)?;
         }
-        ChipFamily::Unknown | ChipFamily::Air6201 => {
+        ChipFamily::D12p | ChipFamily::Unknown | ChipFamily::Air6201 => {
             anyhow::bail!(
-                "--bin script flash not supported for chip '{}'. Use 'flash script' with --script folders instead.",
+                "--bin script flash not supported for chip '{}'. Use 'flash run' or the SDK's upgcmd instead.",
                 info.chip.chip_type
             );
         }

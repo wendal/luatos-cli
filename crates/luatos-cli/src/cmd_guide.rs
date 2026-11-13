@@ -58,6 +58,14 @@ const GUIDES: &[ModelGuide] = &[
         log_example: "luatos-cli log view-binary --port COM7 --baud 2000000",
         docs_path: "docs\\models\\air6208-xt804.md",
     },
+    ModelGuide {
+        key: "d126",
+        aliases: &["d126", "d126fcr", "d12p", "artinchip"],
+        description: "D126/D12P（ArtInChip；支持 .soc、USB 烧录、脚本合并与 LFTA FOTA）",
+        flash_example: "luatos-cli flash run --soc LuatOS-SoC_V0001_D126_1.soc --port auto",
+        log_example: "luatos-cli log view --port COMx --baud 115200",
+        docs_path: "docs\\models\\d126-d12p.md",
+    },
 ];
 
 const GUIDES_TAIL: &[ModelGuide] = &[ModelGuide {
@@ -171,6 +179,15 @@ mod tests {
     fn guide_lookup_is_case_insensitive() {
         let guide = super::find_model_guide("air8000").expect("expected guide");
         assert_eq!(guide.key, "air8000");
+    }
+
+    #[test]
+    fn d126_aliases_share_guide() {
+        for name in ["D126", "d126fcr", "d12p", "artinchip"] {
+            let guide = super::find_model_guide(name).expect("D126 应有型号指南");
+            assert_eq!(guide.key, "d126");
+            assert_eq!(guide.docs_path, "docs\\models\\d126-d12p.md");
+        }
     }
 
     #[test]

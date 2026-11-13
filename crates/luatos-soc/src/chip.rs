@@ -9,6 +9,7 @@ pub enum ChipFamily {
     Ec718,   // Air8000 / Air780E* / EC7xx / EC618（共享移芯下载协议）
     Rda8910, // Air724UG / UIS8910DM
     Air6201, // 外置 SPI Flash
+    D12p,    // D126 / ArtInChip d12p
     Unknown, // 未识别
 }
 
@@ -23,6 +24,7 @@ impl ChipFamily {
             | "air780epv" | "air8000m" => ChipFamily::Ec718,
             "uis8910" | "rda8910" | "air724ug" | "8910dm" => ChipFamily::Rda8910,
             "air6201" => ChipFamily::Air6201,
+            "d12p" | "d126" | "d126fcr" | "artinchip" => ChipFamily::D12p,
             _ => ChipFamily::Unknown,
         }
     }
@@ -46,6 +48,7 @@ impl ChipFamily {
             ChipFamily::Ec718 => "ec7xx",
             ChipFamily::Rda8910 => "rda8910",
             ChipFamily::Air6201 => "air6201",
+            ChipFamily::D12p => "d12p",
             ChipFamily::Unknown => "unknown",
         }
     }
@@ -94,6 +97,10 @@ mod tests {
         assert_eq!(ChipFamily::from_chip_type("air724ug"), ChipFamily::Rda8910);
         assert_eq!(ChipFamily::from_chip_type("8910dm"), ChipFamily::Rda8910);
         assert_eq!(ChipFamily::from_chip_type("air6201"), ChipFamily::Air6201);
+        assert_eq!(ChipFamily::from_chip_type("d12p"), ChipFamily::D12p);
+        assert_eq!(ChipFamily::from_chip_type("d126"), ChipFamily::D12p);
+        assert_eq!(ChipFamily::from_chip_type("D126FCR"), ChipFamily::D12p);
+        assert_eq!(ChipFamily::from_chip_type("artinchip"), ChipFamily::D12p);
     }
 
     /// 大小写不敏感。
@@ -126,6 +133,7 @@ mod tests {
         assert!(!ChipFamily::Xt804.uses_binary_log());
         assert!(!ChipFamily::Rda8910.uses_binary_log());
         assert!(!ChipFamily::Air6201.uses_binary_log());
+        assert!(!ChipFamily::D12p.uses_binary_log());
         assert!(!ChipFamily::Unknown.uses_binary_log());
     }
 
@@ -136,6 +144,7 @@ mod tests {
         assert_eq!(ChipFamily::Ec718.to_string(), "ec7xx");
         assert_eq!(ChipFamily::Unknown.to_string(), "unknown");
         assert_eq!(ChipFamily::Rda8910.to_string(), "rda8910");
+        assert_eq!(ChipFamily::D12p.name(), "d12p");
     }
 
     /// family() 基于 chip.chip_type 归一化。

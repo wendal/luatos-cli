@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use luatos_luadb::LuadbEntry;
 use luatos_soc::{ChipFamily, SocInfo};
 
@@ -42,8 +42,44 @@ pub fn build_script_image(family: ChipFamily, script_dirs: &[&Path], info: &SocI
         ChipFamily::Ccm4211 | ChipFamily::Ec718 | ChipFamily::Rda8910 => {
             luatos_luadb::build::build_script_image_with_entries(script_dirs, extra_entries, info.script_use_luac(), info.script_bitw(), info.use_bkcrc(), luac_debug)
         }
+        ChipFamily::D12p => bail!("D126 脚本镜像需要以 .soc 内的 script.bin 为基准合并 corelib，请使用 merge_d12p_scripts"),
         ChipFamily::Unknown | ChipFamily::Air6201 => bail!("脚本镜像构建不支持芯片族 {:?}", family),
     }
+}
+
+/// D126 脚本分区必须包含的 LuatOS corelib 文件。
+///
+/// 这些文件由 SDK 的 `build.py` 打进 `script.bin`；CLI 覆盖应用脚本时从
+/// `.soc` 的现有镜像中保留它们。
+pub const D12P_CORELIB: [&str; 3] = ["libnet.lua", "sys.lua", "sysplus.lua"];
+
+/// 以 `.soc` 内的 script.bin 为基准，合并用户脚本目录。
+///
+/// 只保留基准镜像中的 corelib 条目，其余条目全部来自 `script_dirs`；
+/// 结果按文件名排序并补 0xFF 到分区大小。
+pub fn merge_d12p_scripts(base_image: &[u8], script_dirs: &[&Path], partition_size: usize, luac_debug: u8) -> Result<Vec<u8>> {
+    let base = luatos_luadb::parse_luadb(base_image).context("解析 .soc 内的 script.bin 失败")?;
+    let fresh = luatos_luadb::build::collect_script_entries_compiled(script_dirs, false, 64, luac_debug)?;
+
+    let mut merged: Vec<LuadbEntry> = base.into_iter().filter(|entry| D12P_CORELIB.contains(&entry.basename())).collect();
+    for name in D12P_CORELIB {
+        anyhow::ensure!(merged.iter().any(|entry| entry.basename() == name), "script.bin 缺少 D126 corelib: {name}");
+    }
+    for entry in fresh {
+        merged.retain(|existing| existing.basename() != entry.basename());
+        merged.push(entry);
+    }
+    merged.sort_by(|a, b| a.basename().cmp(b.basename()));
+
+    let mut names = std::collections::HashSet::new();
+    for entry in &merged {
+        anyhow::ensure!(names.insert(entry.basename().to_string()), "脚本文件名重复: {}", entry.basename());
+    }
+
+    let mut image = luatos_luadb::pack_luadb(&merged)?;
+    anyhow::ensure!(image.len() <= partition_size, "脚本镜像 {} 字节超过分区大小 {} 字节", image.len(), partition_size);
+    image.resize(partition_size, 0xFF);
+    Ok(image)
 }
 
 #[cfg(test)]
@@ -67,6 +103,60 @@ mod tests {
         assert_eq!(script_write_alignment(ChipFamily::Ccm4211), 1);
         assert_eq!(script_write_alignment(ChipFamily::Ec718), 1);
         assert_eq!(script_write_alignment(ChipFamily::Rda8910), 1);
+    }
+
+    #[test]
+    fn d12p_merge_keeps_corelib_and_replaces_app_scripts() {
+        let base = luatos_luadb::pack_luadb(&[
+            LuadbEntry {
+                filename: "sys.lua".into(),
+                data: b"-- sys".to_vec(),
+            },
+            LuadbEntry {
+                filename: "sysplus.lua".into(),
+                data: b"-- sysplus".to_vec(),
+            },
+            LuadbEntry {
+                filename: "libnet.lua".into(),
+                data: b"-- libnet".to_vec(),
+            },
+            LuadbEntry {
+                filename: "main.lua".into(),
+                data: b"print('old')".to_vec(),
+            },
+            LuadbEntry {
+                filename: "removed.lua".into(),
+                data: b"print('removed')".to_vec(),
+            },
+        ])
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.lua"), b"print('new')").unwrap();
+        std::fs::write(dir.path().join("extra.lua"), b"return 1").unwrap();
+
+        let image = merge_d12p_scripts(&base, &[dir.path()], 4096, 99).unwrap();
+        assert_eq!(image.len(), 4096);
+        assert!(image[image.len() - 1] == 0xFF);
+
+        let entries = luatos_luadb::parse_luadb(&image).unwrap();
+        let names: Vec<&str> = entries.iter().map(LuadbEntry::basename).collect();
+        assert_eq!(names, vec!["extra.lua", "libnet.lua", "main.lua", "sys.lua", "sysplus.lua"]);
+        assert_eq!(entries.iter().find(|e| e.basename() == "main.lua").unwrap().data, b"print('new')");
+        assert!(!names.contains(&"removed.lua"));
+    }
+
+    #[test]
+    fn d12p_merge_rejects_image_without_corelib() {
+        let base = luatos_luadb::pack_luadb(&[LuadbEntry {
+            filename: "main.lua".into(),
+            data: b"print('x')".to_vec(),
+        }])
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.lua"), b"print('y')").unwrap();
+        let error = merge_d12p_scripts(&base, &[dir.path()], 4096, 99).unwrap_err();
+        assert!(error.to_string().contains("corelib"), "{error}");
     }
 
     #[test]

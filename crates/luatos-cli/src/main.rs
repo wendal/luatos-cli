@@ -209,9 +209,9 @@ enum FlashCommands {
         /// 固件路径：SOC 或 EC716S binpkg（也可使用 --binpkg）
         #[arg(long, visible_alias = "binpkg")]
         soc: String,
-        /// Serial port (e.g. COM6)
+        /// 串口（如 COM6）；D126 可填 USB 选择器 bus:port（如 1:2-4-2）或 auto，省略则自动选择
         #[arg(long)]
-        port: String,
+        port: Option<String>,
         /// Override baud rate
         #[arg(long)]
         baud: Option<u32>,
@@ -235,9 +235,9 @@ enum FlashCommands {
         /// Path to .soc file
         #[arg(long)]
         soc: String,
-        /// Serial port (e.g. COM6)
+        /// 串口（如 COM6）；D126 可填 USB 选择器 bus:port（如 1:2-4-2）或 auto，省略则自动选择
         #[arg(long)]
-        port: String,
+        port: Option<String>,
         /// Script folders containing .lua files (can specify multiple)
         #[arg(long)]
         script: Vec<String>,
@@ -767,16 +767,17 @@ fn main() {
                 storage,
             } => {
                 let script_opt = if script.is_empty() { None } else { Some(script.as_slice()) };
+                let port = port.as_deref().unwrap_or("");
                 if storage.requested() {
-                    cmd_flash::cmd_flash_storage(&soc, &port, script_opt, None, true, luac_debug, progress_step, &cli.format, &storage).and_then(|_| {
+                    cmd_flash::cmd_flash_storage(&soc, port, script_opt, None, true, luac_debug, progress_step, &cli.format, &storage).and_then(|_| {
                         if tail_log_secs > 0 && !storage.dry_run {
-                            cmd_flash::tail_log_after_flash(&soc, &port, tail_log_secs, &cli.format)
+                            cmd_flash::tail_log_after_flash(&soc, port, tail_log_secs, &cli.format)
                         } else {
                             Ok(())
                         }
                     })
                 } else {
-                    cmd_flash::cmd_flash_run(&soc, &port, baud, script_opt, luac_debug, progress_step, &cli.format, &reset, tail_log_secs)
+                    cmd_flash::cmd_flash_run(&soc, port, baud, script_opt, luac_debug, progress_step, &cli.format, &reset, tail_log_secs)
                 }
             }
             FlashCommands::Script {
@@ -788,15 +789,16 @@ fn main() {
                 storage,
                 reset,
             } => {
+                let port = port.as_deref().unwrap_or("");
                 if storage.requested() {
                     let script_opt = if script.is_empty() { None } else { Some(script.as_slice()) };
-                    cmd_flash::cmd_flash_storage(&soc, &port, script_opt, bin.as_deref(), false, luac_debug, progress_step, &cli.format, &storage)
+                    cmd_flash::cmd_flash_storage(&soc, port, script_opt, bin.as_deref(), false, luac_debug, progress_step, &cli.format, &storage)
                 } else if let Some(bin_path) = bin {
                     let on_progress = cmd_flash::make_progress_callback(&cli.format, "flash.script".to_string(), progress_step);
-                    cmd_flash::cmd_flash_script_bin(&soc, &port, &bin_path, &on_progress).and_then(|_| cmd_flash::print_script_result(&cli.format))
+                    cmd_flash::cmd_flash_script_bin(&soc, port, &bin_path, &on_progress).and_then(|_| cmd_flash::print_script_result(&cli.format))
                 } else {
                     let script_opt: Option<&[String]> = if script.is_empty() { None } else { Some(script.as_slice()) };
-                    cmd_flash::cmd_flash_partition("script", &soc, &port, script_opt, luac_debug, progress_step, &cli.format, &reset)
+                    cmd_flash::cmd_flash_partition("script", &soc, port, script_opt, luac_debug, progress_step, &cli.format, &reset)
                 }
             }
             FlashCommands::ClearFs { soc, port, reset } => {

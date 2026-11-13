@@ -45,7 +45,7 @@ impl RawChip {
             ChipFamily::Bk72xx => Some(RawChip::Bk7258),
             ChipFamily::Ccm4211 => Some(RawChip::Ccm4211),
             ChipFamily::Xt804 => Some(RawChip::Xt804),
-            ChipFamily::Ec718 | ChipFamily::Rda8910 | ChipFamily::Air6201 | ChipFamily::Unknown => None,
+            ChipFamily::Ec718 | ChipFamily::Rda8910 | ChipFamily::Air6201 | ChipFamily::D12p | ChipFamily::Unknown => None,
         }
     }
 

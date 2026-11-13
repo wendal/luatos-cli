@@ -5,6 +5,7 @@
 //   - XT804 (Air6208/Air101): XMODEM-1K flash protocol
 //   - CCM4211 (Air1601/Air1602/Air1603/Air1604): ISP + SOC framed download protocol
 //   - RDA8910 (Air724UG/UIS8910DM): FDL1/FDL2 staged download protocol
+//   - D12p (D126): ArtInChip AIC upgrade protocol over USB Bulk-Only Transport
 //   - Air6201: external SPI flash UART protocol
 //
 // `raw` 不实现任何协议，它是「任意 Flash 地址读写」的抽象层，
@@ -14,6 +15,7 @@ pub mod air6201;
 pub mod bk7258;
 pub mod ccm4211;
 pub mod ccm4211_storage;
+pub mod d12p;
 pub mod device;
 pub mod ec718;
 pub mod raw;

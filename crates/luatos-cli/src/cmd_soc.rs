@@ -17,8 +17,20 @@ pub fn cmd_soc_info(path: &str, format: &OutputFormat) -> anyhow::Result<()> {
             if let Some(ref addr) = info.download.bl_addr {
                 println!("  BL Addr:    {addr}");
             }
+            if let Some(ref addr) = info.download.app_addr {
+                println!("  App Addr:   {addr}");
+            }
+            if let Some(ref addr) = info.download.app1_addr {
+                println!("  App1 Addr:  {addr}");
+            }
             if let Some(ref addr) = info.download.script_addr {
                 println!("  Script Addr:{addr}");
+            }
+            if let Some(ref addr) = info.download.script1_addr {
+                println!("  Script1 Addr:{addr}");
+            }
+            if let Some((addr, size)) = info.script_r_partition() {
+                println!("  Script B:   0x{addr:08X}  ({} KB)", size / 1024);
             }
             println!("  BK CRC:     {}", info.use_bkcrc());
             if let Some((fs_addr, fs_size)) = info.filesystem_partition() {

@@ -36,6 +36,9 @@ pub struct SocRom {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SocFs {
     pub script: Option<SocScriptFs>,
+    /// D126 / A/B scripts B slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script_r: Option<SocScriptFs>,
     pub filesystem: Option<SocPartition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub res: Option<SocResourcePartition>,
@@ -163,6 +166,9 @@ pub struct SocDownload {
     pub force_br: Option<String>,
     pub cp_addr: Option<String>,
     pub ap_addr: Option<String>,
+    // D126 / A/B application and scripts slots.
+    pub app1_addr: Option<String>,
+    pub script1_addr: Option<String>,
     // XT804 (Air6208) specific fields
     pub core_addr: Option<String>,
     pub app_addr: Option<String>,
@@ -284,6 +290,24 @@ impl SocInfo {
     /// Get the application/core address.
     pub fn app_addr(&self) -> Option<u32> {
         parse_addr(self.download.app_addr.as_deref()?).map(|v| v as u32)
+    }
+
+    /// Get the second application slot address (D126 A/B).
+    pub fn app1_addr(&self) -> Option<u32> {
+        parse_addr(self.download.app1_addr.as_deref()?).map(|v| v as u32)
+    }
+
+    /// Get the second scripts slot address (D126 A/B).
+    pub fn script1_addr(&self) -> Option<u32> {
+        parse_addr(self.download.script1_addr.as_deref()?).map(|v| v as u32)
+    }
+
+    /// Get the scripts B partition address and size (bytes).
+    pub fn script_r_partition(&self) -> Option<(u32, usize)> {
+        let fs = self.rom.fs.as_ref()?.script_r.as_ref()?;
+        let offset = parse_addr(fs.offset.as_deref()?)? as u32;
+        let size = fs.size? as usize * 1024;
+        Some((offset, size))
     }
 
     /// Get the filesystem partition address (CCM4211/Air1601).
@@ -439,6 +463,45 @@ mod tests {
         let info: SocInfo = serde_json::from_str(json).unwrap();
         assert!(info.filesystem_partition().is_none());
         assert!(info.kv_partition().is_none());
+    }
+
+    /// D126 的 A/B 脚本槽、应用槽和运行期分区。
+    #[test]
+    fn parse_d126_ab_partitions() {
+        let json = r#"{
+            "version": 1,
+            "chip": {"type": "d12p"},
+            "rom": {
+                "file": "d12p_d126-demo124-nor_v1.0.0.img",
+                "fs": {
+                    "filesystem": {"offset": "c00000", "size": 1024, "type": "lfs"},
+                    "script": {"offset": "d00000", "size": 1024, "type": "luadb"},
+                    "script_r": {"offset": "e00000", "size": 1024, "type": "luadb"},
+                    "kv": {"offset": "f00000", "size": 64, "type": "fskv"}
+                }
+            },
+            "script": {"file": "script.bin", "lua": "5.3", "bitw": 64, "use-luac": false},
+            "download": {
+                "app_addr": "100000",
+                "app1_addr": "400000",
+                "script_addr": "d00000",
+                "script1_addr": "e00000",
+                "fs_addr": "c00000",
+                "fskv_addr": "f00000"
+            }
+        }"#;
+        let info: SocInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.family(), crate::ChipFamily::D12p);
+        assert_eq!(info.app_addr(), Some(0x100000));
+        assert_eq!(info.app1_addr(), Some(0x400000));
+        assert_eq!(info.script_addr(), 0xD00000);
+        assert_eq!(info.script1_addr(), Some(0xE00000));
+        assert_eq!(info.script_size(), 1024 * 1024);
+        assert_eq!(info.script_r_partition(), Some((0xE00000, 1024 * 1024)));
+        assert_eq!(info.filesystem_partition(), Some((0xC00000, 1024 * 1024)));
+        assert_eq!(info.kv_partition(), Some((0xF00000, 64 * 1024)));
+        assert_eq!(info.script_bitw(), 64);
+        assert!(!info.script_use_luac());
     }
 }
 
