@@ -743,7 +743,7 @@ enum FotaCommands {
         /// Path to FotaToolkit.exe (auto-detected if omitted)
         #[arg(long)]
         fota_toolkit: Option<String>,
-        /// Build a script-only FOTA package (EC7xx/Air8000, Air1601/Air1602/Air1603/Air1604/CCM4211, BK72XX)
+        /// Build a script-only FOTA package (EC7xx/Air8000, Air1601/Air1602/Air1603/Air1604/CCM4211, BK72XX, D126/D12P)
         #[arg(long)]
         script_only: bool,
         /// 强制走差分 FOTA（关闭"底层固件相同自动回落脚本包"）

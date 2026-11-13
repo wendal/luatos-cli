@@ -34,3 +34,4 @@ ureq = { workspace = true }
 walkdir.workspace = true
 dialoguer = { workspace = true }
 indicatif = { workspace = true }
+crc32fast.workspace = true

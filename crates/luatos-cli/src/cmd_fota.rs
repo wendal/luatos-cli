@@ -988,15 +988,72 @@ pub fn cmd_fota_build(
             }
         }
 
+        // D126 / D12P - LFTA（脚本 + app，纯内存打包）
+        ChipFamily::D12p => {
+            anyhow::ensure!(old_soc.is_none(), "D126 的 LFTA 包不支持差分 FOTA，请省略 --old");
+            let default_name = if script_only { "d12p_script_fota.bin" } else { "d12p_fota.bin" };
+            let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(default_name));
+            build_d12p_lfota(new_soc, script_only, &out_path)?;
+            let size = fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
+            print_result(format, chip, new_soc, None, &[(&out_path, size)])?;
+        }
+
         // 其余族（Air6201 / Unknown）不支持 FOTA
-        ChipFamily::D12p => bail!("D126 的 LFTA FOTA 尚未实现"),
         ChipFamily::Air6201 | ChipFamily::Unknown => bail!(
             "FOTA not supported for chip '{chip}'. \
-             Supported: EC7xx/EC618/Air8000 (differential), Air1601/Air1602/CCM4211 (full or --script-only), Air8101/BK72XX (new-format full or --script-only), Air6208/XT804 (full), Air724UG/RDA8910 (full or --script-only)."
+             Supported: EC7xx/EC618/Air8000 (differential), Air1601/Air1602/CCM4211 (full or --script-only), Air8101/BK72XX (new-format full or --script-only), Air6208/XT804 (full), Air724UG/RDA8910 (full or --script-only), D126/D12P (LFTA full or --script-only)."
         ),
     }
 
     Ok(())
+}
+
+/// 生成 D126 的 LFTA 包：part 0 脚本，part 1 应用镜像（可选）。
+fn build_d12p_lfota(new_soc: &str, script_only: bool, out_path: &Path) -> Result<()> {
+    let mut archive = luatos_soc::SocArchive::open(new_soc)?;
+    let info = archive.info().clone();
+    let scripts = archive.read(&info.script.file).with_context(|| format!(".soc 中找不到脚本镜像 {}", info.script.file))?;
+
+    let mut parts: Vec<(u32, Vec<u8>)> = vec![(0, scripts)];
+    if !script_only {
+        let app_name = archive
+            .names()
+            .iter()
+            .find(|name| name.ends_with("_os.itb"))
+            .cloned()
+            .context("D126 .soc 中找不到应用镜像（*_os.itb）")?;
+        parts.push((1, archive.read(&app_name)?));
+    }
+
+    let package = lfota_package(&parts);
+    fs::write(out_path, package).with_context(|| format!("写入 FOTA 包失败: {}", out_path.display()))?;
+    Ok(())
+}
+
+/// LFTA 包：256 字节头 + 各 part 数据。
+///
+/// 头布局：magic "LFTA" | version(u32)=0 | table_len(u32) | table_crc32(u32)；
+/// table：count(u32) + 每个 part 的 id(u32) / len(u32) / MD5[16]。
+fn lfota_package(parts: &[(u32, Vec<u8>)]) -> Vec<u8> {
+    let mut table = Vec::with_capacity(4 + parts.len() * 24);
+    table.extend_from_slice(&(parts.len() as u32).to_le_bytes());
+    for (id, data) in parts {
+        table.extend_from_slice(&id.to_le_bytes());
+        table.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        table.extend_from_slice(&luatos_flash::md5_bytes(data));
+    }
+
+    let mut out = Vec::with_capacity(256 + parts.iter().map(|(_, data)| data.len()).sum::<usize>());
+    out.extend_from_slice(b"LFTA");
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&(table.len() as u32).to_le_bytes());
+    out.extend_from_slice(&crc32fast::hash(&table).to_le_bytes());
+    out.extend_from_slice(&table);
+    out.resize(256, 0);
+    for (_, data) in parts {
+        out.extend_from_slice(data);
+    }
+    out
 }
 
 fn print_result(format: &OutputFormat, chip: &str, new_soc: &str, old_soc: Option<&str>, outputs: &[(&Path, u64)]) -> anyhow::Result<()> {
@@ -1041,8 +1098,19 @@ mod tests {
     use serde_json::Value;
     use tempfile::tempdir;
 
-    use super::{cmd_fota_build, fota_delta_size_limit};
+    use super::{cmd_fota_build, fota_delta_size_limit, lfota_package};
     use crate::OutputFormat;
+
+    fn hex_bytes(text: &str) -> Vec<u8> {
+        (0..text.len()).step_by(2).map(|index| u8::from_str_radix(&text[index..index + 2], 16).unwrap()).collect()
+    }
+
+    #[test]
+    fn lfota_package_matches_reference_layout() {
+        let package = lfota_package(&[(0, b"abc".to_vec()), (1, b"defgh".to_vec())]);
+        let expected = "4c4654410000000034000000734ec1ca020000000000000003000000900150983cd24fb0d6963f7d28e17f720100000005000000865f5cc7fbd7854902eae9d8211f178a00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006162636465666768";
+        assert_eq!(package, hex_bytes(expected));
+    }
 
     fn repo_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("..")

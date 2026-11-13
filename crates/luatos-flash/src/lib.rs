@@ -118,6 +118,13 @@ pub fn validate_script_image(info: &luatos_soc::SocInfo, image_len: usize, align
     ensure_image_fits(image_len, capacity, alignment)
 }
 
+/// 计算数据的 MD5 原始摘要（16 字节）。
+pub fn md5_bytes(data: &[u8]) -> [u8; 16] {
+    use md5::{Digest, Md5};
+
+    Md5::digest(data).into()
+}
+
 /// 计算数据的 MD5，返回 32 位小写十六进制字符串。
 ///
 /// 全项目统一用 `md-5` 0.10（RustCrypto，Rust 库名仍为 `md5`），与 `sha2` 共用
