@@ -6,6 +6,23 @@ All notable changes to this project will be documented in this file.
 
 ### 新增
 
+#### D126 / D12P USB 烧录
+
+- `luatos-flash` 新增 `d12p` 模块：用 `nusb` 实现 ArtInChip AIC USB 升级协议（VID `0x33C3` / PID `0x6677`，Bulk-Only Transport CBW/CSW + `UPGC`/`UPGR` 命令头），支持全量镜像与脚本分区。
+- `flash run --soc` 自动解析 `.soc` 内的 AIC 镜像，处理 Boot ROM 下载 updater 后的设备重新枚举，再写 `spl` / `env` / `env_r` / `scripts` / `os`；完成后通过 U-Boot `reset` 重启设备。
+- `flash script --soc` 从 `.soc` 取 `script.bin` 走分区升级；也可用 `--bin` 指定完整 luadb 镜像。设备仍在 Boot ROM 时会自动下载 `.soc` 内 updater 进入 U-Boot，支持按住 BOOT 上电后直接烧脚本。`--port` 对 D126 表示 USB 选择器（`bus:port`，省略或 `auto` 表示自动选择）。
+- 设备需要按住 BOOT 上电进入升级模式；Linux 需要 `33c3:6677` 的 udev 规则，Windows 需要先绑定 WinUSB 驱动。
+- `ChipFamily` 增加 `D12p`，识别 `d12p` / `d126` / `d126fcr` / `artinchip`；`soc info/files/unpack/pack` 支持 D126 的 ZIP `.soc`。
+- `info.json` 支持 D126 A/B 字段：`rom.fs.script_r`、`download.app1_addr`、`download.script1_addr`；`soc info` 打印 App/App1/Script/Script1/Script B。
+- D126 的 `data`/`fskv` 是运行期分区；`script.bitw=64`、`use-luac=false`，与 SDK 的 luadb 脚本包一致。
+- `flash run --script <目录>` 与 `flash script --script <目录>` 支持 D126：以 `.soc` 内 `script.bin` 的 corelib（`sys.lua` / `sysplus.lua` / `libnet.lua`）为基准，替换应用脚本后重新打包；`luatos-luadb` 新增 LuaDB 解析器。
+- 新增 `soc inject-scripts --soc <in> --script <dir> -o <out>`：同时更新 `.soc` 的 `script.bin` 和 AIC 镜像内的 `image.target.scripts` 组件及其 META CRC。
+- `fota build --new <d126.soc> [--script-only]` 生成 LFTA 包（part 0 脚本、part 1 `*_os.itb`），输出与 SDK `build.py` 的 `fota.bin` / `fota-script.bin` 逐字节一致。
+- `flash flash-fs` / `clear-fs` / `clear-kv` 支持 D126：LittleFS 镜像（4 KiB 块）写入 `data` 分区，清空操作向 `data`/`fskv` 写全 0xFF，与运行期的“仅全 0xFF 才自动格式化”策略配合。
+- `flash dump --partition <name>` 支持 D126：先读 MTD 分区表，再用 `READ_FWC_DATA` 按 64 KiB 分块读回；`--addr/--len` 形式仍只用于 BK7258。
+- D126 `.soc` 内的脚本镜像文件名从 `scripts.luadb` 统一为 `script.bin`，与其他平台一致；内容仍是 LuaDB/Luadb 格式，CLI 通过 `info.script.file` 读取，不硬编码。
+- 暂不支持 `flash raw`、`flash test`、`flash-res` 和 D126 差分 FOTA。说明见 [D126 / D12P](docs/models/d126-d12p.md)。
+
 #### 160X 文件系统与 FSKV 组合烧录
 
 - `flash script` / `flash run` 增加 `--fs-mode preserve|replace|clear`、`--fs-dir <DIR>` 和 `--clear-kv`，首批限定 Air1601 / Air1602 / Air1603：目录以原始字节与相对路径制作 LittleFS 镜像，支持整区替换 FS、仅清空 FS、独立清空 FSKV。

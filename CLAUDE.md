@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-luatos-cli 是 LuatOS 的纯 Rust 命令行工具集，覆盖刷机、日志、项目管理、固件资源下载与构建、FOTA 打包、多芯片支持（Air8101/BK7258、Air6208/XT804、Air1601/Air1602/Air1603/Air1604/CCM4211、Air8000/EC718）。
+luatos-cli 是 LuatOS 的纯 Rust 命令行工具集，覆盖刷机、日志、项目管理、固件资源下载与构建、FOTA 打包、多芯片支持（Air8101/BK7258、Air6208/XT804、Air1601/Air1602/Air1603/Air1604/CCM4211、Air8000/EC718、D126/D12P）。D126 通过 `luatos-flash::d12p` 直接实现 ArtInChip AIC USB 升级协议（`nusb`，VID 0x33C3 / PID 0x6677），支持 `flash run` / `flash script` / `soc inject-scripts` 与 LFTA `fota build`。
 
 ## 常用命令
 
@@ -34,7 +34,7 @@ Linux 上 `serialport` 需要系统依赖：`libudev-dev` 与 `pkg-config`（CI 
 Cargo workspace（`Cargo.toml`）包含 12 个 crate：
 
 - **crates/luatos-cli** — 二进制入口。`main.rs` 用 clap 派生宏定义子命令树（`serial` / `soc` / `flash` / `log` / `project` / `build` / `resource` / `device` / `doctor` / `fota` / `guide` / `trun` / `hzv` / `version`）。各 `cmd_*.rs` 模块实现业务逻辑，全局 `--format text|json|jsonl` 决定输出形式；关键模块：`keyword.rs`（`flash test` 与 `trun` 共用的关键字判定）、`cmd_trun.rs`（testcase 单点调试）、`cmd_doctor.rs`（环境诊断）、`cmd_guide.rs`（型号二级帮助）、`cmd_hzv.rs`（HZV 独立子命令入口）。
-- **crates/luatos-flash** — 刷机协议：BK7258（Air8101）、XT804（Air6208/Air101/Air103）、CCM4211（Air1601/Air1602/Air1603/Air1604）、EC718（Air8000/Air780）、Air6201 外置 SPI。每个芯片一个模块，公共类型为 `FlashProgress` 与 `ProgressCallback = Box<dyn Fn(&FlashProgress) + Send>`。`script.rs` 是各芯片族脚本镜像的统一构建入口（`build_script_image` / `validate_script_image_for_family` / `script_write_alignment`）。`raw.rs` 的 `RawChip` 是任意地址读写协议的能力表；`RawChip::from_family` 是 `ChipFamily → raw 协议` 的唯一映射入口。SOC 包内资源（rom.bin、fdl、ramrun 等）一律经 `luatos_soc::SocArchive` 纯内存读取，不再解压到临时目录或调用外部刷机 exe；脚本编译/ctx 合入/XT804 文件系统合并同样全内存完成。
+- **crates/luatos-flash** — 刷机协议：BK7258（Air8101）、XT804（Air6208/Air101/Air103）、CCM4211（Air1601/Air1602/Air1603/Air1604）、EC718（Air8000/Air780）、D12p（D126，USB AIC 升级协议）、Air6201 外置 SPI。每个芯片一个模块，公共类型为 `FlashProgress` 与 `ProgressCallback = Box<dyn Fn(&FlashProgress) + Send>`。`script.rs` 是各芯片族脚本镜像的统一构建入口（`build_script_image` / `validate_script_image_for_family` / `script_write_alignment`）。`raw.rs` 的 `RawChip` 是任意地址读写协议的能力表；`RawChip::from_family` 是 `ChipFamily → raw 协议` 的唯一映射入口。SOC 包内资源（rom.bin、fdl、ramrun 等）一律经 `luatos_soc::SocArchive` 纯内存读取，不再解压到临时目录或调用外部刷机 exe；脚本编译/ctx 合入/XT804 文件系统合并同样全内存完成。
 - **crates/luatos-soc** — SOC 固件包（ZIP+7z）解析、解包、打包、注入（`combine.rs`）、OTA 包生成。`ota.rs` 含 LZMA SDK 的 FFI 绑定（`lzma_sdk_compress`），`pack.rs` 为纯 Rust ZIP/7z 打包。
 - **crates/luatos-luadb** — LuaDB 文件系统镜像打包，含进程内静态链接的 32/64 位 Lua 5.3 编译器、mklfs/LittleFS 构建器与 BK CRC16 framing。
 - **crates/luatos-codec** — 零依赖的协议基础算法（Beken CRC16 / 32+2 帧化 / 解帧）。`luatos-luadb` 与 `luatos-soc` 共用，避免同一算法两份实现。
@@ -109,7 +109,7 @@ Cargo workspace（`Cargo.toml`）包含 12 个 crate：
 - `rustfmt.toml` 设置 `max_width = 180`。
 - CI（`.github/workflows/ci.yml`）三作业：ubuntu/windows/macos 矩阵跑 `check` + `build` + `test`；`clippy -D warnings`；`fmt --check`。
 - 文档与协议说明（`docs/air8101-flash-protocol.md`、`docs/ccm4211-flash-protocol.md` 等）是规格来源，新协议开发前先读对应文档。
-- 型号文档按芯片族拆分到 `docs/models/`：`air1601-air1604.md` / `air8000-ec7xx.md` / `air8101-bk72xx.md` / `air6208-xt804.md`。
+- 型号文档按芯片族拆分到 `docs/models/`：`air1601-air1604.md` / `air8000-ec7xx.md` / `air8101-bk72xx.md` / `air6208-xt804.md` / `d126-d12p.md`。
 - `docs/superpowers/` 下有 plans/ 与 specs/，是设计文档与实施计划。
 
 ## 语言
