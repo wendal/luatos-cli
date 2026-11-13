@@ -200,6 +200,18 @@ enum SocCommands {
         #[arg(short, long)]
         output: Option<String>,
     },
+    /// Merge Lua scripts into a D126 .soc (updates both script.bin and the AIC image)
+    InjectScripts {
+        /// 源 .soc 文件
+        #[arg(long)]
+        soc: String,
+        /// Lua 脚本目录（可多次指定；corelib 从 .soc 内保留）
+        #[arg(long)]
+        script: Vec<String>,
+        /// 输出 .soc 文件
+        #[arg(short, long)]
+        output: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -754,6 +766,7 @@ fn main() {
             SocCommands::Files { path } => cmd_soc::cmd_soc_files(&path, &cli.format),
             SocCommands::Pack { dir, output } => cmd_soc::cmd_soc_pack(&dir, &output, &cli.format),
             SocCommands::Combine { soc, bin, addr, output } => cmd_soc::cmd_soc_combine(&soc, &bin, addr.as_deref(), output.as_deref(), &cli.format),
+            SocCommands::InjectScripts { soc, script, output } => cmd_soc::cmd_soc_inject_scripts(&soc, &script, &output, &cli.format),
         },
         Commands::Flash { action, progress_step } => match action {
             FlashCommands::Run {

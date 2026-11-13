@@ -1,9 +1,9 @@
 // SOC file packing — create and update .soc archives.
 //
-// ZIP format is used for bk72xx / air8101 / air8000.
+// ZIP format is used for bk72xx / air8101 / air8000 / d12p.
 // 7z format is used for air6208 / air101 / air103.
 
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -89,6 +89,38 @@ pub fn pack_soc(dir: &Path, out_path: &str) -> Result<()> {
         }
     }
     pack_soc_zip(dir, out_path)
+}
+
+/// 用内存数据替换 ZIP 格式 `.soc` 中的指定条目，其余条目原样保留。
+///
+/// `overrides` 中的每个条目都必须存在于原归档中，缺一即报错，避免生成不完整的
+/// 固件包。条目顺序与原归档一致。
+pub fn repack_soc_zip(soc_path: &str, out_path: &str, overrides: &[(&str, Vec<u8>)]) -> Result<()> {
+    let src = fs::File::open(soc_path).with_context(|| format!("Open SOC: {soc_path}"))?;
+    let mut archive = zip::ZipArchive::new(src).context("Not a valid ZIP")?;
+    let out = fs::File::create(out_path).with_context(|| format!("Create output: {out_path}"))?;
+    let mut writer = zip::ZipWriter::new(out);
+
+    let mut replaced = vec![false; overrides.len()];
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).context("Read ZIP entry")?;
+        let name = entry.name().to_string();
+        let entry_options = zip::write::SimpleFileOptions::default().compression_method(entry.compression());
+        writer.start_file(&name, entry_options).with_context(|| format!("Start entry: {name}"))?;
+        if let Some((slot, (_, data))) = overrides.iter().enumerate().find(|(_, (entry_name, _))| *entry_name == name) {
+            writer.write_all(data)?;
+            replaced[slot] = true;
+        } else {
+            let mut buf = Vec::new();
+            entry.read_to_end(&mut buf)?;
+            writer.write_all(&buf)?;
+        }
+    }
+    for (slot, (name, _)) in overrides.iter().enumerate() {
+        ensure!(replaced[slot], ".soc 中缺少条目: {name}");
+    }
+    writer.finish().context("Finalize ZIP")?;
+    Ok(())
 }
 
 /// Replace the script file inside an existing .soc archive with new data.
@@ -228,6 +260,40 @@ mod tests {
             rom_entry.read_to_end(&mut rom_buf).unwrap();
             assert_eq!(rom_buf, b"ROMDATA");
         }
+    }
+
+    #[test]
+    fn repack_zip_replaces_entry_and_keeps_others() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let dir = tempdir.path();
+        fs::write(dir.join("info.json"), r#"{"version":1,"chip":{"type":"d12p"}}"#).unwrap();
+        fs::write(dir.join("a.bin"), b"OLD").unwrap();
+        fs::write(dir.join("b.bin"), b"KEEP").unwrap();
+
+        let soc = dir.join("in.soc");
+        pack_soc_zip(dir, soc.to_str().unwrap()).unwrap();
+        let out = dir.join("out.soc");
+        repack_soc_zip(soc.to_str().unwrap(), out.to_str().unwrap(), &[("a.bin", b"NEW".to_vec())]).unwrap();
+
+        let file = fs::File::open(&out).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut data = Vec::new();
+        archive.by_name("a.bin").unwrap().read_to_end(&mut data).unwrap();
+        assert_eq!(data, b"NEW");
+        let mut data = Vec::new();
+        archive.by_name("b.bin").unwrap().read_to_end(&mut data).unwrap();
+        assert_eq!(data, b"KEEP");
+    }
+
+    #[test]
+    fn repack_rejects_missing_entry() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let dir = tempdir.path();
+        fs::write(dir.join("info.json"), r#"{"version":1,"chip":{"type":"d12p"}}"#).unwrap();
+        let soc = dir.join("in.soc");
+        pack_soc_zip(dir, soc.to_str().unwrap()).unwrap();
+        let error = repack_soc_zip(soc.to_str().unwrap(), dir.join("out.soc").to_str().unwrap(), &[("missing.bin", Vec::new())]).unwrap_err();
+        assert!(error.to_string().contains("missing.bin"), "{error}");
     }
 
     #[test]

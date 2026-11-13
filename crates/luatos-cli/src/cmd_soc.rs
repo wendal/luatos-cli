@@ -165,6 +165,58 @@ pub fn cmd_soc_combine(soc: &str, bin: &str, addr: Option<&str>, output: Option<
     Ok(())
 }
 
+/// 把 Lua 脚本合并进 D126 `.soc`。
+///
+/// 同时更新两份数据，保证 `.soc` 自洽：
+/// - `script.bin`（`info.script.file`）
+/// - AIC 镜像里的 `image.target.scripts` 组件及其 META CRC
+pub fn cmd_soc_inject_scripts(soc: &str, script_dirs: &[String], output: &str, format: &OutputFormat) -> anyhow::Result<()> {
+    anyhow::ensure!(!script_dirs.is_empty(), "请通过 --script 指定至少一个脚本目录");
+
+    let mut archive = luatos_soc::SocArchive::open(soc)?;
+    let info = archive.info().clone();
+    anyhow::ensure!(
+        info.family() == luatos_soc::ChipFamily::D12p,
+        "soc inject-scripts 仅支持 D126/D12P，当前芯片: {}",
+        info.chip.chip_type
+    );
+
+    let script_file = info.script.file.clone();
+    let base = archive.read(&script_file).with_context(|| format!(".soc 中找不到脚本镜像 {script_file}"))?;
+    let rom_file = info.rom.file.clone();
+    let rom = archive.read(&rom_file).with_context(|| format!(".soc 中找不到固件镜像 {rom_file}"))?;
+
+    let partition_kb = info
+        .rom
+        .fs
+        .as_ref()
+        .and_then(|fs| fs.script.as_ref())
+        .and_then(|script| script.size)
+        .context("SOC 缺少脚本分区容量 rom.fs.script.size")?;
+    let partition_size = usize::try_from(partition_kb).ok().and_then(|kb| kb.checked_mul(1024)).context("脚本分区容量溢出")?;
+
+    let dirs: Vec<std::path::PathBuf> = script_dirs.iter().map(std::path::PathBuf::from).collect();
+    let refs: Vec<&std::path::Path> = dirs.iter().map(|path| path.as_path()).collect();
+    let scripts = luatos_flash::script::merge_d12p_scripts(&base, &refs, partition_size, luatos_luadb::LUAC_DEBUG_ALL)?;
+
+    let mut image = luatos_flash::d12p::AicImage::parse(&rom)?;
+    image.replace_script_component(&scripts)?;
+    let rom = image.into_bytes();
+
+    luatos_soc::repack_soc_zip(soc, output, &[(&script_file, scripts), (&rom_file, rom)])?;
+
+    match format {
+        OutputFormat::Text => println!("已写入脚本并生成 {output}"),
+        OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(
+            format,
+            "soc.inject_scripts",
+            "ok",
+            serde_json::json!({ "output": output, "script": script_file, "rom": rom_file }),
+        )?,
+    }
+    Ok(())
+}
+
 pub fn cmd_soc_pack(dir: &str, output: &str, format: &OutputFormat) -> anyhow::Result<()> {
     let dir_path = std::path::Path::new(dir);
     anyhow::ensure!(dir_path.is_dir(), "Not a directory: {dir}");
