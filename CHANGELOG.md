@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 迁移
+
+#### Air8609W（D126/D12P）脚本分区
+
+- 固件不再内嵌 Lua；从旧固件升级必须整包烧录一次（`flash run`），只写 `scripts` 分区在旧固件上不会生效。
+- 旧 `.soc` 的 `scripts.luadb` 仍兼容（CLI 读取 `info.script.file`）；新 SDK 统一为 `script.bin`。
+- `flash script --script <目录>` 会保留 `.soc` 内的 corelib 再合入应用脚本；`--bin` 必须提供包含 corelib 的完整 luadb 镜像。
+- `.soc` 包名改为 `LuatOS-SoC_V0001_Air8609W_1.soc`。
+
 ### 新增
 
 #### Air8609W（D126/D12P）USB 烧录
