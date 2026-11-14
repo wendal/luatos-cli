@@ -221,7 +221,7 @@ enum FlashCommands {
         /// 固件路径：SOC 或 EC716S binpkg（也可使用 --binpkg）
         #[arg(long, visible_alias = "binpkg")]
         soc: String,
-        /// 串口（如 COM6）；D126 可填 USB 选择器 bus:port（如 1:2-4-2）或 auto，省略则自动选择
+        /// 串口（如 COM6）；Air8609W/D126 可填 USB 选择器 bus:port（如 1:2-4-2）或 auto，省略则自动选择
         #[arg(long)]
         port: Option<String>,
         /// Override baud rate
@@ -247,7 +247,7 @@ enum FlashCommands {
         /// Path to .soc file
         #[arg(long)]
         soc: String,
-        /// 串口（如 COM6）；D126 可填 USB 选择器 bus:port（如 1:2-4-2）或 auto，省略则自动选择
+        /// 串口（如 COM6）；Air8609W/D126 可填 USB 选择器 bus:port（如 1:2-4-2）或 auto，省略则自动选择
         #[arg(long)]
         port: Option<String>,
         /// Script folders containing .lua files (can specify multiple)
@@ -387,9 +387,9 @@ enum FlashCommands {
     },
     /// 读回 Flash 数据到文件
     ///
-    /// 只读操作，不需要 --force。非 D126 用 --addr/--len（需要协议支持 flash 读命令：
+    /// 只读操作，不需要 --force。非 Air8609W/D126 用 --addr/--len（需要协议支持 flash 读命令：
     /// 目前仅 Air8101(BK7258) 支持；CCM4211 与 XT804 不支持）。
-    /// D126 用 --partition <scripts|data|fskv|...>，按 MTD 分区读回。
+    /// Air8609W/D126 用 --partition <scripts|data|fskv|...>，按 MTD 分区读回。
     Dump {
         /// Path to .soc file（用于确定芯片族与下载波特率）
         #[arg(long)]
@@ -397,13 +397,13 @@ enum FlashCommands {
         /// Serial port (e.g. COM6)
         #[arg(long)]
         port: String,
-        /// 起始地址，支持 0x 前缀（非 D126）
+        /// 起始地址，支持 0x 前缀（非 Air8609W/D126）
         #[arg(long, required_unless_present = "partition")]
         addr: Option<String>,
-        /// 读取字节数，支持 0x 前缀（最大 64MiB，非 D126）
+        /// 读取字节数，支持 0x 前缀（最大 64MiB，非 Air8609W/D126）
         #[arg(long, required_unless_present = "partition")]
         len: Option<String>,
-        /// D126 分区名（如 scripts / data / fskv）
+        /// Air8609W/D126 分区名（如 scripts / data / fskv）
         #[arg(long)]
         partition: Option<String>,
         /// 输出文件路径
@@ -743,7 +743,7 @@ enum FotaCommands {
         /// Path to FotaToolkit.exe (auto-detected if omitted)
         #[arg(long)]
         fota_toolkit: Option<String>,
-        /// Build a script-only FOTA package (EC7xx/Air8000, Air1601/Air1602/Air1603/Air1604/CCM4211, BK72XX, D126/D12P)
+        /// Build a script-only FOTA package (EC7xx/Air8000, Air1601/Air1602/Air1603/Air1604/CCM4211, BK72XX, Air8609W/D126/D12P)
         #[arg(long)]
         script_only: bool,
         /// 强制走差分 FOTA（关闭"底层固件相同自动回落脚本包"）

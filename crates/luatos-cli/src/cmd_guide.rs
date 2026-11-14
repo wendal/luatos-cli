@@ -60,9 +60,9 @@ const GUIDES: &[ModelGuide] = &[
     },
     ModelGuide {
         key: "d126",
-        aliases: &["d126", "d126fcr", "d12p", "artinchip"],
-        description: "D126/D12P（ArtInChip；支持 .soc、USB 烧录、脚本合并与 LFTA FOTA）",
-        flash_example: "luatos-cli flash run --soc LuatOS-SoC_V0001_D126_1.soc --port auto",
+        aliases: &["air8609w", "d126", "d126fcr", "d12p", "artinchip"],
+        description: "Air8609W（D126/D12P，ArtInChip；支持 .soc、USB 烧录、脚本合并与 LFTA FOTA）",
+        flash_example: "luatos-cli flash run --soc LuatOS-SoC_V0001_Air8609W_1.soc --port auto",
         log_example: "luatos-cli log view --port COMx --baud 115200",
         docs_path: "docs\\models\\d126-d12p.md",
     },
@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn d126_aliases_share_guide() {
-        for name in ["D126", "d126fcr", "d12p", "artinchip"] {
+        for name in ["Air8609W", "air8609w", "D126", "d126fcr", "d12p", "artinchip"] {
             let guide = super::find_model_guide(name).expect("D126 应有型号指南");
             assert_eq!(guide.key, "d126");
             assert_eq!(guide.docs_path, "docs\\models\\d126-d12p.md");

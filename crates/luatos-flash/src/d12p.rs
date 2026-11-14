@@ -148,7 +148,7 @@ pub fn parse_mtd_layout(text: &str) -> Result<Vec<D12pPartition>> {
         });
         offset += size;
     }
-    anyhow::ensure!(!partitions.is_empty(), "D126 分区表为空");
+    anyhow::ensure!(!partitions.is_empty(), "Air8609W 分区表为空");
     Ok(partitions)
 }
 
@@ -179,7 +179,7 @@ impl AicImage {
     /// 解析 `.img`。文件布局：0x800 包头 + 元数据区 + 文件数据区。
     pub fn parse(data: &[u8]) -> Result<Self> {
         if data.len() < IMAGE_HDR_SIZE {
-            bail!("D126 镜像长度不足 0x800 字节");
+            bail!("Air8609W 镜像长度不足 0x800 字节");
         }
         if &data[0..6] != b"AIC.FW" {
             bail!("不是 AIC 固件镜像（magic 应为 AIC.FW）");
@@ -190,14 +190,14 @@ impl AicImage {
         let file_offset = read_u32(data, 0x154) as usize;
         let file_size = read_u32(data, 0x158) as usize;
         if meta_offset < IMAGE_HDR_SIZE || !meta_size.is_multiple_of(META_SIZE) || meta_offset + meta_size > data.len() || file_offset + file_size > data.len() {
-            bail!("D126 镜像头偏移/长度非法");
+            bail!("Air8609W 镜像头偏移/长度非法");
         }
 
         let mut metas = Vec::with_capacity(meta_size / META_SIZE);
         for start in (meta_offset..meta_offset + meta_size).step_by(META_SIZE) {
             let chunk = &data[start..start + META_SIZE];
             if &chunk[0..4] != b"META" {
-                bail!("D126 镜像元数据区缺少 META 标识");
+                bail!("Air8609W 镜像元数据区缺少 META 标识");
             }
             let mut raw = [0u8; META_SIZE];
             raw.copy_from_slice(chunk);
@@ -213,7 +213,7 @@ impl AicImage {
             });
         }
         if metas.is_empty() {
-            bail!("D126 镜像不包含任何固件组件");
+            bail!("Air8609W 镜像不包含任何固件组件");
         }
 
         Ok(Self {
@@ -235,7 +235,7 @@ impl AicImage {
             .metas
             .iter()
             .position(|meta| meta.name == "image.target.scripts")
-            .context("D126 镜像缺少 image.target.scripts 组件")?;
+            .context("Air8609W 镜像缺少 image.target.scripts 组件")?;
         let meta = &self.metas[index];
         if overlay.len() > meta.size as usize {
             bail!("脚本镜像 {} 字节超过组件大小 {} 字节", overlay.len(), meta.size);
@@ -326,13 +326,13 @@ fn select_device(selector: Option<&UsbSelector>) -> Result<DeviceInfo> {
         .collect();
 
     if devices.is_empty() {
-        bail!("未找到 D126 USB 升级设备（33c3:6677）；请让设备进入 USB 升级模式后重试");
+        bail!("未找到 Air8609W USB 升级设备（33c3:6677）；请让设备进入 USB 升级模式后重试");
     }
 
     match selector {
         Some(selector) => devices.into_iter().find(|info| selector.matches(info)).with_context(|| {
             format!(
-                "未找到指定的 D126 设备 {}:{}",
+                "未找到指定的 Air8609W 设备 {}:{}",
                 selector.bus,
                 selector.port_chain.iter().map(u8::to_string).collect::<Vec<_>>().join("-")
             )
@@ -343,7 +343,7 @@ fn select_device(selector: Option<&UsbSelector>) -> Result<DeviceInfo> {
                 .iter()
                 .map(|d| format!("{}:{}", d.bus_id(), d.port_chain().iter().map(u8::to_string).collect::<Vec<_>>().join("-")))
                 .collect();
-            bail!("检测到多个 D126 USB 升级设备（{}），请用 --port bus:port 指定其中一个", list.join(", "))
+            bail!("检测到多个 Air8609W USB 升级设备（{}），请用 --port bus:port 指定其中一个", list.join(", "))
         }
     }
 }
@@ -398,7 +398,7 @@ struct UsbLink {
 
 impl UsbLink {
     fn open(info: DeviceInfo) -> Result<Self> {
-        let device = info.open().wait().context("打开 D126 USB 设备失败")?;
+        let device = info.open().wait().context("打开 Air8609W USB 设备失败")?;
         let (interface_number, out_addr, in_addr) = {
             let config = device.active_configuration().context("读取 USB 配置描述符失败")?;
             config
@@ -418,10 +418,10 @@ impl UsbLink {
                     }
                     out_addr.zip(in_addr).map(|(o, i)| (alt.interface_number(), o, i))
                 })
-                .context("D126 设备没有可用的 Bulk IN/OUT 端点")?
+                .context("Air8609W 设备没有可用的 Bulk IN/OUT 端点")?
         };
 
-        let interface = device.claim_interface(interface_number).wait().context("占用 D126 USB 接口失败（检查 udev 权限）")?;
+        let interface = device.claim_interface(interface_number).wait().context("占用 Air8609W USB 接口失败（检查 udev 权限）")?;
         let ep_out = interface.endpoint::<Bulk, Out>(out_addr).context("打开 Bulk OUT 端点失败")?;
         let ep_in = interface.endpoint::<Bulk, In>(in_addr).context("打开 Bulk IN 端点失败")?;
 
@@ -476,13 +476,13 @@ impl UsbLink {
     fn csw(&mut self, tag: u32) -> Result<()> {
         let csw = self.bulk_in(13)?;
         if read_u32(&csw, 0) != CSW_SIGN {
-            bail!("D126 CSW 标识错误");
+            bail!("Air8609W CSW 标识错误");
         }
         if read_u32(&csw, 4) != tag {
-            bail!("D126 CSW 序号不匹配");
+            bail!("Air8609W CSW 序号不匹配");
         }
         if csw[12] != 0 {
-            bail!("D126 CSW 状态错误: {}", csw[12]);
+            bail!("Air8609W CSW 状态错误: {}", csw[12]);
         }
         Ok(())
     }
@@ -515,10 +515,10 @@ impl UsbLink {
     fn recv_resp_header(&mut self) -> Result<u32> {
         let resp = self.recv_packet(16)?;
         if read_u32(&resp, 0) != RESP_HEADER_MAGIC {
-            bail!("D126 响应头标识错误");
+            bail!("Air8609W 响应头标识错误");
         }
         if resp[7] != 0 {
-            bail!("D126 命令 0x{:02x} 执行失败（状态 {}）", resp[6], resp[7]);
+            bail!("Air8609W 命令 0x{:02x} 执行失败（状态 {}）", resp[6], resp[7]);
         }
         Ok(read_u32(&resp, 8))
     }
@@ -526,7 +526,7 @@ impl UsbLink {
     fn recv_resp_ok(&mut self) -> Result<()> {
         let len = self.recv_resp_header()?;
         if len != 0 {
-            bail!("D126 响应长度异常: {len}");
+            bail!("Air8609W 响应长度异常: {len}");
         }
         Ok(())
     }
@@ -534,7 +534,7 @@ impl UsbLink {
     fn recv_resp_u32(&mut self) -> Result<u32> {
         let len = self.recv_resp_header()?;
         if len != 4 {
-            bail!("D126 响应长度应为 4，实际 {len}");
+            bail!("Air8609W 响应长度应为 4，实际 {len}");
         }
         let data = self.recv_packet(4)?;
         Ok(read_u32(&data, 0))
@@ -545,7 +545,7 @@ impl UsbLink {
         self.send_cmd_header(CMD_GET_HWINFO, 0)?;
         let len = self.recv_resp_header()? as usize;
         if len < 44 {
-            bail!("D126 HWINFO 长度异常: {len}");
+            bail!("Air8609W HWINFO 长度异常: {len}");
         }
         let data = self.recv_packet(len)?;
         Ok(data[40])
@@ -631,7 +631,7 @@ impl UsbLink {
         self.send_packet(&media)?;
         let len = self.recv_resp_header()?;
         if len != 128 {
-            bail!("D126 分区表长度异常: {len}");
+            bail!("Air8609W 分区表长度异常: {len}");
         }
         let data = self.recv_packet(len as usize)?;
         Ok(read_cstr(&data))
@@ -698,7 +698,7 @@ impl Session {
                 Err(err) => return Err(err),
             }
         }
-        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("D126 设备无响应")))
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Air8609W 设备无响应")))
     }
 
     fn write_component(&mut self, meta: &AicMeta, data: &[u8], crc: u32, progress: &WriteProgress, cancel: &AtomicBool) -> Result<()> {
@@ -708,7 +708,7 @@ impl Session {
         self.link.set_fwc_meta(meta, crc)?;
         let block_size = self.link.get_block_size()? as usize;
         if block_size == 0 {
-            bail!("D126 设备返回的块大小为 0");
+            bail!("Air8609W 设备返回的块大小为 0");
         }
         if data.len() != meta.size as usize {
             bail!("组件 {} 数据长度 {} 与元数据 {} 不符", meta.name, data.len(), meta.size);
@@ -838,7 +838,7 @@ pub fn flash_image(data: &[u8], selector: Option<&str>, script_overlay: Option<&
     }
 
     session.finish()?;
-    on_progress(&FlashProgress::done_ok("D126 烧录完成"));
+    on_progress(&FlashProgress::done_ok("Air8609W 烧录完成"));
     Ok(())
 }
 
@@ -877,7 +877,7 @@ fn bootstrap_to_uboot(session: &mut Session, image: &AicImage, selector: Option<
     }
 
     session.ping()?;
-    anyhow::ensure!(session.in_uboot, "D126 未能进入 U-Boot 升级阶段");
+    anyhow::ensure!(session.in_uboot, "Air8609W 未能进入 U-Boot 升级阶段");
     Ok(())
 }
 
@@ -908,7 +908,7 @@ pub fn flash_partition_data(
     let mut session = Session::connect(selector.as_ref())?;
     if !session.in_uboot {
         let Some(image) = bootstrap_image else {
-            bail!("D126 当前处于 Boot ROM 阶段，无法单独写分区；请先执行一次 flash run");
+            bail!("Air8609W 当前处于 Boot ROM 阶段，无法单独写分区；请先执行一次 flash run");
         };
         let image = AicImage::parse(image)?;
         bootstrap_to_uboot(&mut session, &image, selector.as_ref(), on_progress, &cancel)?;
@@ -927,7 +927,7 @@ pub fn flash_partition_data(
     check_cancel(&cancel)?;
     session.write_component(&meta, data, meta.crc, &progress, &cancel)?;
     session.finish()?;
-    let message = format!("D126 {partition} 分区烧录完成");
+    let message = format!("Air8609W {partition} 分区烧录完成");
     on_progress(&FlashProgress::done_ok(&message));
     Ok(())
 }
@@ -941,7 +941,7 @@ pub fn dump_partition(partition: &str, bootstrap_image: Option<&[u8]>, selector:
     let mut session = Session::connect(selector.as_ref())?;
     if !session.in_uboot {
         let Some(image) = bootstrap_image else {
-            bail!("D126 当前处于 Boot ROM 阶段，无法读取分区；请先执行一次 flash run");
+            bail!("Air8609W 当前处于 Boot ROM 阶段，无法读取分区；请先执行一次 flash run");
         };
         let image = AicImage::parse(image)?;
         bootstrap_to_uboot(&mut session, &image, selector.as_ref(), on_progress, &cancel)?;
@@ -954,7 +954,7 @@ pub fn dump_partition(partition: &str, bootstrap_image: Option<&[u8]>, selector:
         .find(|part| part.name == partition)
         .with_context(|| {
             let names: Vec<&str> = partitions.iter().map(|part| part.name.as_str()).collect();
-            format!("D126 分区表中没有 {partition}；可用分区: {}", names.join(", "))
+            format!("Air8609W 分区表中没有 {partition}；可用分区: {}", names.join(", "))
         })?
         .clone();
 
@@ -967,7 +967,7 @@ pub fn dump_partition(partition: &str, bootstrap_image: Option<&[u8]>, selector:
     session.link.send_packet(&meta)?;
     let resp_len = session.link.recv_resp_header()?;
     if resp_len as u64 != part.size {
-        bail!("D126 返回的分区长度 {resp_len} 与分区表 {} 不符", part.size);
+        bail!("Air8609W 返回的分区长度 {resp_len} 与分区表 {} 不符", part.size);
     }
 
     let mut data = Vec::with_capacity(size);

@@ -990,7 +990,7 @@ pub fn cmd_fota_build(
 
         // D126 / D12P - LFTA（脚本 + app，纯内存打包）
         ChipFamily::D12p => {
-            anyhow::ensure!(old_soc.is_none(), "D126 的 LFTA 包不支持差分 FOTA，请省略 --old");
+            anyhow::ensure!(old_soc.is_none(), "Air8609W 的 LFTA 包不支持差分 FOTA，请省略 --old");
             let default_name = if script_only { "d12p_script_fota.bin" } else { "d12p_fota.bin" };
             let out_path: PathBuf = output.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(default_name));
             build_d12p_lfota(new_soc, script_only, &out_path)?;
@@ -1001,7 +1001,7 @@ pub fn cmd_fota_build(
         // 其余族（Air6201 / Unknown）不支持 FOTA
         ChipFamily::Air6201 | ChipFamily::Unknown => bail!(
             "FOTA not supported for chip '{chip}'. \
-             Supported: EC7xx/EC618/Air8000 (differential), Air1601/Air1602/CCM4211 (full or --script-only), Air8101/BK72XX (new-format full or --script-only), Air6208/XT804 (full), Air724UG/RDA8910 (full or --script-only), D126/D12P (LFTA full or --script-only)."
+             Supported: EC7xx/EC618/Air8000 (differential), Air1601/Air1602/CCM4211 (full or --script-only), Air8101/BK72XX (new-format full or --script-only), Air6208/XT804 (full), Air724UG/RDA8910 (full or --script-only), Air8609W/D126/D12P (LFTA full or --script-only)."
         ),
     }
 
@@ -1021,7 +1021,7 @@ fn build_d12p_lfota(new_soc: &str, script_only: bool, out_path: &Path) -> Result
             .iter()
             .find(|name| name.ends_with("_os.itb"))
             .cloned()
-            .context("D126 .soc 中找不到应用镜像（*_os.itb）")?;
+            .context("Air8609W .soc 中找不到应用镜像（*_os.itb）")?;
         parts.push((1, archive.read(&app_name)?));
     }
 

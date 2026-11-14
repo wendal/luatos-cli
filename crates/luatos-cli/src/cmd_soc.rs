@@ -177,7 +177,7 @@ pub fn cmd_soc_inject_scripts(soc: &str, script_dirs: &[String], output: &str, f
     let info = archive.info().clone();
     anyhow::ensure!(
         info.family() == luatos_soc::ChipFamily::D12p,
-        "soc inject-scripts 仅支持 D126/D12P，当前芯片: {}",
+        "soc inject-scripts 仅支持 Air8609W（D126/D12P），当前芯片: {}",
         info.chip.chip_type
     );
 

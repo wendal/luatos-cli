@@ -42,7 +42,7 @@ pub fn build_script_image(family: ChipFamily, script_dirs: &[&Path], info: &SocI
         ChipFamily::Ccm4211 | ChipFamily::Ec718 | ChipFamily::Rda8910 => {
             luatos_luadb::build::build_script_image_with_entries(script_dirs, extra_entries, info.script_use_luac(), info.script_bitw(), info.use_bkcrc(), luac_debug)
         }
-        ChipFamily::D12p => bail!("D126 脚本镜像需要以 .soc 内的 script.bin 为基准合并 corelib，请使用 merge_d12p_scripts"),
+        ChipFamily::D12p => bail!("Air8609W 脚本镜像需要以 .soc 内的 script.bin 为基准合并 corelib，请使用 merge_d12p_scripts"),
         ChipFamily::Unknown | ChipFamily::Air6201 => bail!("脚本镜像构建不支持芯片族 {:?}", family),
     }
 }
@@ -63,7 +63,7 @@ pub fn merge_d12p_scripts(base_image: &[u8], script_dirs: &[&Path], partition_si
 
     let mut merged: Vec<LuadbEntry> = base.into_iter().filter(|entry| D12P_CORELIB.contains(&entry.basename())).collect();
     for name in D12P_CORELIB {
-        anyhow::ensure!(merged.iter().any(|entry| entry.basename() == name), "script.bin 缺少 D126 corelib: {name}");
+        anyhow::ensure!(merged.iter().any(|entry| entry.basename() == name), "script.bin 缺少 Air8609W corelib: {name}");
     }
     for entry in fresh {
         merged.retain(|existing| existing.basename() != entry.basename());

@@ -6,7 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ### 新增
 
-#### D126 / D12P USB 烧录
+#### Air8609W（D126/D12P）USB 烧录
+
+- D126 模组正式命名为 Air8609W；D126 仍用于芯片和板级配置名，`.soc` 包名改为 `LuatOS-SoC_V0001_Air8609W_1.soc`。
+- 新增 `air8609w` 型号别名，`guide model --model air8609w` 与 `d126` 指向同一文档。
 
 - `luatos-flash` 新增 `d12p` 模块：用 `nusb` 实现 ArtInChip AIC USB 升级协议（VID `0x33C3` / PID `0x6677`，Bulk-Only Transport CBW/CSW + `UPGC`/`UPGR` 命令头），支持全量镜像与脚本分区。
 - `flash run --soc` 自动解析 `.soc` 内的 AIC 镜像，处理 Boot ROM 下载 updater 后的设备重新枚举，再写 `spl` / `env` / `env_r` / `scripts` / `os`；完成后通过 U-Boot `reset` 重启设备。

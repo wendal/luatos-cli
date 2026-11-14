@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-luatos-cli 是 LuatOS 的纯 Rust 命令行工具集，覆盖刷机、日志、项目管理、固件资源下载与构建、FOTA 打包、多芯片支持（Air8101/BK7258、Air6208/XT804、Air1601/Air1602/Air1603/Air1604/CCM4211、Air8000/EC718、D126/D12P）。D126 通过 `luatos-flash::d12p` 直接实现 ArtInChip AIC USB 升级协议（`nusb`，VID 0x33C3 / PID 0x6677），支持 `flash run` / `flash script` / `soc inject-scripts` 与 LFTA `fota build`。
+luatos-cli 是 LuatOS 的纯 Rust 命令行工具集，覆盖刷机、日志、项目管理、固件资源下载与构建、FOTA 打包、多芯片支持（Air8101/BK7258、Air6208/XT804、Air1601/Air1602/Air1603/Air1604/CCM4211、Air8000/EC718、Air8609W（D126/D12P））。D126 通过 `luatos-flash::d12p` 直接实现 ArtInChip AIC USB 升级协议（`nusb`，VID 0x33C3 / PID 0x6677），支持 `flash run` / `flash script` / `soc inject-scripts` 与 LFTA `fota build`。
 
 ## 常用命令
 

@@ -329,13 +329,13 @@ pub fn cmd_flash_run_with_script(
     let info = luatos_soc::read_soc_info(soc)?;
     let family = info.family();
     if family == ChipFamily::D12p {
-        anyhow::ensure!(baud.is_none(), "D126 USB 烧录不支持 --baud");
-        anyhow::ensure!(!reset.rts_reset, "D126 USB 烧录不支持 --rts-reset");
-        anyhow::ensure!(tail_log_secs == 0, "D126 的日志走独立 UART，暂不支持 --tail-log-secs");
+        anyhow::ensure!(baud.is_none(), "Air8609W USB 烧录不支持 --baud");
+        anyhow::ensure!(!reset.rts_reset, "Air8609W USB 烧录不支持 --rts-reset");
+        anyhow::ensure!(tail_log_secs == 0, "Air8609W 的日志走独立 UART，暂不支持 --tail-log-secs");
         flash_d12p_soc(soc, port, script_overlay, &on_progress, cancel)?;
         return match format {
             OutputFormat::Text => {
-                println!("D126 烧录完成。");
+                println!("Air8609W 烧录完成。");
                 Ok(())
             }
             OutputFormat::Json | OutputFormat::Jsonl => event::emit_result(format, "flash.run", "ok", serde_json::json!({ "chip": "d12p" })),
@@ -585,15 +585,15 @@ pub fn cmd_flash_partition(
                 );
             }
             ChipFamily::D12p => match op {
-                _ if reset.rts_reset => anyhow::bail!("D126 USB 烧录不支持 --rts-reset"),
+                _ if reset.rts_reset => anyhow::bail!("Air8609W USB 烧录不支持 --rts-reset"),
                 "clear-fs" => flash_d12p_clear_partition(soc, &info, "data", port, &on_progress, cancel)?,
                 "clear-kv" => flash_d12p_clear_partition(soc, &info, "fskv", port, &on_progress, cancel)?,
                 "flash-fs" => {
                     let folders = script_folders.context("文件系统目录必填")?;
-                    anyhow::ensure!(folders.len() == 1, "D126 flash-fs 只接受一个目录");
+                    anyhow::ensure!(folders.len() == 1, "Air8609W flash-fs 只接受一个目录");
                     flash_d12p_filesystem(soc, &info, &folders[0], port, &on_progress, cancel)?;
                 }
-                _ => anyhow::bail!("D126 不支持 '{op}'"),
+                _ => anyhow::bail!("Air8609W 不支持 '{op}'"),
             },
             ChipFamily::Unknown | ChipFamily::Air6201 => {
                 anyhow::bail!("Unsupported chip type: {}", info.chip.chip_type);
@@ -649,11 +649,11 @@ fn resolve_dump_chip(family: ChipFamily, chip_type: &str) -> anyhow::Result<luat
 pub fn cmd_flash_dump(soc: &str, port: &str, addr: Option<&str>, len: Option<&str>, partition: Option<&str>, output: &str, step: u8, format: &OutputFormat) -> anyhow::Result<()> {
     let info = luatos_soc::read_soc_info(soc)?;
     if info.family() == ChipFamily::D12p {
-        let partition = partition.context("D126 需要 --partition <name>")?;
-        anyhow::ensure!(addr.is_none() && len.is_none(), "D126 不支持 --addr/--len，请使用 --partition");
+        let partition = partition.context("Air8609W 需要 --partition <name>")?;
+        anyhow::ensure!(addr.is_none() && len.is_none(), "Air8609W 不支持 --addr/--len，请使用 --partition");
         return dump_d12p_partition(soc, port, partition, output, step, format);
     }
-    anyhow::ensure!(partition.is_none(), "--partition 仅用于 D126");
+    anyhow::ensure!(partition.is_none(), "--partition 仅用于 Air8609W");
     let addr = addr.context("缺少 --addr")?;
     let len = len.context("缺少 --len")?;
     cmd_flash_raw_dump(soc, port, addr, len, output, step, format)
@@ -956,7 +956,7 @@ pub fn cmd_flash_test(
             Vec::new()
         }
         ChipFamily::D12p => {
-            anyhow::bail!("D126 的 'flash test' 尚未实现：USB 升级口与 UART0 日志口是分开的；请先用 'flash run' 烧录，再单独用 'log view' 抓 UART0");
+            anyhow::bail!("Air8609W 的 'flash test' 尚未实现：USB 升级口与 UART0 日志口是分开的；请先用 'flash run' 烧录，再单独用 'log view' 抓 UART0");
         }
         ChipFamily::Unknown | ChipFamily::Air6201 | ChipFamily::Rda8910 => {
             anyhow::bail!("Unsupported chip type for flash test: {}", info.chip.chip_type);
@@ -1544,7 +1544,7 @@ pub fn cmd_flash_storage(
     let before = std::fs::metadata(soc)?;
     let info = luatos_soc::read_soc_info(soc)?;
     let family = info.family();
-    anyhow::ensure!(family != ChipFamily::D12p, "D126 暂不支持文件系统/FSKV 操作（--fs-mode / --fs-dir / --clear-kv）");
+    anyhow::ensure!(family != ChipFamily::D12p, "Air8609W 暂不支持文件系统/FSKV 操作（--fs-mode / --fs-dir / --clear-kv）");
     let command = if full { "flash.run" } else { "flash.script" };
     event::emit_message(format, command, MessageLevel::Info, "Preparing filesystem and validating partitions...")?;
     anyhow::ensure!(bin.is_none() || folders.is_none(), "--bin cannot be combined with --script");
